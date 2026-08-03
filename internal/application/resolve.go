@@ -20,19 +20,27 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 	// those bytes. Refresh trades that speed for a check against the origin.
 	if source.Integrity != "" && !options.Refresh {
 		object, found, err := service.Store.Stat(source.Integrity)
-		if err != nil {
+		// A corrupt object cannot answer the request, but lock can: it falls
+		// through to the origin and installs good bytes over the bad ones.
+		if err != nil && !corrupted(err) {
 			return project.LockAsset{}, "", cacheReadError(err)
 		}
-		if found {
+		if err == nil && found {
 			service.Reporter.Start(name, object.Size)
 			service.Reporter.Done(name, "cached")
 			return project.LockAsset{Version: source.Version, URL: source.URL, Digest: object.Digest, Size: object.Size}, "cached", nil
 		}
 	}
+	// Refresh does not suppress the hint. An origin that answers 304 to the
+	// stored ETag has confirmed the asset just as well as one that sends the
+	// bytes again, and for a large asset that is the difference between a check
+	// that runs on a schedule and one nobody runs at all. What refresh does
+	// suppress is the shortcut above, which answers without asking the origin
+	// anything at all.
 	oldValid := false
-	if oldMatches && !options.Refresh {
+	if oldMatches {
 		var err error
-		oldValid, err = service.cached(Object{Digest: old.Digest, Size: old.Size})
+		oldValid, err = service.usable(Object{Digest: old.Digest, Size: old.Size})
 		if err != nil {
 			return project.LockAsset{}, "", err
 		}

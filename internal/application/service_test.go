@@ -34,27 +34,85 @@ var (
 type fakeStore struct {
 	mutex   sync.Mutex
 	objects map[string][]byte
+	// corrupt maps a digest to the digest its bytes actually have, so a test can
+	// reproduce a damaged cache without going near a filesystem.
+	corrupt map[string]string
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{objects: map[string][]byte{}}
+	return &fakeStore{objects: map[string][]byte{}, corrupt: map[string]string{}}
 }
 
 func (*fakeStore) Path(value string) (string, error) {
 	return filepath.Join("/cache", strings.TrimPrefix(value, digest.Prefix)), nil
 }
 
-func (store *fakeStore) Stat(value string) (application.Object, bool, error) {
+// damage marks a stored object as holding bytes that hash to something else.
+func (store *fakeStore) damage(value, actual string) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	store.corrupt[value] = actual
+}
+
+// damaged reports the corruption a store still holds for a digest.
+func (store *fakeStore) damaged(value string) bool {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, exists := store.corrupt[value]
+	return exists
+}
+
+// inspect reports the object a digest names, and the corruption recorded for
+// it. The caller holds no lock.
+func (store *fakeStore) inspect(value string) (application.Object, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	content, exists := store.objects[value]
-	return application.Object{Digest: value, Size: int64(len(content))}, exists, nil
+	if !exists {
+		return application.Object{}, false, nil
+	}
+	if actual, damaged := store.corrupt[value]; damaged {
+		return application.Object{Digest: value, Size: int64(len(content))}, true,
+			&application.CorruptError{Digest: value, ActualDigest: actual, Path: "/cache/" + value}
+	}
+	return application.Object{Digest: value, Size: int64(len(content))}, true, nil
+}
+
+func (store *fakeStore) Stat(value string) (application.Object, bool, error) {
+	object, exists, err := store.inspect(value)
+	if err != nil {
+		return application.Object{}, false, err
+	}
+	return object, exists, nil
+}
+
+func (store *fakeStore) Verify(_ context.Context, value string) (application.Object, bool, error) {
+	return store.inspect(value)
+}
+
+func (store *fakeStore) List(context.Context) ([]string, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	digests := make([]string, 0, len(store.objects))
+	for value := range store.objects {
+		digests = append(digests, value)
+	}
+	slices.Sort(digests)
+	return digests, nil
+}
+
+func (store *fakeStore) Remove(_ context.Context, value string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	delete(store.objects, value)
+	delete(store.corrupt, value)
+	return nil
 }
 
 // has reports whether the fake holds exactly this object.
 func (store *fakeStore) has(object application.Object) bool {
-	found, exists, _ := store.Stat(object.Digest)
-	return exists && found.Size == object.Size
+	found, exists, err := store.Stat(object.Digest)
+	return err == nil && exists && found.Size == object.Size
 }
 
 func (*fakeStore) WithLock(_ context.Context, _ string, operation func() error) error {
@@ -100,6 +158,8 @@ func (store *fakeStore) Put(ctx context.Context, reader io.Reader, options appli
 	}
 	store.mutex.Lock()
 	store.objects[value] = bytes.Clone(content)
+	// An install writes known-good bytes, so it repairs whatever was there.
+	delete(store.corrupt, value)
 	store.mutex.Unlock()
 	return application.Object{Digest: value, Size: int64(len(content))}, nil
 }
@@ -217,9 +277,9 @@ func TestInfoCombinesProjectRequestAndCacheState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AssetCount != 1 || result.CachedCount != 1 || result.AllowedCount != 1 ||
-		result.BlockedCount != 0 || result.LockStatus != "current" {
-		t.Fatalf("unexpected info counts: %#v", result)
+	if result.Summary.AssetCount != 1 || result.Summary.CachedCount != 1 || result.Summary.CorruptCount != 0 ||
+		result.Summary.BlockedCount != 0 || result.Summary.LockStatus != "current" {
+		t.Fatalf("unexpected info counts: %#v", result.Summary)
 	}
 	asset := result.Assets[0]
 	if asset.SourceURL != "https://example.com/asset" || asset.RequestURL != "https://mirror.internal/asset" ||
@@ -729,21 +789,21 @@ func TestPullInstallsFromADistributionDirectory(t *testing.T) {
 	}
 }
 
-func TestPullAcceptsADistributionFileNamedAfterTheURL(t *testing.T) {
+// TestPullIgnoresADistributionFileNamedAfterTheURL fixes the naming rule at one
+// option. DAC used to also accept the last element of the asset URL, which
+// meant a bundle could satisfy a pull with a file whose name proved nothing.
+func TestPullIgnoresADistributionFileNamedAfterTheURL(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	distdir := t.TempDir()
 	writeDist(t, distdir, "asset", content)
 
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	result, err := service.Pull(context.Background(), application.NetworkOptions{
+	_, err := service.Pull(context.Background(), application.NetworkOptions{
 		Concurrency: 1, Offline: true, DistDir: distdir,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Assets[0].Status != "distdir" {
-		t.Fatalf("unexpected status %q", result.Assets[0].Status)
+	if fault.As(err).Code != "offline_cache_miss" {
+		t.Fatalf("expected an offline cache miss, got %v", err)
 	}
 }
 
@@ -990,5 +1050,231 @@ func TestCacheGCReportsWhatItRemoved(t *testing.T) {
 	}
 	if result.ObjectCount != 1 || len(result.Digests) != 1 {
 		t.Fatalf("unexpected collection: %#v", result)
+	}
+}
+
+// The tests below cover what the cache does once an object stops matching the
+// digest that names it. That state used to be invisible: every command trusted
+// a file that existed at the right path and had the right size.
+
+// seedCorrupt returns a project whose one asset is present in the cache but
+// damaged.
+func seedCorrupt(t *testing.T, content []byte) (string, string, *fakeStore) {
+	t.Helper()
+	manifestPath, lockPath := lockedProject(t, content)
+	store := newFakeStore()
+	value := digest.Bytes(content)
+	store.objects[value] = bytes.Clone(content)
+	store.damage(value, digest.Bytes([]byte("other bytes")))
+	return manifestPath, lockPath, store
+}
+
+func TestPathRefusesACorruptObject(t *testing.T) {
+	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	_, err := service.Path("asset", "1")
+	if code := fault.As(err).Code; code != "cache_object_corrupt" {
+		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
+	}
+}
+
+func TestInfoReportsACorruptObject(t *testing.T) {
+	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	result, err := service.Info(application.InfoOptions{})
+	if err != nil {
+		t.Fatalf("info should describe damage rather than fail: %v", err)
+	}
+	if result.Assets[0].CacheStatus != "corrupt" || result.Summary.CorruptCount != 1 {
+		t.Fatalf("unexpected info result: %#v", result)
+	}
+}
+
+func TestExportRefusesACorruptObject(t *testing.T) {
+	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	_, err := service.Export(context.Background(), t.TempDir())
+	if code := fault.As(err).Code; code != "cache_object_corrupt" {
+		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
+	}
+}
+
+func TestPullRepairsACorruptObject(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath, store := seedCorrupt(t, content)
+	service := application.New(manifestPath, lockPath, store, staticFetcher(content), nil)
+
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assets[0].Status != "repaired" {
+		t.Fatalf("unexpected status %q", result.Assets[0].Status)
+	}
+	if store.damaged(digest.Bytes(content)) {
+		t.Fatal("the pull did not replace the damaged object")
+	}
+}
+
+func TestOfflinePullReportsACorruptObjectRatherThanAMiss(t *testing.T) {
+	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	_, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, Offline: true})
+	if code := fault.As(err).Code; code != "cache_object_corrupt" {
+		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
+	}
+}
+
+func TestVerifyCacheReportsAndRepairs(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath, store := seedCorrupt(t, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	value := digest.Bytes(content)
+
+	result, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Checked != 1 || result.CorruptCount != 1 || result.Repaired != 0 ||
+		len(result.Corrupt) != 1 || result.Corrupt[0] != value {
+		t.Fatalf("unexpected verify result: %#v", result)
+	}
+	if !store.damaged(value) {
+		t.Fatal("a check without --repair removed the object")
+	}
+
+	repaired, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{Repair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Repaired != 1 {
+		t.Fatalf("unexpected repair result: %#v", repaired)
+	}
+	if _, found, _ := store.Verify(context.Background(), value); found {
+		t.Fatal("--repair left the corrupt object in place")
+	}
+}
+
+func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	store := newFakeStore()
+	// An object no project references still belongs to the shared cache, so an
+	// --all check has to reach it.
+	stray := digest.Bytes([]byte("stray"))
+	store.objects[stray] = []byte("stray")
+	store.damage(stray, digest.Bytes([]byte("junk")))
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	scoped, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scoped.CorruptCount != 0 || scoped.MissingCount != 1 {
+		t.Fatalf("a project check should not have seen the stray object: %#v", scoped)
+	}
+
+	all, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Checked != 1 || all.CorruptCount != 1 {
+		t.Fatalf("unexpected --all result: %#v", all)
+	}
+}
+
+func TestLockCheckReportsDriftWithoutWriting(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	before := projecttest.MustRead(t, lockPath)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
+
+	_, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, Check: true})
+	value := fault.As(err)
+	if value.Code != "lock_drift" {
+		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
+	}
+	if assets, _ := value.Details["assets"].([]string); len(assets) != 1 || assets[0] != "asset" {
+		t.Fatalf("drift did not name the asset: %#v", value.Details)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("--check wrote the lock file")
+	}
+}
+
+func TestLockCheckSucceedsWhenTheLockIsCurrent(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, Check: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed || len(result.Drifted) != 0 {
+		t.Fatalf("unexpected check result: %#v", result)
+	}
+}
+
+func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
+	content := []byte("asset bytes")
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	if _, err := service.Init(false); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Name: "asset", Version: "1", URL: "https://example.com/asset", Pin: true, MaxSize: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := digest.Bytes(content)
+	if result.Integrity != value {
+		t.Fatalf("add did not pin the asset: %#v", result)
+	}
+	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
+	if manifest.Assets["asset"].Integrity != value {
+		t.Fatalf("the manifest was not pinned: %#v", manifest.Assets["asset"])
+	}
+	// A pinned asset never sends a conditional request, so it must not carry an
+	// ETag that the next lock would only have to strip back out.
+	if lock.Assets["asset"].ETag != "" {
+		t.Fatalf("a pinned lock entry kept an ETag: %#v", lock.Assets["asset"])
+	}
+}
+
+func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	for name, options := range map[string]application.AddOptions{
+		"integrity": {Name: "other", Version: "1", URL: "https://example.com/other", Pin: true, Integrity: digest.Bytes([]byte("x"))},
+		"offline":   {Name: "other", Version: "1", URL: "https://example.com/other", Pin: true, Offline: true},
+	} {
+		if _, err := service.Add(context.Background(), options); fault.As(err).Code != "invalid_arguments" {
+			t.Fatalf("%s: expected invalid_arguments, got %v", name, err)
+		}
+	}
+}
+
+func TestAddForceReportsTheRetiredCoordinate(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Name: "asset", Version: "2", URL: "https://example.com/asset", Force: true, MaxSize: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Replaced != "asset@1" {
+		t.Fatalf("add did not report the coordinate it retired: %#v", result)
 	}
 }

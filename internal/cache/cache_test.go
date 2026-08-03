@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/digest"
+	"github.com/tom/dac/internal/jsonfile"
 )
 
 func TestPutAndLookupObject(t *testing.T) {
@@ -70,35 +72,42 @@ func TestPutHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestHasTrustsMatchingPathAndSize(t *testing.T) {
-	store := New(t.TempDir())
-	expected := digest.Bytes([]byte("expected"))
-	path, err := store.Path(expected)
+// place writes content at the path a digest names, whether or not the content
+// actually hashes to it. It is how a test produces a cache the store has to
+// catch: a name that no longer describes its bytes.
+func place(t *testing.T, store *Store, value string, content []byte) string {
+	t.Helper()
+	path, err := store.Path(value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("different"), 0o444); err != nil {
+	if err := os.WriteFile(path, content, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	found, valid, err := stored(store, application.Object{Digest: expected, Size: int64(len("different"))})
-	_ = found
-	if err != nil || !valid {
-		t.Fatalf("expected path and size match, valid=%v err=%v", valid, err)
+	return path
+}
+
+func TestStatRejectsAnObjectThatDoesNotMatchItsDigest(t *testing.T) {
+	store := New(t.TempDir())
+	expected := digest.Bytes([]byte("expected"))
+	place(t, store, expected, []byte("different"))
+
+	_, _, err := store.Stat(expected)
+	var corrupt *application.CorruptError
+	if !errors.As(err, &corrupt) {
+		t.Fatalf("expected a CorruptError, got %v", err)
+	}
+	if corrupt.Digest != expected || corrupt.ActualDigest != digest.Bytes([]byte("different")) {
+		t.Fatalf("unexpected corruption report: %#v", corrupt)
 	}
 }
 
-// age backdates an object so collection treats it as unused.
-func age(t *testing.T, path string, when time.Time) {
-	t.Helper()
-	if err := os.Chtimes(path, when, when); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHasRefreshesTheObjectTimestamp(t *testing.T) {
+// TestStatDetectsCorruptionThatPreservesTheSize is the case the old store could
+// not see: bytes replaced in place by exactly as many bytes.
+func TestStatDetectsCorruptionThatPreservesTheSize(t *testing.T) {
 	store := New(t.TempDir())
 	content := []byte("asset bytes")
 	object, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0))
@@ -109,21 +118,86 @@ func TestHasRefreshesTheObjectTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	age(t, path, time.Now().Add(-90*24*time.Hour))
-	_, valid, err := stored(store, object)
-	if err != nil || !valid {
-		t.Fatalf("expected a cache hit, valid=%v err=%v", valid, err)
+	// A fresh store has no memory of this object, so the check has to come from
+	// the sidecar rather than from what this process already hashed.
+	store = New(store.Root)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(path, []byte("ASSET BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Stat(object.Digest); !errors.As(err, new(*application.CorruptError)) {
+		t.Fatalf("same-size corruption went undetected: %v", err)
+	}
+}
+
+func TestStatHealsAnObjectWithNoSidecar(t *testing.T) {
+	store := New(t.TempDir())
+	content := []byte("asset bytes")
+	value := digest.Bytes(content)
+	path := place(t, store, value, content)
+
+	// A cache DAC wrote before the sidecar format has objects but no sidecars.
+	// The first read hashes one and records what it found.
+	found, ok, err := store.Stat(value)
+	if err != nil || !ok || found.Size != int64(len(content)) {
+		t.Fatalf("unexpected lookup: %#v %v %v", found, ok, err)
+	}
+	if _, err := os.Stat(metaPath(path)); err != nil {
+		t.Fatalf("the sidecar was not written: %v", err)
+	}
+}
+
+func TestPutRepairsACorruptObject(t *testing.T) {
+	store := New(t.TempDir())
+	content := []byte("asset bytes")
+	value := digest.Bytes(content)
+	place(t, store, value, []byte("ASSET BYTES"))
+
+	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny(value, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Stat(value); err != nil {
+		t.Fatalf("the object was not repaired: %v", err)
+	}
+}
+
+func TestVerifyIgnoresTheSidecar(t *testing.T) {
+	store := New(t.TempDir())
+	content := []byte("asset bytes")
+	object, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Damage the object and restore the stat the sidecar recorded, which is the
+	// one case the cheap check is blind to and the whole reason Verify exists.
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(info.ModTime()) > time.Minute {
-		t.Fatalf("Has did not refresh the timestamp: %s", info.ModTime())
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("ASSET BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	age(t, path, info.ModTime())
+
+	fresh := New(store.Root)
+	if _, _, err := fresh.Stat(object.Digest); err != nil {
+		t.Fatalf("the cheap check was expected to miss this, got %v", err)
+	}
+	if _, found, err := fresh.Verify(context.Background(), object.Digest); !found || !errors.As(err, new(*application.CorruptError)) {
+		t.Fatalf("Verify missed the damage: found=%v err=%v", found, err)
 	}
 }
 
-func TestFindRefreshesTheObjectTimestamp(t *testing.T) {
+func TestRemoveDeletesTheObjectAndItsSidecar(t *testing.T) {
 	store := New(t.TempDir())
 	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
 	if err != nil {
@@ -133,16 +207,91 @@ func TestFindRefreshesTheObjectTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	age(t, path, time.Now().Add(-90*24*time.Hour))
-	if _, found, err := store.Stat(object.Digest); err != nil || !found {
-		t.Fatalf("expected a cache hit, found=%v err=%v", found, err)
+	if err := store.Remove(context.Background(), object.Digest); err != nil {
+		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
+	for _, removed := range []string{path, metaPath(path)} {
+		if _, err := os.Stat(removed); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s survived removal: %v", removed, err)
+		}
+	}
+}
+
+func TestListReturnsObjectsWithoutSidecars(t *testing.T) {
+	store := New(t.TempDir())
+	first, err := store.Put(context.Background(), bytes.NewReader([]byte("one")), application.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(info.ModTime()) > time.Minute {
-		t.Fatalf("Find did not refresh the timestamp: %s", info.ModTime())
+	second, err := store.Put(context.Background(), bytes.NewReader([]byte("two")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{first.Digest, second.Digest}
+	slices.Sort(want)
+	if !slices.Equal(digests, want) {
+		t.Fatalf("unexpected listing: %v, want %v", digests, want)
+	}
+}
+
+// age backdates a file.
+func age(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ageUse backdates an object's sidecar so collection treats it as unused. The
+// sidecar carries the liveness signal, so this is what "no project has
+// referenced this object in a long time" looks like on disk.
+func ageUse(t *testing.T, store *Store, value string, when time.Time) {
+	t.Helper()
+	path, err := store.Path(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	age(t, metaPath(path), when)
+}
+
+func TestStatRefreshesTheSidecarAndNotTheObject(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageUse(t, store, object.Digest, time.Now().Add(-90*24*time.Hour))
+
+	if _, found, err := store.Stat(object.Digest); err != nil || !found {
+		t.Fatalf("expected a cache hit, found=%v err=%v", found, err)
+	}
+	sidecar, err := os.Stat(metaPath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(sidecar.ModTime()) > time.Minute {
+		t.Fatalf("the cache hit did not refresh the sidecar: %s", sidecar.ModTime())
+	}
+	// The object's own timestamp is the evidence that nothing has written to it,
+	// so a read must leave it exactly where the install put it.
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.ModTime().Equal(installed.ModTime()) {
+		t.Fatalf("a cache hit moved the object timestamp: %s became %s", installed.ModTime(), current.ModTime())
 	}
 }
 
@@ -156,11 +305,7 @@ func TestGCRemovesOnlyObjectsOlderThanMaxAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stalePath, err := store.Path(stale.Digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	age(t, stalePath, time.Now().Add(-48*time.Hour))
+	ageUse(t, store, stale.Digest, time.Now().Add(-48*time.Hour))
 
 	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
@@ -186,11 +331,7 @@ func TestGCDryRunKeepsEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := store.Path(object.Digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	age(t, path, time.Now().Add(-48*time.Hour))
+	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
 
 	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour, DryRun: true})
 	if err != nil {
@@ -246,11 +387,7 @@ func TestGCKeepsDigestLockFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := store.Path(object.Digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	age(t, path, time.Now().Add(-48*time.Hour))
+	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
 	locks := filepath.Join(root, "locks")
 	before, err := os.ReadDir(locks)
 	if err != nil {
@@ -292,4 +429,83 @@ func TestGCRejectsANegativeMaxAge(t *testing.T) {
 func stored(store *Store, object application.Object) (application.Object, bool, error) {
 	found, exists, err := store.Stat(object.Digest)
 	return found, exists && found.Size == object.Size, err
+}
+
+func TestGCRemovesOrphanedSidecars(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Collection removes the pair together, so a sidecar that survives alone
+	// describes an object something outside DAC deleted.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SidecarCount != 1 {
+		t.Fatalf("collection removed %d orphaned sidecars, want 1", result.SidecarCount)
+	}
+	if _, err := os.Stat(metaPath(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the orphaned sidecar survived: %v", err)
+	}
+}
+
+func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SidecarCount != 0 || result.ObjectCount != 0 {
+		t.Fatalf("unexpected collection: %#v", result)
+	}
+	if _, _, err := store.Stat(object.Digest); err != nil {
+		t.Fatalf("the object did not survive: %v", err)
+	}
+}
+
+func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0)); err != nil {
+		t.Fatal(err)
+	}
+	// A sidecar write that dies between its temporary file and the rename leaves
+	// one of these beside the objects, where the download sweep does not look.
+	blobs := filepath.Join(root, "blobs", "sha256")
+	stale := filepath.Join(blobs, jsonfile.TempPrefix+"stale")
+	fresh := filepath.Join(blobs, jsonfile.TempPrefix+"fresh")
+	for _, path := range []string{stale, fresh} {
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age(t, stale, time.Now().Add(-48*time.Hour))
+
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TempCount != 1 {
+		t.Fatalf("collection removed %d temporary files, want 1", result.TempCount)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the abandoned sidecar write survived")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a recent temporary file was removed: %v", err)
+	}
 }

@@ -107,7 +107,12 @@ func (runner *runner) networkFlags(withConcurrency, withMaxSize bool) []urfave.F
 		flags = append(flags, &urfave.IntFlag{Name: "concurrency", Value: 4, Sources: urfave.EnvVars("DAC_CONCURRENCY"), Usage: "Set the number of concurrent assets."})
 	}
 	if withMaxSize {
-		flags = append(flags, &urfave.StringFlag{Name: "max-size", Value: "32GiB", Sources: urfave.EnvVars("DAC_MAX_SIZE"), Usage: "Set the maximum unknown download size."})
+		// The limit only ever applies to a response whose size DAC does not know
+		// ahead of time, so it exists to stop a runaway stream rather than to
+		// express a policy about asset sizes. The old 32GiB default never fired
+		// in practice, which made it a knob that generated questions instead of
+		// protection. A project with genuinely larger assets raises it.
+		flags = append(flags, &urfave.StringFlag{Name: "max-size", Value: "2GiB", Sources: urfave.EnvVars("DAC_MAX_SIZE"), Usage: "Set the maximum unknown download size."})
 	}
 	return flags
 }

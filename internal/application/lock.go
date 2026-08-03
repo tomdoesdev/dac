@@ -16,6 +16,9 @@ type LockResult struct {
 	Assets         []Asset `json:"assets"`
 	AssetCount     int     `json:"assetCount"`
 	Changed        bool    `json:"changed"`
+	// Drifted names the assets whose resolved bytes differ from the lock file
+	// the command started with.
+	Drifted []string `json:"drifted"`
 }
 
 // Lock resolves every manifest asset and writes a stable lock file.
@@ -62,12 +65,31 @@ func (service *Service) Lock(ctx context.Context, options NetworkOptions) (LockR
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return LockResult{}, fault.Wrap("lock_write_failed", "DAC could not read the lock file.", readErr)
 	}
+	drifted := make([]string, 0, len(names))
+	for index, name := range names {
+		if old.Assets[name] != resolved[index].lock {
+			drifted = append(drifted, name)
+		}
+	}
+	// Check reports drift instead of absorbing it. A scheduled job wants to know
+	// that an origin moved, and a job that silently rewrote the lock to match
+	// would destroy the evidence on its way to reporting success.
+	if options.Check {
+		if changed {
+			return LockResult{}, &fault.Error{
+				Code:    "lock_drift",
+				Message: "The lock file does not match what the origins now serve.",
+				Details: map[string]any{"assets": drifted},
+			}
+		}
+		return LockResult{ManifestDigest: lock.ManifestDigest, Assets: views, AssetCount: len(views), Drifted: drifted}, nil
+	}
 	if changed {
 		if err := project.WriteBytes(service.LockPath, data); err != nil {
 			return LockResult{}, fault.Wrap("lock_write_failed", "DAC could not write the lock file.", err)
 		}
 	}
-	return LockResult{ManifestDigest: lock.ManifestDigest, Assets: views, AssetCount: len(views), Changed: changed}, nil
+	return LockResult{ManifestDigest: lock.ManifestDigest, Assets: views, AssetCount: len(views), Changed: changed, Drifted: drifted}, nil
 }
 
 type resolvedAsset struct {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/tom/dac/internal/cache"
 	"github.com/tom/dac/internal/digest"
+	"github.com/tom/dac/internal/output"
 	"github.com/tom/dac/internal/project"
 	"github.com/tom/dac/internal/projecttest"
 )
@@ -63,7 +64,8 @@ func TestCommandLifecycle(t *testing.T) {
 	result = runJSON(t, appendArgs(base, "info"))
 	assertSuccess(t, result, "info")
 	infoData := result.value["data"].(map[string]any)
-	if infoData["lockStatus"] != "current" || infoData["assetCount"] != float64(1) || infoData["cachedCount"] != float64(1) {
+	infoSummary := infoData["summary"].(map[string]any)
+	if infoSummary["lockStatus"] != "current" || infoSummary["assetCount"] != float64(1) || infoSummary["cachedCount"] != float64(1) {
 		t.Fatalf("unexpected info result: %#v", infoData)
 	}
 	infoAsset := infoData["assets"].([]any)[0].(map[string]any)
@@ -384,7 +386,7 @@ func appendArgs(base []string, values ...string) []string {
 
 func assertSuccess(t *testing.T, result invocation, name string) {
 	t.Helper()
-	if result.status != ExitOK || result.value["ok"] != true || result.value["command"] != name || result.value["outputVersion"] != float64(1) {
+	if result.status != ExitOK || result.value["ok"] != true || result.value["command"] != name || result.value["outputVersion"] != float64(output.Version) {
 		t.Fatalf("unexpected result: status=%d value=%#v stderr=%s", result.status, result.value, result.stderr)
 	}
 }
@@ -595,8 +597,9 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 	jsonResult := runJSON(t, appendArgs(paths.base, "info"))
 	assertSuccess(t, jsonResult, "info")
 	data := jsonResult.value["data"].(map[string]any)
-	if data["assetCount"] != float64(3) || data["cachedCount"] != float64(0) ||
-		data["allowedCount"] != float64(2) || data["blockedCount"] != float64(1) || data["lockStatus"] != "missing" {
+	summary := data["summary"].(map[string]any)
+	if summary["assetCount"] != float64(3) || summary["cachedCount"] != float64(0) ||
+		summary["corruptCount"] != float64(0) || summary["blockedCount"] != float64(1) || summary["lockStatus"] != "missing" {
 		t.Fatalf("unexpected info counts: %#v", data)
 	}
 	assets := data["assets"].([]any)
@@ -615,8 +618,9 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 	assertSuccess(t, single, "info")
 	singleData := single.value["data"].(map[string]any)
 	singleAssets := singleData["assets"].([]any)
-	if singleData["assetCount"] != float64(1) || singleData["allowedCount"] != float64(1) ||
-		singleData["blockedCount"] != float64(0) || len(singleAssets) != 1 || singleAssets[0].(map[string]any)["name"] != "moved" {
+	singleSummary := singleData["summary"].(map[string]any)
+	if singleSummary["assetCount"] != float64(1) || singleSummary["blockedCount"] != float64(0) ||
+		len(singleAssets) != 1 || singleAssets[0].(map[string]any)["name"] != "moved" {
 		t.Fatalf("unexpected single info result: %#v", singleData)
 	}
 	singleHuman := run(t, appendArgs(paths.base, "info", "moved@3"))
@@ -643,7 +647,7 @@ func TestInfoReportsAStaleLockWithoutCacheData(t *testing.T) {
 	assertSuccess(t, result, "info")
 	data := result.value["data"].(map[string]any)
 	asset := data["assets"].([]any)[0].(map[string]any)
-	if data["lockStatus"] != "stale" || asset["cacheStatus"] != "unavailable" {
+	if data["summary"].(map[string]any)["lockStatus"] != "stale" || asset["cacheStatus"] != "unavailable" {
 		t.Fatalf("unexpected stale info result: %#v", data)
 	}
 	for _, field := range []string{"digest", "size", "path"} {
@@ -958,5 +962,218 @@ func copyInto(t *testing.T, source, target string) {
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// corruptObject rewrites a cache object in place, keeping its size, which is
+// the damage that used to pass every check DAC made.
+func corruptObject(t *testing.T, cacheRoot, value string) {
+	t.Helper()
+	path := filepath.Join(cacheRoot, "blobs", "sha256", strings.TrimPrefix(value, digest.Prefix))
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.ToUpper(original), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if len(bytes.ToUpper(original)) != len(original) {
+		t.Fatal("the test needs damage that preserves the size")
+	}
+}
+
+// TestCorruptCacheObjectIsCaughtEndToEnd walks the failure the store used to
+// hand back without comment: a cache object edited in place, keeping its size.
+func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
+	content := []byte("mini dac asset")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	cacheRoot := filepath.Join(directory, "cache")
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", cacheRoot,
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	corruptObject(t, cacheRoot, digest.Bytes(content))
+
+	// path used to return this object, and every script downstream would have
+	// read the wrong bytes without ever being told.
+	assertError(t, runJSON(t, appendArgs(base, "path", "geo@1")), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "export", "--dir", filepath.Join(directory, "bundle"))), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "cache", "verify")), "cache_object_corrupt")
+
+	info := runJSON(t, appendArgs(base, "info"))
+	assertSuccess(t, info, "info")
+	assets := info.value["data"].(map[string]any)["assets"].([]any)
+	if assets[0].(map[string]any)["cacheStatus"] != "corrupt" {
+		t.Fatalf("info did not report the damage: %#v", assets[0])
+	}
+
+	// pull replaces the object, and the whole project comes back clean.
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--progress=false")), "pull")
+	assertSuccess(t, runJSON(t, appendArgs(base, "path", "geo@1")), "path")
+	verified := runJSON(t, appendArgs(base, "cache", "verify"))
+	assertSuccess(t, verified, "cache.verify")
+	if verified.value["data"].(map[string]any)["corruptCount"] != float64(0) {
+		t.Fatalf("the cache did not come back clean: %#v", verified.value["data"])
+	}
+}
+
+func TestCacheVerifyRepairRemovesTheDamage(t *testing.T) {
+	content := []byte("mini dac asset")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	cacheRoot := filepath.Join(directory, "cache")
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", cacheRoot,
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	corruptObject(t, cacheRoot, digest.Bytes(content))
+
+	repaired := runJSON(t, appendArgs(base, "cache", "verify", "--repair"))
+	assertSuccess(t, repaired, "cache.verify")
+	data := repaired.value["data"].(map[string]any)
+	if data["corruptCount"] != float64(1) || data["repaired"] != float64(1) {
+		t.Fatalf("unexpected repair result: %#v", data)
+	}
+	path := filepath.Join(cacheRoot, "blobs", "sha256", strings.TrimPrefix(digest.Bytes(content), digest.Prefix))
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("--repair left the object in place: %v", err)
+	}
+}
+
+func TestCacheDirReportsTheResolvedRoot(t *testing.T) {
+	directory := t.TempDir()
+	cacheRoot := filepath.Join(directory, "cache")
+	result := runJSON(t, []string{"--cache-dir", cacheRoot, "cache", "dir"})
+	assertSuccess(t, result, "cache.dir")
+	if result.value["data"].(map[string]any)["path"] != cacheRoot {
+		t.Fatalf("unexpected cache root: %#v", result.value["data"])
+	}
+	// The human form is the path alone, so a script can use it directly.
+	plain := run(t, []string{"--cache-dir", cacheRoot, "cache", "dir"})
+	if strings.TrimSpace(plain.stdout) != cacheRoot {
+		t.Fatalf("unexpected human output: %q", plain.stdout)
+	}
+}
+
+// TestJSONErrorsCarryTheirCause covers the failure an operator actually meets
+// in CI: a pull that cannot reach its origin. The stable code says what kind of
+// failure it was, and nothing else in the document used to say which URL or
+// what the server answered.
+func TestJSONErrorsCarryTheirCause(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+
+	result := runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	assertError(t, result, "network_error")
+	errorValue := result.value["error"].(map[string]any)
+	cause, _ := errorValue["cause"].(string)
+	if !strings.Contains(cause, "404") {
+		t.Fatalf("the cause did not describe the failure: %#v", errorValue)
+	}
+	details := errorValue["details"].(map[string]any)
+	if details["status"] != float64(http.StatusNotFound) || details["url"] != server.URL {
+		t.Fatalf("the details did not name the request: %#v", details)
+	}
+}
+
+func TestHumanErrorsIncludeTheirCause(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	if status := run(t, appendArgs(base, "init")).status; status != ExitOK {
+		t.Fatalf("init failed with status %d", status)
+	}
+	result := run(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
+		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
+	}
+	// The content-check message used to print its detail twice, once inside the
+	// message and once again as the cause.
+	if strings.Count(result.stderr, "404") != 1 {
+		t.Fatalf("the cause was printed more than once: %q", result.stderr)
+	}
+}
+
+func TestLockCheckFailsOnDrift(t *testing.T) {
+	var body atomic.Value
+	body.Store([]byte("first bytes"))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(body.Load().([]byte))
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", lockPath,
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "lock", "--check", "--progress=false")), "lock")
+
+	body.Store([]byte("moved bytes"))
+	before := projecttest.MustRead(t, lockPath)
+	result := runJSON(t, appendArgs(base, "lock", "--check", "--progress=false"))
+	assertError(t, result, "lock_drift")
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("--check rewrote the lock file")
+	}
+}
+
+func TestAddPinWritesTheIntegrityValue(t *testing.T) {
+	content := []byte("mini dac asset")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--pin", "--progress=false")), "add")
+
+	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	if manifest.Assets["geo"].Integrity != digest.Bytes(content) {
+		t.Fatalf("add --pin did not write the integrity value: %#v", manifest.Assets["geo"])
 	}
 }

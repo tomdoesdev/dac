@@ -37,7 +37,7 @@ func TestWriterWritesOnlyVersionedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := decodeOne(t, stdout.Bytes())
-	if document["outputVersion"] != float64(1) || document["ok"] != true || document["command"] != "path" {
+	if document["outputVersion"] != float64(Version) || document["ok"] != true || document["command"] != "path" {
 		t.Fatalf("unexpected document: %#v", document)
 	}
 	if stderr.Len() != 0 {

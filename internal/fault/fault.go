@@ -4,6 +4,7 @@ package fault
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Error contains a stable code and a user message.
@@ -18,7 +19,9 @@ func (value *Error) Error() string {
 	if value.Cause == nil {
 		return value.Message
 	}
-	return fmt.Sprintf("%s: %v", value.Message, value.Cause)
+	// Messages are sentences and causes are clauses. Joining them with the
+	// message's full stop still in place reads as a typo.
+	return fmt.Sprintf("%s: %v", strings.TrimSuffix(value.Message, "."), value.Cause)
 }
 
 func (value *Error) Unwrap() error { return value.Cause }

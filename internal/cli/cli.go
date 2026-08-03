@@ -56,8 +56,12 @@ func (runner *runner) app() *urfave.Command {
 		Description:     "DAC stores remote files by their SHA-256 digest.",
 		Version:         application.Version,
 		HideHelpCommand: true,
-		Writer:          runner.stderr,
-		ErrWriter:       runner.stderr,
+		// Completion writes to stdout by design, so it is the one command whose
+		// output is not a DAC command result. It stays outside the output
+		// contract for that reason: a shell evaluates it, nothing parses it.
+		EnableShellCompletion: true,
+		Writer:                runner.stderr,
+		ErrWriter:             runner.stderr,
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "manifest", Value: "dac.json", Usage: "Use this manifest file."},
 			&urfave.StringFlag{Name: "lock", Value: "dac-lock.json", Usage: "Use this lock file."},

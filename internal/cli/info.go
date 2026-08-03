@@ -49,7 +49,7 @@ func infoText(result application.InfoResult) string {
 		_, _ = fmt.Fprintf(&text,
 			"%s@%s\nsource: %s\nrequest: %s\npolicy: %s\nlock: %s\ncache: %s\n",
 			asset.Name, asset.Version, asset.SourceURL, asset.RequestURL,
-			asset.RequestStatus, result.LockStatus, asset.CacheStatus)
+			asset.RequestStatus, result.Summary.LockStatus, asset.CacheStatus)
 		if asset.Integrity != "" {
 			_, _ = fmt.Fprintf(&text, "integrity: %s\n", asset.Integrity)
 		}

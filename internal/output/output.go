@@ -9,7 +9,10 @@ import (
 	"github.com/tom/dac/internal/fault"
 )
 
-const Version = 1
+// Version is the output contract version. It became 2 when info moved its
+// counters under a summary object and dropped the allowed count, and when every
+// error gained a cause field.
+const Version = 2
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`
@@ -19,9 +22,17 @@ type envelope struct {
 	Error         *errorValue `json:"error,omitempty"`
 }
 
+// errorValue is one command failure.
+//
+// Cause carries the underlying detail: the HTTP status, the refused connection,
+// the digest that actually arrived. Code and Message are stable enough to
+// branch on, which is exactly why neither can say anything specific about the
+// failure, and a consumer left with only those two has to reproduce the command
+// by hand to learn what went wrong.
 type errorValue struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
+	Cause   string         `json:"cause,omitempty"`
 	Details map[string]any `json:"details"`
 }
 
@@ -46,21 +57,28 @@ func (writer *Writer) Success(command string, data any, human string) error {
 	return json.NewEncoder(writer.stdout).Encode(envelope{OutputVersion: Version, OK: true, Command: command, Data: data})
 }
 
-// Failure writes one command error.
+// Failure writes one command error, including whatever caused it.
 func (writer *Writer) Failure(command string, err error) error {
 	value := fault.As(err)
 	if !writer.json {
-		_, writeErr := fmt.Fprintf(writer.stderr, "Error: %s\n", value.Message)
+		// Error() appends the cause to the message. A bare message reads well
+		// and diagnoses nothing: "The asset request failed" is true of a refused
+		// connection, a 404, and an expired certificate alike.
+		_, writeErr := fmt.Fprintf(writer.stderr, "Error: %s\n", value.Error())
 		return writeErr
 	}
 	details := value.Details
 	if details == nil {
 		details = map[string]any{}
 	}
+	cause := ""
+	if value.Cause != nil {
+		cause = value.Cause.Error()
+	}
 	return json.NewEncoder(writer.stdout).Encode(envelope{
 		OutputVersion: Version,
 		OK:            false,
 		Command:       command,
-		Error:         &errorValue{Code: value.Code, Message: value.Message, Details: details},
+		Error:         &errorValue{Code: value.Code, Message: value.Message, Cause: cause, Details: details},
 	})
 }

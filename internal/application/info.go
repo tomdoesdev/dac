@@ -12,6 +12,7 @@ const (
 	lockStale        = "stale"
 	cacheCached      = "cached"
 	cacheMissing     = "missing"
+	cacheCorrupt     = "corrupt"
 	cacheUnavailable = "unavailable"
 	requestAllowed   = "allowed"
 	requestBlocked   = "blocked"
@@ -41,12 +42,19 @@ type InfoAsset struct {
 
 // InfoResult reports the selected project assets and their aggregate states.
 type InfoResult struct {
-	Assets       []InfoAsset `json:"assets"`
-	AssetCount   int         `json:"assetCount"`
-	CachedCount  int         `json:"cachedCount"`
-	AllowedCount int         `json:"allowedCount"`
-	BlockedCount int         `json:"blockedCount"`
-	LockStatus   string      `json:"lockStatus"`
+	Assets  []InfoAsset `json:"assets"`
+	Summary InfoSummary `json:"summary"`
+}
+
+// InfoSummary counts the states worth acting on. It deliberately omits an
+// allowed count: the interesting number is how many assets a config refuses,
+// and the rest is arithmetic on the asset count.
+type InfoSummary struct {
+	AssetCount   int    `json:"assetCount"`
+	CachedCount  int    `json:"cachedCount"`
+	CorruptCount int    `json:"corruptCount"`
+	BlockedCount int    `json:"blockedCount"`
+	LockStatus   string `json:"lockStatus"`
 }
 
 // Info inspects manifest assets without network access. It ignores lock data
@@ -65,22 +73,22 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 		return InfoResult{}, err
 	}
 	result := InfoResult{
-		Assets:     make([]InfoAsset, 0, len(names)),
-		AssetCount: len(names),
-		LockStatus: lockStatus,
+		Assets:  make([]InfoAsset, 0, len(names)),
+		Summary: InfoSummary{AssetCount: len(names), LockStatus: lockStatus},
 	}
 	for _, name := range names {
 		asset, err := service.infoAsset(name, manifest.Assets[name], lock, lockStatus, options.Rewriter)
 		if err != nil {
 			return InfoResult{}, err
 		}
-		if asset.CacheStatus == cacheCached {
-			result.CachedCount++
+		switch asset.CacheStatus {
+		case cacheCached:
+			result.Summary.CachedCount++
+		case cacheCorrupt:
+			result.Summary.CorruptCount++
 		}
 		if asset.RequestStatus == requestBlocked {
-			result.BlockedCount++
-		} else {
-			result.AllowedCount++
+			result.Summary.BlockedCount++
 		}
 		result.Assets = append(result.Assets, asset)
 	}
@@ -143,10 +151,14 @@ func (service *Service) infoAsset(name string, source project.Asset, lock projec
 	}
 	result.Digest = view.Digest
 	result.Size = &view.Size
-	result.CacheStatus = cacheMissing
-	if view.Cached {
+	switch {
+	case view.Corrupt:
+		result.CacheStatus = cacheCorrupt
+	case view.Cached:
 		result.CacheStatus = cacheCached
 		result.Path = view.Path
+	default:
+		result.CacheStatus = cacheMissing
 	}
 	return result, nil
 }

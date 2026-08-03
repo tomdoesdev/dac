@@ -12,6 +12,7 @@ import (
 func (runner *runner) lockCommand() *urfave.Command {
 	flags := append(runner.networkFlags(true, true),
 		&urfave.BoolFlag{Name: "refresh", Usage: "Contact the origin even when the cache satisfies an integrity value."},
+		&urfave.BoolFlag{Name: "check", Usage: "Report whether the lock file is current without writing it."},
 	)
 	return &urfave.Command{
 		Name:  "lock",
@@ -34,11 +35,16 @@ func (runner *runner) lockCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
+			check := current.Bool("check")
 			result, err := service.Lock(ctx, application.NetworkOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Refresh:     current.Bool("refresh"),
+				Check:       check,
 			})
+			if check {
+				return result, fmt.Sprintf("The lock file is current for %s.", plural(result.AssetCount, "asset")), err
+			}
 			return result, fmt.Sprintf("Locked %s.", plural(result.AssetCount, "asset")), err
 		}),
 	}

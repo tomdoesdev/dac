@@ -39,13 +39,18 @@ func DecodeStrict(data []byte, value any) error {
 	return nil
 }
 
+// TempPrefix names the temporary files WriteAtomic creates. It is exported so
+// that a caller sweeping a directory DAC writes into can recognize the ones an
+// interrupted write left behind.
+const TempPrefix = ".dac-"
+
 // WriteAtomic writes data through a synced temporary file and one rename.
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".dac-*")
+	temporary, err := os.CreateTemp(directory, TempPrefix+"*")
 	if err != nil {
 		return err
 	}

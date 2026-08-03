@@ -33,10 +33,17 @@ type Asset struct {
 	Digest    string `json:"digest"`
 	Size      int64  `json:"size"`
 	Cached    bool   `json:"cached"`
-	Path      string `json:"path,omitempty"`
-	Status    string `json:"status,omitempty"`
+	// Corrupt marks an object the cache holds but cannot vouch for. It is
+	// separate from Cached because the two answer different questions: whether a
+	// command can use the object, and whether it should say why not.
+	Corrupt bool   `json:"corrupt,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Status  string `json:"status,omitempty"`
 }
 
+// assetView reports the state of one asset. It renders a corrupt object as a
+// flag rather than an error, because every caller wants a different answer to
+// it: pull downloads the object again, export refuses, info prints it.
 func (service *Service) assetView(name string, source project.Asset, locked project.LockAsset, status string) (Asset, error) {
 	view := Asset{
 		Name:      name,
@@ -49,7 +56,11 @@ func (service *Service) assetView(name string, source project.Asset, locked proj
 	}
 	valid, err := service.cached(Object{Digest: locked.Digest, Size: locked.Size})
 	if err != nil {
-		return Asset{}, err
+		if !corrupted(err) {
+			return Asset{}, err
+		}
+		view.Corrupt = true
+		return view, nil
 	}
 	view.Cached = valid
 	if valid {

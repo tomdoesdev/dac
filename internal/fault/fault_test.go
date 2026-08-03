@@ -17,7 +17,7 @@ func TestNewAndWrapCarryStableCodes(t *testing.T) {
 	if !errors.Is(wrapped, cause) {
 		t.Fatal("Wrap did not preserve the cause")
 	}
-	if wrapped.Error() != "DAC could not read the cache.: no such file" {
+	if wrapped.Error() != "DAC could not read the cache: no such file" {
 		t.Fatalf("unexpected message: %q", wrapped.Error())
 	}
 }
@@ -40,5 +40,15 @@ func TestAsRecognizesAndWrapsErrors(t *testing.T) {
 	}
 	if As(nil).Code != "internal_error" {
 		t.Fatal("a nil error must not produce a success code")
+	}
+}
+
+func TestErrorJoinsAMessageAndCauseAsOneSentence(t *testing.T) {
+	err := Wrap("network_error", "The asset request failed.", errors.New("connection refused"))
+	if got, want := err.Error(), "The asset request failed: connection refused"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if got := New("asset_exists", "The manifest already has this asset.").Error(); got != "The manifest already has this asset." {
+		t.Fatalf("a causeless error lost its full stop: %q", got)
 	}
 }

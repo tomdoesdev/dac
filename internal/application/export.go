@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -41,6 +43,13 @@ func (service *Service) Export(ctx context.Context, directory string) (ExportRes
 		if err != nil {
 			return ExportResult{}, withAsset(err, name)
 		}
+		if view.Corrupt {
+			return ExportResult{}, withAsset(&fault.Error{
+				Code:    "cache_object_corrupt",
+				Message: "The cache object does not match its digest and must not be exported. Run dac cache verify --repair, then dac pull.",
+				Details: map[string]any{"expectedDigest": locked.Digest},
+			}, name)
+		}
 		if !view.Cached {
 			return ExportResult{}, withAsset(fault.New("cache_object_invalid", "The cache object is missing. Run dac pull."), name)
 		}
@@ -48,7 +57,10 @@ func (service *Service) Export(ctx context.Context, directory string) (ExportRes
 		if err != nil {
 			return ExportResult{}, withAsset(fault.Wrap("lock_invalid", "The lock file has an invalid digest.", err), name)
 		}
-		if err := copyFile(view.Path, filepath.Join(absolute, hexValue)); err != nil {
+		if err := copyObject(view.Path, filepath.Join(absolute, hexValue), locked.Digest); err != nil {
+			if corrupted(err) {
+				return ExportResult{}, withAsset(cacheReadError(err), name)
+			}
 			return ExportResult{}, withAsset(fault.Wrap("export_write_failed", "DAC could not write the export file.", err), name)
 		}
 		exported = append(exported, view)
@@ -56,7 +68,15 @@ func (service *Service) Export(ctx context.Context, directory string) (ExportRes
 	return ExportResult{Directory: absolute, AssetSummary: collect(exported)}, nil
 }
 
-func copyFile(source, destination string) error {
+// copyObject writes one cache object into a distribution directory, hashing it
+// on the way through.
+//
+// The bytes are already streaming, so the digest costs almost nothing, and it
+// closes the gap between the check that cleared this object and the read that
+// copies it. A bundle is the one artifact that carries cache damage to machines
+// that cannot tell where it came from: the digest in the file name is the only
+// provenance a consumer gets, so it had better be true when it is written.
+func copyObject(source, destination, expected string) error {
 	if _, err := os.Stat(destination); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -76,8 +96,12 @@ func copyFile(source, destination string) error {
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
 	}()
-	if _, err := io.Copy(temporary, reader); err != nil {
+	hashValue := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(temporary, hashValue), reader); err != nil {
 		return err
+	}
+	if actual := digest.Prefix + hex.EncodeToString(hashValue.Sum(nil)); actual != expected {
+		return &CorruptError{Digest: expected, ActualDigest: actual, Path: source}
 	}
 	if err := temporary.Sync(); err != nil {
 		return err

@@ -20,6 +20,8 @@ import (
 
 const maxRedirects = 10
 
+var _ application.RequestDetail = (*RequestError)(nil)
+
 // Options configures one HTTP client.
 type Options struct {
 	Timeout time.Duration
@@ -66,14 +68,14 @@ func (client *Client) Close() { client.transport.CloseIdleConnections() }
 func (client *Client) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
 	target, err := client.options.Rewriter.Apply(request.URL)
 	if err != nil {
-		return nil, err
+		return nil, &RequestError{URL: request.URL, Err: err}
 	}
 	if target.Rewritten && target.AllowInsecureHTTP {
 		request.AllowInsecureHTTP = true
 	}
 	parsed, err := urlpolicy.ParseAndCheck(target.URL, request.AllowInsecureHTTP)
 	if err != nil {
-		return nil, err
+		return nil, &RequestError{URL: target.URL, Err: err}
 	}
 	request.URL = parsed.String()
 	var lastErr error
@@ -84,12 +86,41 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 		}
 		lastErr = err
 		if attempt >= client.options.Retries || !retryable(err) || ctx.Err() != nil {
-			return nil, lastErr
+			return nil, &RequestError{URL: request.URL, Status: statusOf(lastErr), Err: lastErr}
 		}
 		if err := sleep(ctx, backoff(attempt, err)); err != nil {
-			return nil, err
+			return nil, &RequestError{URL: request.URL, Err: err}
 		}
 	}
+}
+
+// RequestError names the request behind a transport failure.
+//
+// It wraps only at the boundary, so retry and backoff keep matching on the
+// error the transport actually returned, while a caller reporting the failure
+// can still say which URL it was and what the server said.
+type RequestError struct {
+	URL string
+	// Status is the HTTP status, or zero when the request never got a response.
+	Status int
+	Err    error
+}
+
+func (value *RequestError) Error() string { return fmt.Sprintf("%s: %v", value.URL, value.Err) }
+
+func (value *RequestError) Unwrap() error { return value.Err }
+
+// RequestURL and StatusCode satisfy application.RequestDetail.
+func (value *RequestError) RequestURL() string { return value.URL }
+
+func (value *RequestError) StatusCode() int { return value.Status }
+
+func statusOf(err error) int {
+	var status *statusError
+	if errors.As(err, &status) {
+		return status.statusCode
+	}
+	return 0
 }
 
 func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {

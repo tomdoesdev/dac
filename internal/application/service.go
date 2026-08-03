@@ -12,7 +12,7 @@ import (
 	"github.com/tom/dac/internal/project"
 )
 
-const Version = "3.0.0"
+const Version = "4.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -52,21 +52,47 @@ func PutExact(object Object) PutOptions {
 // ObjectStore is the cache boundary used by the service.
 type ObjectStore interface {
 	Path(digest string) (string, error)
-	// Stat reports the object stored for a digest and refreshes its timestamp.
+	// Stat reports the object stored for a digest, confirms that it still holds
+	// the bytes DAC installed, and refreshes its liveness timestamp. It reports
+	// a CorruptError for an object that fails that check.
 	Stat(digest string) (Object, bool, error)
+	// Verify hashes one object in full, ignoring anything the store has already
+	// decided about it.
+	Verify(ctx context.Context, digest string) (Object, bool, error)
+	List(ctx context.Context) ([]string, error)
+	Remove(ctx context.Context, digest string) error
 	Put(ctx context.Context, reader io.Reader, options PutOptions) (Object, error)
 	WithLock(ctx context.Context, digest string, operation func() error) error
 	GC(ctx context.Context, options GCOptions) (GCResult, error)
 }
 
 // cached reports whether the cache holds exactly the expected bytes. A stored
-// object of another size is a different object, not this one.
+// object of another size is a different object, not this one. An object that
+// fails its integrity check is an error, not a miss.
 func (service *Service) cached(object Object) (bool, error) {
 	stored, found, err := service.Store.Stat(object.Digest)
 	if err != nil {
 		return false, cacheReadError(err)
 	}
 	return found && stored.Size == object.Size, nil
+}
+
+// usable reports whether the cache holds these bytes, treating a corrupt object
+// as absent.
+//
+// It belongs to the commands that can fetch the object again: replacing bad
+// bytes repairs the cache, which is a better answer than refusing to run over
+// damage the command was about to undo anyway. Commands with no such recourse
+// call cached and report the failure.
+func (service *Service) usable(object Object) (bool, error) {
+	valid, err := service.cached(object)
+	if err != nil {
+		if corrupted(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return valid, nil
 }
 
 func (service *Service) objectPath(digest string) (string, error) {
@@ -136,6 +162,9 @@ type NetworkOptions struct {
 	// Refresh makes lock contact the origin for every asset instead of
 	// trusting a publisher digest that the cache already satisfies.
 	Refresh bool
+	// Check makes lock report drift rather than write it. It resolves exactly
+	// as an ordinary lock does and leaves the project files alone.
+	Check bool
 }
 
 func (service *Service) readManifest() (project.Manifest, error) {

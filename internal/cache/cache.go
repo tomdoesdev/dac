@@ -12,16 +12,24 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/digest"
+	"github.com/tom/dac/internal/jsonfile"
 	"github.com/tom/dac/internal/proclock"
 )
 
 // Store manages one filesystem cache.
+//
+// A store must not be copied: verified carries the objects this process has
+// already hashed, and a copy would hash them all over again.
 type Store struct {
 	Root string
+	// verified maps a digest to the file information of the bytes this process
+	// hashed for it. See trusted in meta.go.
+	verified sync.Map
 }
 
 // ResolveRoot returns an absolute cache root.
@@ -54,7 +62,11 @@ func (store *Store) Path(value string) (string, error) {
 	return filepath.Join(store.Root, "blobs", "sha256", hexValue), nil
 }
 
-// Stat returns the object stored for a digest without reading its bytes.
+// Stat returns the object stored for a digest and confirms that it still holds
+// the bytes DAC installed. It reports a CorruptError for an object that does
+// not, which is the one answer a content-addressed store must never guess at.
+//
+// It usually reads no object bytes at all: see check in meta.go.
 func (store *Store) Stat(value string) (application.Object, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
@@ -67,26 +79,23 @@ func (store *Store) Stat(value string) (application.Object, bool, error) {
 	if err != nil {
 		return application.Object{}, false, err
 	}
-	touch(path)
+	if err := store.check(value, path, info); err != nil {
+		return application.Object{}, false, err
+	}
+	touch(metaPath(path))
 	return application.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
-// touch refreshes an object timestamp so collection can tell an object that is
-// still in use from one that no project has referenced in a long time. A
-// content-addressed store cannot answer that question on its own, and a
-// read-only cache directory is a valid deployment, so a failure is never fatal.
-func touch(path string) {
-	now := time.Now()
-	_ = os.Chtimes(path, now, now)
-}
-
 // GC removes objects that nothing has used for longer than MaxAge, along with
-// temporary files abandoned by an interrupted download.
+// temporary files abandoned by an interrupted download and sidecars whose
+// object is gone.
 //
-// Age is the only liveness signal a content-addressed store has, which is why
-// every cache hit refreshes an object timestamp. Digest lock files are never
-// removed: unlinking a lock file that another process holds would let a later
-// process take the same lock through a new inode.
+// Age is the only liveness signal a content-addressed store has, and it now
+// lives in each object's sidecar rather than on the object itself, so that a
+// cache hit can record use without disturbing the timestamp that proves the
+// object has not been written to. Digest lock files are never removed:
+// unlinking a lock file that another process holds would let a later process
+// take the same lock through a new inode.
 func (store *Store) GC(ctx context.Context, options application.GCOptions) (application.GCResult, error) {
 	if options.MaxAge < 0 {
 		return application.GCResult{}, errors.New("the maximum age must not be negative")
@@ -103,21 +112,21 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		if err := ctx.Err(); err != nil {
 			return application.GCResult{}, err
 		}
-		if entry.IsDir() {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), metaSuffix) {
 			continue
 		}
 		value := digest.Prefix + entry.Name()
 		if _, err := digest.Hex(value); err != nil {
 			continue
 		}
-		info, err := entry.Info()
+		used, err := store.lastUsed(filepath.Join(blobs, entry.Name()))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return application.GCResult{}, err
 		}
-		if !info.ModTime().Before(cutoff) {
+		if !used.Before(cutoff) {
 			continue
 		}
 		size, removed, err := store.collect(ctx, value, cutoff, options.DryRun)
@@ -137,13 +146,39 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		return application.GCResult{}, err
 	}
 	result.TempCount = temporary
+
+	sidecars, abandoned, err := store.collectSidecars(blobs, entries, cutoff, options.DryRun)
+	if err != nil {
+		return application.GCResult{}, err
+	}
+	result.SidecarCount = sidecars
+	result.TempCount += abandoned
 	return result, nil
 }
 
-// collect removes one object while it holds that object's digest lock, so a
-// concurrent install cannot rename a new copy into place mid-removal. It
-// re-checks the timestamp under the lock because waiting for it takes time
-// during which another process may have used the object.
+// lastUsed reports when a project last referenced an object. The sidecar
+// carries that signal. An object from a cache DAC wrote before the sidecar
+// format falls back to its own timestamp, which is what the older format
+// refreshed on every hit, so collection stays correct across the migration.
+func (store *Store) lastUsed(objectPath string) (time.Time, error) {
+	info, err := os.Stat(metaPath(objectPath))
+	if err == nil {
+		return info.ModTime(), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, err
+	}
+	info, err = os.Stat(objectPath)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
+}
+
+// collect removes one object and its sidecar while it holds that object's
+// digest lock, so a concurrent install cannot rename a new copy into place
+// mid-removal. It re-checks the timestamp under the lock because waiting for it
+// takes time during which another process may have used the object.
 func (store *Store) collect(ctx context.Context, value string, cutoff time.Time, dryRun bool) (int64, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
@@ -159,7 +194,14 @@ func (store *Store) collect(ctx context.Context, value string, cutoff time.Time,
 		if err != nil {
 			return err
 		}
-		if !info.ModTime().Before(cutoff) {
+		used, err := store.lastUsed(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !used.Before(cutoff) {
 			return nil
 		}
 		size, removed = info.Size(), true
@@ -169,12 +211,65 @@ func (store *Store) collect(ctx context.Context, value string, cutoff time.Time,
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := os.Remove(metaPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		store.verified.Delete(value)
 		return nil
 	})
 	if err != nil {
 		return 0, false, err
 	}
 	return size, removed, nil
+}
+
+// collectSidecars removes sidecars left without an object, along with the
+// temporary files an interrupted sidecar write leaves behind.
+//
+// Collection removes an object and its sidecar together, so one that survives
+// on its own describes an object something outside DAC deleted. The temporary
+// files are the sidecar equivalent of an abandoned download: a write that dies
+// between creating its temporary file and renaming it leaves one here, where
+// the download sweep does not look.
+func (store *Store) collectSidecars(directory string, entries []os.DirEntry, cutoff time.Time, dryRun bool) (int, int, error) {
+	sidecars, abandoned := 0, 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(name, jsonfile.TempPrefix):
+			info, err := entry.Info()
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return 0, 0, err
+			}
+			if !info.ModTime().Before(cutoff) {
+				continue
+			}
+			abandoned++
+		case strings.HasSuffix(name, metaSuffix):
+			object := filepath.Join(directory, strings.TrimSuffix(name, metaSuffix))
+			if _, err := os.Stat(object); err == nil {
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return 0, 0, err
+			}
+			sidecars++
+		default:
+			continue
+		}
+		if dryRun {
+			continue
+		}
+		if err := os.Remove(filepath.Join(directory, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return 0, 0, err
+		}
+	}
+	return sidecars, abandoned, nil
 }
 
 func (store *Store) collectTemporary(cutoff time.Time, dryRun bool) (int, error) {
@@ -210,6 +305,85 @@ func (store *Store) collectTemporary(cutoff time.Time, dryRun bool) (int, error)
 		}
 	}
 	return count, nil
+}
+
+// Verify hashes one object and reports what it holds.
+//
+// It deliberately ignores both the sidecar and the in-process record of what
+// this run has already hashed. Those exist so that ordinary commands can avoid
+// reading an object they have reason to trust, and an explicit check that
+// trusted them would only ever confirm its own bookkeeping.
+func (store *Store) Verify(_ context.Context, value string) (application.Object, bool, error) {
+	path, err := store.Path(value)
+	if err != nil {
+		return application.Object{}, false, err
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return application.Object{}, false, nil
+	} else if err != nil {
+		return application.Object{}, false, err
+	}
+	actual, info, err := hashFile(path)
+	if err != nil {
+		return application.Object{}, false, err
+	}
+	// The size comes back even when the digest does not match, because the check
+	// read those bytes and a summary that reports how much it read should count
+	// them.
+	if actual != value {
+		return application.Object{Digest: value, Size: info.Size()}, true,
+			&application.CorruptError{Digest: value, ActualDigest: actual, Path: path}
+	}
+	// A clean object has just paid for its own sidecar, so write it: an fsck
+	// over a cache DAC wrote before this format should leave it migrated.
+	_ = writeMeta(metaPath(path), newMeta(info))
+	store.remember(value, info)
+	return application.Object{Digest: value, Size: info.Size()}, true, nil
+}
+
+// List returns every digest the cache holds, in sorted order.
+func (store *Store) List(ctx context.Context) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(store.Root, "blobs", "sha256"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var digests []string
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), metaSuffix) {
+			continue
+		}
+		value := digest.Prefix + entry.Name()
+		if _, err := digest.Hex(value); err != nil {
+			continue
+		}
+		digests = append(digests, value)
+	}
+	slices.Sort(digests)
+	return digests, nil
+}
+
+// Remove deletes one object and its sidecar under the object's digest lock.
+func (store *Store) Remove(ctx context.Context, value string) error {
+	path, err := store.Path(value)
+	if err != nil {
+		return err
+	}
+	return store.WithLock(ctx, value, func() error {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Remove(metaPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		store.verified.Delete(value)
+		return nil
+	})
 }
 
 // WithLock runs an operation while it holds one digest lock.
@@ -285,11 +459,12 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 	}
 	object := application.Object{Digest: actualDigest, Size: size}
 
+	// Install unconditionally rather than skipping an object that is already
+	// there. These bytes have just been hashed, so they are known good, while an
+	// object already at this path is only known to have the right name -- which
+	// is exactly the claim this store no longer takes on trust. Renaming over it
+	// repairs a corrupt object at no extra cost.
 	install := func() error {
-		stored, found, err := store.Stat(actualDigest)
-		if err != nil || found && stored.Size == size {
-			return err
-		}
 		path, err := store.Path(actualDigest)
 		if err != nil {
 			return err
@@ -306,7 +481,10 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 		if err := temporary.Close(); err != nil {
 			return err
 		}
-		return os.Rename(temporaryPath, path)
+		if err := os.Rename(temporaryPath, path); err != nil {
+			return err
+		}
+		return store.record(actualDigest, path)
 	}
 	if !options.Locked {
 		if err := store.WithLock(ctx, actualDigest, install); err != nil {
