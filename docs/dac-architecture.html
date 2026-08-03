@@ -1,0 +1,1549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAC — Architecture and technical decisions</title>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+
+:root{
+  color-scheme:dark light;
+  --bg:#0c0f14; --bg-soft:#10141b; --panel:#141a23; --panel-2:#0f141b;
+  --border:#232c39; --border-soft:#1b222d;
+  --text:#dbe3ee; --text-strong:#ffffff; --muted:#8d9aad; --faint:#66748a;
+  --accent:#a58bff; --accent-soft:rgba(165,139,255,.13);
+  --green:#7ee787; --amber:#f0b72f; --red:#ff8f80; --purple:#c8a6ff; --cyan:#63d2d2; --blue:#6ea8ff;
+  --shadow:0 1px 2px rgba(0,0,0,.45), 0 10px 30px rgba(0,0,0,.28);
+  --radius:12px;
+  --font:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#f6f8fb; --bg-soft:#eef2f7; --panel:#ffffff; --panel-2:#f8fafc;
+    --border:#dbe3ec; --border-soft:#e8edf3;
+    --text:#1c2530; --text-strong:#0a0f16; --muted:#5a6675; --faint:#7a8697;
+    --accent:#6b3fd4; --accent-soft:rgba(107,63,212,.09);
+    --green:#1a7f4b; --amber:#8a5d00; --red:#bd2f2f; --purple:#7434bd; --cyan:#0b6f80; --blue:#1a5fd0;
+    --shadow:0 1px 2px rgba(16,24,40,.06), 0 10px 28px rgba(16,24,40,.07);
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f6f8fb; --bg-soft:#eef2f7; --panel:#ffffff; --panel-2:#f8fafc;
+  --border:#dbe3ec; --border-soft:#e8edf3;
+  --text:#1c2530; --text-strong:#0a0f16; --muted:#5a6675; --faint:#7a8697;
+  --accent:#6b3fd4; --accent-soft:rgba(107,63,212,.09);
+  --green:#1a7f4b; --amber:#8a5d00; --red:#bd2f2f; --purple:#7434bd; --cyan:#0b6f80; --blue:#1a5fd0;
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 10px 28px rgba(16,24,40,.07);
+}
+
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font); font-size:16px; line-height:1.65;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+.layout{display:grid; grid-template-columns:274px minmax(0,1fr); max-width:1440px; margin:0 auto}
+.sidebar{
+  position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+  border-right:1px solid var(--border-soft); padding:26px 18px 40px 26px;
+  background:linear-gradient(180deg,var(--bg-soft),var(--bg));
+}
+main{padding:26px 40px 120px; min-width:0}
+@media (max-width:1000px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .sidebar{position:static; height:auto; border-right:0; border-bottom:1px solid var(--border-soft); padding:20px 22px}
+  main{padding:8px 22px 90px}
+}
+
+.brand{display:flex; align-items:center; gap:10px; margin-bottom:2px}
+.brand .mark{
+  width:30px;height:30px;border-radius:8px;flex:none;
+  background:linear-gradient(140deg,var(--accent),var(--cyan));
+  display:grid;place-items:center;color:#fff;font-weight:700;font-size:13px;letter-spacing:.5px;
+}
+.brand b{color:var(--text-strong); font-size:17px; letter-spacing:-.01em}
+.brand-sub{color:var(--faint); font-size:12.5px; margin:0 0 18px 40px}
+nav ul{list-style:none; margin:0; padding:0}
+nav a{
+  display:block; padding:5px 10px; border-radius:7px; color:var(--muted);
+  text-decoration:none; font-size:13.5px; border-left:2px solid transparent; line-height:1.45;
+}
+nav a:hover{color:var(--text); background:var(--accent-soft)}
+nav a.active{color:var(--accent); background:var(--accent-soft); border-left-color:var(--accent)}
+nav .nav-group{margin:16px 0 6px; padding-left:10px; font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); font-weight:700}
+.side-foot{margin-top:26px; padding-top:18px; border-top:1px solid var(--border-soft); display:flex; flex-direction:column; gap:10px}
+.sidelink{
+  display:flex; align-items:center; gap:8px; font-size:13px; text-decoration:none;
+  color:var(--text); border:1px solid var(--border); background:var(--panel);
+  padding:9px 11px; border-radius:9px;
+}
+.sidelink:hover{border-color:var(--accent); color:var(--accent)}
+.sidelink span{color:var(--faint); font-size:11.5px; display:block}
+button.theme{
+  font:inherit; font-size:13px; cursor:pointer; color:var(--muted);
+  background:transparent; border:1px solid var(--border); border-radius:9px; padding:8px 11px; text-align:left;
+}
+button.theme:hover{color:var(--text); border-color:var(--accent)}
+
+.hero{padding:44px 0 10px; border-bottom:1px solid var(--border-soft); margin-bottom:36px}
+h1{
+  font-size:clamp(30px,4.2vw,44px); line-height:1.1; letter-spacing:-.028em;
+  margin:0 0 14px; color:var(--text-strong); font-weight:760;
+}
+.lede{font-size:clamp(16.5px,1.6vw,19px); color:var(--muted); max-width:70ch; margin:0 0 22px; line-height:1.6}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:26px}
+.chip{
+  font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border);
+  background:var(--panel); color:var(--muted); font-family:var(--mono);
+}
+.chip.on{border-color:var(--accent); color:var(--accent); background:var(--accent-soft)}
+
+section{margin:0 0 60px; scroll-margin-top:20px}
+h2{font-size:clamp(22px,2.4vw,28px); letter-spacing:-.02em; color:var(--text-strong); margin:0 0 6px; font-weight:700; scroll-margin-top:24px}
+.h2-kicker{font-family:var(--mono); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 6px}
+h3{font-size:17.5px; letter-spacing:-.01em; color:var(--text-strong); margin:30px 0 8px; font-weight:660; scroll-margin-top:24px}
+h4{font-size:14.5px; color:var(--text-strong); margin:22px 0 6px; font-weight:660}
+p{margin:0 0 14px; max-width:78ch}
+ul,ol{max-width:78ch; padding-left:22px; margin:0 0 16px}
+li{margin:5px 0}
+a{color:var(--accent)}
+strong{color:var(--text-strong); font-weight:640}
+em.term{color:var(--text-strong); font-style:normal; font-weight:600}
+hr.sep{border:0; border-top:1px solid var(--border-soft); margin:34px 0}
+code{
+  font-family:var(--mono); font-size:.875em; background:var(--bg-soft);
+  border:1px solid var(--border-soft); border-radius:5px; padding:1px 5px; color:var(--text-strong);
+  word-break:break-word;
+}
+h2 code,h3 code,h4 code{font-size:.9em}
+
+.grid{display:grid; gap:14px; margin:20px 0}
+.grid.two{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.grid.three{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px}
+.card h3{margin:0 0 6px; font-size:15px}
+.card p{margin:0; font-size:14px; color:var(--muted); max-width:none}
+.card .tag{font-family:var(--mono); font-size:11px; color:var(--accent); display:block; margin-bottom:6px; letter-spacing:.06em}
+
+.callout{border:1px solid var(--border); border-left:3px solid var(--accent); background:var(--panel); border-radius:10px; padding:14px 16px; margin:20px 0}
+.callout p:last-child{margin-bottom:0}
+.callout .label{display:block; font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:5px; font-weight:700}
+.callout.warn{border-left-color:var(--amber)} .callout.warn .label{color:var(--amber)}
+.callout.good{border-left-color:var(--green)} .callout.good .label{color:var(--green)}
+.callout.rulebox{border-left-color:var(--blue)} .callout.rulebox .label{color:var(--blue)}
+
+.tablewrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); margin:20px 0; background:var(--panel)}
+table{border-collapse:collapse; width:100%; font-size:14px; min-width:520px}
+th,td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--border-soft); vertical-align:top}
+th{color:var(--text-strong); font-weight:640; font-size:12.5px; letter-spacing:.03em; background:var(--panel-2); white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td code{background:transparent; border:0; padding:0; color:var(--accent)}
+td.mono,th.mono{font-family:var(--mono); font-size:13px}
+
+.codeblock{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; margin:16px 0; background:var(--panel-2)}
+.codebar{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:7px 12px; background:var(--panel); border-bottom:1px solid var(--border-soft)}
+.codebar .name{font-family:var(--mono); font-size:11.5px; color:var(--faint); letter-spacing:.05em}
+.codebar button{font:inherit; font-family:var(--mono); font-size:11px; cursor:pointer; color:var(--muted); background:transparent; border:1px solid var(--border); border-radius:6px; padding:3px 9px}
+.codebar button:hover{color:var(--accent); border-color:var(--accent)}
+pre{margin:0; padding:14px 16px; overflow-x:auto; font-family:var(--mono); font-size:13.2px; line-height:1.62; tab-size:2}
+pre code{background:transparent; border:0; padding:0; font-size:inherit; color:var(--text); white-space:pre}
+
+.t-com{color:var(--faint); font-style:italic}
+.t-str{color:var(--green)}
+.t-num{color:var(--amber)}
+.t-kw{color:var(--purple)}
+.t-fn{color:var(--blue)}
+.t-var{color:var(--cyan)}
+.t-key{color:var(--blue)}
+.t-lit{color:var(--amber)}
+.t-url{color:var(--cyan)}
+.t-flag{color:var(--amber)}
+.t-punc{color:var(--faint)}
+.t-typ{color:var(--cyan)}
+
+/* layered architecture diagram */
+.layers{display:flex; flex-direction:column; gap:6px; margin:24px 0}
+.layer{border:1px solid var(--border); border-radius:12px; background:var(--panel); padding:12px 14px}
+.layer .lname{display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); margin-bottom:9px}
+.pills{display:flex; flex-wrap:wrap; gap:7px}
+.pill{font-family:var(--mono); font-size:12px; padding:4px 10px; border-radius:7px; border:1px solid var(--border); background:var(--bg-soft); color:var(--text)}
+.pill.k{border-color:var(--accent); color:var(--accent); background:var(--accent-soft)}
+.pill.d{color:var(--muted)}
+.layer .lnote{font-size:12.5px; color:var(--muted); margin:9px 0 0}
+.down{text-align:center; color:var(--faint); font-size:14px; line-height:1; margin:0}
+
+/* decision ladder */
+ol.ladder{list-style:none; counter-reset:l; padding-left:0; margin:20px 0}
+ol.ladder>li{counter-increment:l; border-left:2px solid var(--border); padding:0 0 18px 22px; position:relative; margin:0; max-width:78ch}
+ol.ladder>li::before{content:""; position:absolute; left:-6px; top:7px; width:10px; height:10px; border-radius:50%; background:var(--accent); border:2px solid var(--bg)}
+ol.ladder>li:last-child{border-left-color:transparent; padding-bottom:0}
+ol.ladder h4{margin:0 0 3px; font-size:15px}
+ol.ladder p{margin:0; font-size:14px; color:var(--muted)}
+ol.ladder .out{font-family:var(--mono); font-size:11.5px; color:var(--green); display:inline-block; margin-top:5px; border:1px solid var(--border); border-radius:6px; padding:1px 7px; background:var(--bg-soft)}
+
+.decision{border:1px solid var(--border); border-radius:12px; background:var(--panel); padding:15px 17px; margin:12px 0}
+.decision h4{margin:0 0 7px; font-size:15.5px; color:var(--text-strong)}
+.decision dl{display:grid; grid-template-columns:auto 1fr; gap:5px 14px; margin:0; font-size:14px}
+.decision dt{font-family:var(--mono); font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--faint); padding-top:3px}
+.decision dd{margin:0; color:var(--muted)}
+.decision dd strong{color:var(--text-strong)}
+
+.kv{display:grid; grid-template-columns:auto 1fr; gap:5px 16px; font-size:14px; margin:14px 0}
+.kv dt{font-family:var(--mono); font-size:12.5px; color:var(--accent); white-space:nowrap}
+.kv dd{margin:0; color:var(--muted)}
+
+footer.page{border-top:1px solid var(--border-soft); padding-top:22px; color:var(--faint); font-size:13px}
+footer.page a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside class="sidebar">
+  <div class="brand"><div class="mark">DAC</div><b>DAC</b></div>
+  <p class="brand-sub">Architecture</p>
+
+  <nav id="toc">
+    <div class="nav-group">Structure</div>
+    <ul>
+      <li><a href="#shape">Shape of the system</a></li>
+      <li><a href="#packages">Package map</a></li>
+      <li><a href="#files">The two project files</a></li>
+      <li><a href="#identity">Identity and version rules</a></li>
+    </ul>
+    <div class="nav-group">Execution</div>
+    <ul>
+      <li><a href="#resolve">The resolve ladder</a></li>
+      <li><a href="#transport">The HTTP client</a></li>
+      <li><a href="#credentials">Credential helpers</a></li>
+      <li><a href="#policy">URL policy &amp; rewrite</a></li>
+    </ul>
+    <div class="nav-group">Storage</div>
+    <ul>
+      <li><a href="#cache">The object cache</a></li>
+      <li><a href="#bundles">Cache bundles</a></li>
+    </ul>
+    <div class="nav-group">Contracts</div>
+    <ul>
+      <li><a href="#errors">Errors and output</a></li>
+      <li><a href="#concurrency">Concurrency model</a></li>
+      <li><a href="#decisions">Decision log</a></li>
+      <li><a href="#constraints">Constraints</a></li>
+    </ul>
+  </nav>
+
+  <div class="side-foot">
+    <a class="sidelink" href="dac-guide.html">
+      <div>Guide &amp; playbooks<span>Features, use cases, pipelines</span></div>
+    </a>
+    <button class="theme" id="themeBtn" type="button">Theme: auto</button>
+  </div>
+</aside>
+
+<main>
+
+<div class="hero">
+  <h1>Architecture</h1>
+  <p class="lede">
+    How DAC is put together, and why each part is shaped the way it is: the ports-and-adapters split,
+    the resolve ladder, the credential helper protocol, the tamper-evident object cache, and the
+    decisions those follow from.
+  </p>
+  <div class="chips">
+    <span class="chip on">application v6.0.0</span>
+    <span class="chip">schema 2</span>
+    <span class="chip">output 3</span>
+    <span class="chip">bundle 2</span>
+    <span class="chip">sidecar 1</span>
+  </div>
+</div>
+
+<section id="shape">
+  <p class="h2-kicker">Structure</p>
+  <h2>Shape of the system</h2>
+  <p>
+    DAC is ports and adapters with the ports in the middle. <code>internal/application</code> holds every
+    command and defines the three interfaces it needs — an object store, a fetcher, and a progress
+    reporter. It imports none of their implementations. <code>internal/cache</code> and
+    <code>internal/httpclient</code> import <em class="term">it</em>, and <code>internal/cli</code> is the only place
+    that knows how to build one from the other.
+  </p>
+
+  <div class="layers">
+    <div class="layer">
+      <span class="lname">entry</span>
+      <div class="pills"><span class="pill k">cmd/dac</span><span class="pill k">internal/cli</span></div>
+      <p class="lnote">Flag definitions, argument parsing, service construction, human summary strings, exit status. It owns every default and every environment variable, so nothing below it reads the environment.</p>
+    </div>
+    <p class="down">▼</p>
+    <div class="layer">
+      <span class="lname">core — defines the ports</span>
+      <div class="pills"><span class="pill k">internal/application</span><span class="pill d">Service</span><span class="pill d">ObjectStore</span><span class="pill d">Fetcher</span><span class="pill d">Reporter</span></div>
+      <p class="lnote">Every command lives here as a method on one <code>Service</code>: <code>Add</code>, <code>Pull</code>, <code>Verify</code>, <code>Path</code>, <code>Remove</code>, <code>Init</code>, <code>Info</code>, <code>Export</code>, <code>Import</code>, <code>CacheGC</code>, <code>VerifyCache</code>. Nothing here knows what HTTP is.</p>
+    </div>
+    <p class="down">▼</p>
+    <div class="layer">
+      <span class="lname">adapters — implement the ports</span>
+      <div class="pills"><span class="pill k">internal/cache</span><span class="pill k">internal/httpclient</span><span class="pill k">internal/progress</span><span class="pill">internal/project</span></div>
+      <p class="lnote">A filesystem object store, an HTTP fetcher, an <code>mpb</code>-backed reporter, and the reader/writer for the two project files.</p>
+    </div>
+    <p class="down">▼</p>
+    <div class="layer">
+      <span class="lname">primitives — no knowledge of each other's callers</span>
+      <div class="pills">
+        <span class="pill">coord</span><span class="pill">digest</span><span class="pill">urlpolicy</span>
+        <span class="pill">rewrite</span><span class="pill">credential</span><span class="pill">proclock</span>
+        <span class="pill">jsonfile</span><span class="pill">fault</span><span class="pill">output</span><span class="pill">bytesize</span>
+      </div>
+      <p class="lnote">Small, individually testable, and deliberately placed <em>below</em> the layer that would otherwise own them — <code>urlpolicy</code> sits under both the manifest and the HTTP client because both apply it.</p>
+    </div>
+  </div>
+
+  <h3>Why the dependency points this way</h3>
+  <p>
+    The interfaces are narrow enough to fake, which is what makes the command tests real tests rather
+    than integration tests with a web server in them. <code>ObjectStore</code> is eight methods,
+    <code>Fetcher</code> is one, and <code>Reporter</code> is five.
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">internal/application/service.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">// Fetcher is the remote source boundary used by the service.
+type Fetcher interface {
+	Fetch(ctx context.Context, request FetchRequest) (*FetchResponse, error)
+}
+
+// FetchResponse contains the response fields used by DAC.
+type FetchResponse struct {
+	NotModified bool
+	ETag        string
+	Length      int64
+	Body        io.ReadCloser
+}</code></pre></div>
+
+  <p>
+    The one place the direction is subtle is error detail. A transport failure knows the URL and the HTTP
+    status; the layer that reports it should not have to know which transport produced them. So
+    <code>application</code> declares the interface and <code>httpclient</code> satisfies it:
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">internal/application/errors.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">// RequestDetail is implemented by a transport error that can name the request
+// it failed.
+type RequestDetail interface {
+	RequestURL() string
+	// StatusCode reports the HTTP status, or zero when the request never
+	// received a response at all.
+	StatusCode() int
+}</code></pre></div>
+
+  <p>
+    <code>httpclient</code> asserts the relationship at compile time with
+    <code>var _ application.RequestDetail = (*RequestError)(nil)</code>, and the JSON error envelope gets
+    <code>details.url</code> and <code>details.status</code> as data without <code>application</code> importing anything.
+  </p>
+</section>
+
+<section id="packages">
+  <p class="h2-kicker">Structure</p>
+  <h2>Package map</h2>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Package</th><th>Owns</th><th>Notable decision</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">cli</td><td>Command tree (urfave/cli v3), flags, environment sources, human summaries, exit status.</td><td>The only package that reads the environment or the terminal.</td></tr>
+      <tr><td class="mono">application</td><td>All command logic, the port interfaces, result types, version rules.</td><td>Never imports an adapter; never formats a human sentence.</td></tr>
+      <tr><td class="mono">project</td><td><code>dac.json</code> and <code>dac-lock.json</code>: read, normalize, validate, write, compare.</td><td>The lock invariant lives in <code>Validate</code>, so no in-memory <code>Lock</code> can hold a version collision.</td></tr>
+      <tr><td class="mono">cache</td><td>The content-addressed store, sidecars, GC, verification.</td><td>Must not be copied — it memoizes what this process has hashed.</td></tr>
+      <tr><td class="mono">httpclient</td><td>Requests, redirects, retries, stall detection.</td><td>Wraps errors only at the boundary, so retry logic still matches the transport's own error.</td></tr>
+      <tr><td class="mono">credential</td><td>Running credential helpers and collecting their headers.</td><td>Helper output never reaches a log or an error message.</td></tr>
+      <tr><td class="mono">rewrite</td><td>URL rewriting and host allow/block policy.</td><td>Applies exactly one rewrite, and never rewrites a redirect target.</td></tr>
+      <tr><td class="mono">urlpolicy</td><td>Which URLs DAC will request at all.</td><td>Sits below both the manifest and the client because both apply it.</td></tr>
+      <tr><td class="mono">coord</td><td>The <code>&lt;namespace&gt;/&lt;name&gt;@&lt;version&gt;</code> type, parsing, ordering, grouping.</td><td>Implements <code>encoding.TextMarshaler</code>, so validation happens at the JSON boundary.</td></tr>
+      <tr><td class="mono">digest</td><td>SHA-256 canonical and SRI forms.</td><td>Accepts <code>sha256-&lt;base64&gt;</code>, stores and compares only <code>sha256:&lt;hex&gt;</code>.</td></tr>
+      <tr><td class="mono">proclock</td><td><code>flock</code>-based inter-process locking.</td><td><code>//go:build unix</code> — a Windows build fails here, not deep in the cache.</td></tr>
+      <tr><td class="mono">jsonfile</td><td>Strict reads and atomic writes.</td><td>Rejects unknown fields, duplicate keys, and trailing values.</td></tr>
+      <tr><td class="mono">fault</td><td>Stable error codes with structured details.</td><td>A code is a branch target; the cause carries the specifics.</td></tr>
+      <tr><td class="mono">output</td><td>The versioned result envelope, human and JSON.</td><td>One document per command in JSON mode.</td></tr>
+      <tr><td class="mono">progress</td><td>Concurrent transfer bars, or plain lines off a terminal.</td><td>Progress is a port, so tests get a silent reporter for free.</td></tr>
+      <tr><td class="mono">bytesize</td><td>Parsing and formatting <code>2GiB</code>-style sizes.</td><td>—</td></tr>
+      <tr><td class="mono">projecttest</td><td>Shared test fixtures for project files.</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="files">
+  <p class="h2-kicker">Structure</p>
+  <h2>The two project files</h2>
+
+  <h3>The coordinate is the key</h3>
+  <p>
+    Both files key their assets by <code>&lt;namespace&gt;/&lt;name&gt;@&lt;version&gt;</code>. Schema version 2 has no
+    <code>version</code> field inside an entry: it would be a second place to say what the key already says, and
+    the place the two could disagree. There is no migration path from version 1 — a version 1 file is
+    rejected with a message naming the shape the new one takes.
+  </p>
+  <p>
+    <code>coord.Coordinate</code> implements <code>MarshalText</code> and <code>UnmarshalText</code>, which puts
+    validation exactly at the JSON boundary. Every manifest and lock key is parsed on read, so an invalid
+    coordinate fails at the read that found it rather than at whichever command first tried to use it. And
+    <code>MarshalText</code> validates <em>before</em> writing, because a <code>Coordinate</code> built in memory rather
+    than parsed could otherwise put a key into a file that DAC would refuse to read back — and a file DAC
+    cannot read is a worse failure than a write that refused.
+  </p>
+
+  <h4>Character rules, and what each one prevents</h4>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Part</th><th>Alphabet</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">namespace</td><td>lowercase letters, digits, <code>. _ -</code></td><td>A label this project chooses. Lowercase because two spellings of one asset would be two assets, and a case difference is the spelling mistake nobody sees.</td></tr>
+      <tr><td class="mono">name</td><td>lowercase letters, digits, <code>. _ -</code></td><td>Same.</td></tr>
+      <tr><td class="mono">version</td><td>letters (either case), digits, <code>. _ - +</code></td><td>Copied verbatim from whatever the publisher calls a release, so it keeps uppercase and the plus sign build metadata uses.</td></tr>
+      <tr><td colspan="3">Every part starts and ends alphanumeric and is at most 64 characters. That rules out the leading dash that reads as a flag wherever a coordinate is a command argument, the trailing dot that reads as a typo, and <code>.</code> and <code>..</code> outright — and it keeps a value that is simultaneously a map key, a progress-bar label, and an argv element from being unbounded.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout">
+    <span class="label">Ordering is deliberately meaningless</span>
+    <p>
+      <code>coord.Compare</code> orders by namespace, then name, then version — all three lexicographically,
+      <em>including</em> the version. DAC has no idea whether <code>10</code> follows <code>9</code> or whether either is
+      a number. The comparison exists only so that output and file writes are deterministic, and it is
+      documented as something a caller must not read meaning into.
+    </p>
+  </div>
+
+  <h3>Reading: strict, and strict early</h3>
+  <p><code>jsonfile.ReadStrict</code> makes three passes' worth of guarantees before a value is returned:</p>
+  <ul>
+    <li>A token walk rejects <strong>duplicate object keys</strong>, which <code>encoding/json</code> would otherwise silently resolve last-wins.</li>
+    <li><code>DisallowUnknownFields</code> rejects anything the schema does not name, so a typo is a failure rather than a silently ignored setting.</li>
+    <li>A second decode must return <code>io.EOF</code>, rejecting a file with more than one JSON value in it.</li>
+  </ul>
+  <p>
+    Then <code>Manifest.Normalize</code> rewrites every <code>integrity</code> value into the canonical
+    <code>sha256:&lt;hex&gt;</code> form. This must happen <em>before</em> the manifest digest is calculated, or the
+    same manifest written two ways would produce two different <code>manifestDigest</code> values and every lock
+    file would look stale to somebody.
+  </p>
+
+  <h3>Writing: atomic, paired, and quiet</h3>
+  <p>
+    <code>jsonfile.WriteAtomic</code> writes through a temporary file in the destination directory — chmod,
+    write, <code>Sync</code>, close, rename. The temporary prefix <code>.dac-</code> is exported so that anything
+    sweeping a directory DAC writes into can recognize the files an interrupted write left behind; cache
+    collection uses exactly that.
+  </p>
+  <p>
+    <code>project.WritePair</code> writes the manifest, then the lock, and <strong>restores the manifest</strong> —
+    to its previous bytes, or by removing it if it did not exist — when the lock write fails. Two files that
+    disagree is the state every command downstream has to defend against, so the write path refuses to
+    create it.
+  </p>
+  <p>
+    <code>writeLock</code> compares the encoded bytes against the file on disk and skips a write that would
+    change nothing. Rewriting identical bytes would move the file's modification time for nothing, which
+    anything watching the project directory would read as a change.
+  </p>
+
+  <h3>Agreement</h3>
+  <p>
+    <code>project.CheckLock</code> compares the manifest digest, the asset count, and each entry.
+    <code>project.Agrees</code> is the per-asset half of the same question, exported because a command deciding
+    which assets it must resolve and a command checking the whole project have to reach the same answer —
+    two answers would mean a lock that one command rewrites and another rejects.
+  </p>
+<div class="codeblock"><div class="codebar"><span class="name">internal/project/project.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">func disagreement(asset Asset, locked LockAsset, exists bool) string {
+	switch {
+	case !exists:
+		return "is not locked"
+	case locked.URL != asset.URL:
+		return "does not match"
+	case asset.Integrity != "" &amp;&amp; locked.Digest != asset.Integrity:
+		return "does not match its integrity"
+	}
+	return ""
+}</code></pre></div>
+  <p>The version is not compared, because it cannot differ: both entries are found by the same coordinate, and the coordinate carries it.</p>
+</section>
+
+<section id="identity">
+  <p class="h2-kicker">Structure</p>
+  <h2>Identity and version rules</h2>
+  <p>
+    Three checks enforce that a version means one thing. They live in three different places, and where
+    each one lives <em>is</em> the design.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Check</th><th>Lives in</th><th>Runs</th><th>Catches</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="mono">CheckVersions</td>
+        <td><code>project.Lock.Validate</code></td>
+        <td>On every lock read and every lock construction</td>
+        <td>Two versions of one asset naming the same digest. Because it is an invariant of the type, no <code>Lock</code> value anywhere in the program can hold a collision, so no command has to decide what to do about one.</td>
+      </tr>
+      <tr>
+        <td class="mono">checkRebind</td>
+        <td><code>application/identity.go</code></td>
+        <td>Per asset, in <code>reconcile</code>, when the lock already binds that coordinate</td>
+        <td>A locked coordinate resolving to different bytes — an origin that replaced them, or a manifest edited to point that version elsewhere.</td>
+      </tr>
+      <tr>
+        <td class="mono">checkRetired</td>
+        <td><code>application/identity.go</code></td>
+        <td>Over the finished asset set, against the <em>previous</em> lock</td>
+        <td>A new version resolving to bytes a version this project just removed already had. The lock alone cannot see it: editing a version in place takes the old coordinate out of the manifest, so the two never appear together.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Both set-level checks run after every resolution has finished rather than per asset, because both
+    compare one asset against another and neither can be decided while the other resolutions are still in
+    flight.
+  </p>
+
+  <h3>Where the wording lives</h3>
+  <p>
+    The <em>rule</em> is in <code>project</code>; the <em>instruction</em> is in <code>application</code>.
+    <code>collisionFault</code> translates <code>project.VersionCollisionError</code> into a fault whose message tells
+    an operator what to do, so a lock file with a collision reports "one of these is a label for bytes that
+    already had a version" rather than "the lock file is invalid".
+  </p>
+
+  <h3>The one command that suspends a rule</h3>
+  <p>
+    <code>dac verify --refresh</code> resolves with <code>AllowRebind</code> set. Leaving the rebind check on would
+    make a refresh fail with <code>version_rebind</code> at the first drifted asset — a second name for the answer
+    this command exists to report, delivered before it could finish collecting it. Verify gathers every
+    drifted asset and reports them together as <code>lock_drift</code>, and writes nothing: a scheduled job that
+    rewrote the lock to match what it found would destroy the evidence on its way to reporting success.
+  </p>
+
+  <h3>The case DAC declines to refuse</h3>
+  <p>
+    Two versions of one asset served from one URL is not an error. Only one set of bytes is at a URL, so a
+    cold cache can restore only one of them — but the project that pins both and keeps them cached has made
+    a choice DAC has no business overriding. <code>add</code> reports it as <code>sharedSources</code> and continues.
+  </p>
+</section>
+
+<section id="resolve">
+  <p class="h2-kicker">Execution</p>
+  <h2>The resolve ladder</h2>
+  <p>
+    There is no <code>dac lock</code> command. Resolving an asset stores its bytes in the cache, so the command
+    that resolved everything and the command that installed everything were the same command under two
+    names. What remains is one operation — <code>reconcile</code> — and one per-asset routine, <code>resolve</code>.
+  </p>
+
+  <h3><code>reconcile</code>: bring the lock into agreement with the manifest</h3>
+  <p>
+    For each coordinate, in parallel: if this is not a refresh and the lock entry still describes the
+    manifest asset, carry it through untouched at status <code>locked</code> — <strong>no request at all</strong>.
+    That is the property that makes <code>pull</code> usable in a deployment job, and it only survives if assets
+    already locked cost nothing to confirm. Otherwise, call <code>resolve</code>.
+  </p>
+  <p>
+    One detail hides there: an asset the manifest pins carries no ETag, so a lock entry that kept one from
+    before the manifest pinned it has it cleared on the way through. The ETag was inert — nothing would ever
+    send it — but leaving it would have the lock file contradict what the manifest says about the asset.
+  </p>
+
+  <h3><code>resolve</code>: the ladder for one asset</h3>
+  <ol class="ladder">
+    <li>
+      <h4>Pinned, not refreshing, and the cache holds that digest</h4>
+      <p>A publisher digest already settles which bytes are correct, so the answer is on disk. This never
+      confirms the URL still serves those bytes — which is exactly what <code>--refresh-lock</code> trades away.
+      A corrupt object here does not stop the ladder: resolve falls through to the origin and installs good
+      bytes over the bad ones.</p>
+      <span class="out">status: cached</span>
+    </li>
+    <li>
+      <h4>Otherwise, decide whether to send a conditional request</h4>
+      <p>An ETag hint is replayed as <code>If-None-Match</code> only when the asset is <em>unpinned</em>, the old
+      lock entry still matches the manifest, and its object is actually usable. Refresh does not suppress
+      the hint: an origin that answers <code>304</code> has confirmed the asset just as well as one that sends
+      the bytes again, and for a large asset that is the difference between a check that runs on a schedule
+      and one nobody runs at all.</p>
+    </li>
+    <li>
+      <h4>The origin answers 304</h4>
+      <p>The previous lock entry is kept as-is, with a freshly returned ETag recorded if the server sent one.</p>
+      <span class="out">status: not_modified</span>
+    </li>
+    <li>
+      <h4>The origin sends bytes</h4>
+      <p>The body is streamed through the progress reporter into <code>Store.Put</code>, with the publisher
+      digest as the expected digest when there is one and <code>--max-size</code> as the bound when there is not.
+      The object is hashed on the way to disk; nothing is installed until every byte has been checked.</p>
+      <span class="out">status: resolved</span>
+    </li>
+  </ol>
+
+  <h3><code>pull</code>: install what the lock already names</h3>
+  <p>
+    Pull knows the digest and the size before it starts, which lets it take a different, tighter path.
+  </p>
+  <ol class="ladder">
+    <li>
+      <h4>Build the asset view</h4>
+      <p>One cache lookup answers both "can this command use the object" and "should it say why not", so a
+      warm hit costs one lookup rather than one to decide and another to report.</p>
+      <span class="out">status: cached</span>
+    </li>
+    <li>
+      <h4>Take the digest lock, then re-check</h4>
+      <p>Waiting for the lock takes time during which another process may have installed the object.
+      Checking again under the lock is what makes two concurrent pulls of the same asset cost one download.</p>
+    </li>
+    <li>
+      <h4>Try the distribution directory</h4>
+      <p>With <code>--distdir</code>, a file named by the locked digest's hexadecimal value is installed straight
+      from disk. That name is the only one a consumer can actually check — DAC used to accept the final URL
+      element, which was a guess and so could not report a mismatch correctly.</p>
+      <span class="out">status: distdir</span>
+    </li>
+    <li>
+      <h4>Refuse, if offline</h4>
+      <p>A missing object is <code>offline_cache_miss</code>. A <em>corrupt</em> object offline gets its own error,
+      because that is a different problem: there is damage to report and no way to repair it here.</p>
+    </li>
+    <li>
+      <h4>Fetch, with a size pre-check</h4>
+      <p>A known <code>Content-Length</code> that disagrees with the lock fails as
+      <code>content_size_mismatch</code> before the transfer starts. Otherwise the body streams into
+      <code>Store.Put</code> with the exact digest <em>and</em> size required.</p>
+      <span class="out">status: downloaded — or repaired, if the object it replaced was corrupt</span>
+    </li>
+  </ol>
+
+  <div class="callout">
+    <span class="label">Status vocabulary</span>
+    <p>
+      <code>locked</code> (the lock already described it) · <code>resolved</code> (reached the origin and stored
+      bytes) · <code>not_modified</code> (the origin answered 304) · <code>cached</code> (answered from the cache)
+      · <code>downloaded</code> · <code>distdir</code> · <code>repaired</code>. A pull that reconciled an asset in the
+      same run reports <code>resolved</code> as <code>downloaded</code>, because this pull did transfer those bytes —
+      but keeps <code>not_modified</code> distinct from <code>cached</code>, because only the first proves the origin
+      was asked.
+    </p>
+  </div>
+</section>
+
+<section id="transport">
+  <p class="h2-kicker">Execution</p>
+  <h2>The HTTP client</h2>
+
+  <h3>Transport</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Value</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">DisableCompression</td><td class="mono">true</td><td>DAC asks for <code>Accept-Encoding: identity</code> and rejects any response whose <code>Content-Encoding</code> is not identity. A digest is a claim about a specific stream of bytes; transfer coding must not be in the way of checking it.</td></tr>
+      <tr><td class="mono">ForceAttemptHTTP2</td><td class="mono">true</td><td>Large parallel transfers from one host.</td></tr>
+      <tr><td class="mono">MaxIdleConnsPerHost</td><td class="mono">8</td><td>Matches the concurrency a project realistically uses against one origin.</td></tr>
+      <tr><td class="mono">TLSHandshakeTimeout<br>ResponseHeaderTimeout<br>Dial timeout</td><td class="mono">--timeout</td><td>One knob for "the server is not answering", separate from the body-inactivity guard below.</td></tr>
+      <tr><td class="mono">Proxy</td><td class="mono">from environment</td><td>Standard <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>/<code>NO_PROXY</code> behaviour.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Request order</h3>
+  <p>Every fetch goes through the same five gates, in this order:</p>
+  <ol>
+    <li><strong>Rewrite.</strong> The canonical URL becomes the request URL. The lock file never sees this.</li>
+    <li><strong>URL policy</strong> on the <em>rewritten</em> target — HTTPS, or HTTP to loopback, or an explicit opt-in. A rewritten target is checked on its own terms rather than on the canonical URL's.</li>
+    <li><strong>Headers.</strong> <code>Accept-Encoding: identity</code>, and <code>If-None-Match</code> when a hint was supplied.</li>
+    <li><strong>Credentials</strong> for the request host, from a helper if one covers it.</li>
+    <li><strong>Redirects</strong> — at most 10, each one re-checked against URL policy and host policy, and re-authorized from scratch.</li>
+  </ol>
+
+  <h3>The stall guard</h3>
+  <p>
+    <code>--timeout</code> is an <em>inactivity</em> timeout, not a deadline. The response body is wrapped in a
+    guard holding a <code>time.AfterFunc</code> timer: every read that returns bytes resets it, and the timer
+    firing cancels the request context. A multi-hour transfer that keeps moving is fine; one that goes quiet
+    for the timeout fails with <code>ErrStalled</code>, which the error layer maps to the code
+    <code>timeout</code>.
+  </p>
+  <p>
+    The guard also owns the request's <code>cancel</code> function, so closing the body always releases the
+    context — there is no path where a caller closing the response leaks a live request.
+  </p>
+
+  <h3>Retries</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Condition</th><th>Retried</th></tr></thead>
+    <tbody>
+      <tr><td>HTTP 429, 408, or any 5xx</td><td>Yes</td></tr>
+      <tr><td>Transport errors (refused connection, reset, DNS failure)</td><td>Yes</td></tr>
+      <tr><td>Context cancelled or deadline exceeded</td><td>No — the caller is already going away</td></tr>
+      <tr><td><code>urlpolicy.ErrNotPermitted</code>, including a blocked host</td><td>No — a policy refusal will refuse identically next time</td></tr>
+      <tr><td>Any other 4xx</td><td>No</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    Backoff honours <code>Retry-After</code> (seconds or HTTP date) capped at 30 seconds; otherwise it is
+    <code>min(2^attempt × 250ms, 8s)</code> plus up to half that again as jitter. The retry loop matches on the
+    transport's own error type, which is why <code>RequestError</code> wraps only at the boundary — wrapping
+    earlier would have every attempt look like a new kind of failure.
+  </p>
+</section>
+
+<section id="credentials">
+  <p class="h2-kicker">Execution</p>
+  <h2>Credential helpers</h2>
+
+  <p>
+    DAC gets request credentials <strong>only</strong> from a credential helper. There is no token field in the
+    manifest, no <code>.netrc</code> support, no <code>DAC_TOKEN</code>, and no credential file format. A helper is
+    an executable that DAC runs, hands one request URL, and reads headers back from.
+  </p>
+
+  <div class="callout">
+    <span class="label">Why a helper and not a config field</span>
+    <p>
+      A credential's lifetime and refresh policy belong to whatever issues it — a cloud metadata service, a
+      secret manager, an SSO agent — and none of those fit in a committed file. Delegating means DAC stores
+      no secret, transmits no secret between components, and needs no code for expiry, rotation, or
+      revocation. It also means the project files stay safe to commit and to share, which is the property the
+      whole tool is built around.
+    </p>
+  </div>
+
+  <h3>The protocol</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Element</th><th>Contract</th></tr></thead>
+    <tbody>
+      <tr><td>Invocation</td><td class="mono">&lt;command&gt; get</td></tr>
+      <tr><td>Standard input</td><td>One JSON object: <code>{"uri":"https://files.example.com/geo/database.bin"}</code></td></tr>
+      <tr><td>Standard output</td><td>One JSON object: <code>{"headers":{"Authorization":["Bearer ..."]}}</code></td></tr>
+      <tr><td>Exit status</td><td>Zero. Anything else fails the DAC command.</td></tr>
+      <tr><td>Time limit</td><td>30 seconds, per invocation.</td></tr>
+      <tr><td>Output limit</td><td>1 MiB of stdout, 4 KiB of stderr. Beyond that, writes are accepted and discarded, so the helper never sees a broken pipe.</td></tr>
+      <tr><td>No helper matches</td><td>No headers. The request goes out unauthenticated rather than failing.</td></tr>
+      <tr><td>Empty <code>headers</code></td><td>Treated as no headers at all.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The header map is <code>map[string][]string</code>, so a helper can return several headers and several
+    values for one header. DAC deletes each named header before adding the helper's values, so a helper's
+    answer replaces rather than appends to anything already on the request.
+  </p>
+
+  <h3>Selection</h3>
+  <p>A specification is either a bare command or <code>&lt;host&gt;=&lt;command&gt;</code>:</p>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># Every host.
+dac pull --credential-helper /usr/local/bin/dac-cred
+
+# One host. A host-specific helper wins over a general one.
+dac pull --credential-helper files.internal=/usr/local/bin/dac-cred-internal
+
+# Both: files.internal uses its own helper, everything else uses the general one.
+dac pull \
+  --credential-helper /usr/local/bin/dac-cred \
+  --credential-helper files.internal=/usr/local/bin/dac-cred-internal</code></pre></div>
+  <p>
+    Host matching is exact and case-insensitive — no subdomain matching, no wildcards. A helper bound to a
+    host always beats a general helper, whatever order they were given in, so a project can point one
+    registry at a dedicated helper without giving that helper every other request. Among several general
+    helpers, the first wins.
+  </p>
+
+  <h3>Redirects: the part that matters</h3>
+  <p>
+    Credential leakage across a redirect is the classic failure of every tool that ever sent an
+    <code>Authorization</code> header. DAC's redirect handler does three things in order, on <em>every</em> hop:
+  </p>
+  <ol>
+    <li>Applies URL policy to the new target.</li>
+    <li>Applies the rewrite config's <em>host policy</em> — but does not rewrite, because a redirect must not start a rewrite chain.</li>
+    <li>Calls <code>authorize</code>, which <strong>deletes <code>Authorization</code> first</strong> and then asks the helper again for the new URL.</li>
+  </ol>
+  <p>
+    So a redirect from a private artifact host to a signed CDN URL arrives at the CDN with no credentials,
+    because no helper covers that host — which is the correct outcome and also the one that is easy to get
+    wrong by doing nothing.
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">internal/httpclient/httpclient.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">// authorize sets the credentials for one request host. It clears any header
+// carried over from a previous hop first, so a redirect never forwards one
+// host's credentials to another.
+func (client *Client) authorize(ctx context.Context, request *http.Request) error {
+	request.Header.Del("Authorization")
+	header, err := client.options.Credentials.Headers(ctx, request.URL.String())
+	if err != nil {
+		return err
+	}
+	if len(header) &gt; 0 {
+		for name, values := range header {
+			request.Header.Del(name)
+			for _, value := range values {
+				request.Header.Add(name, value)
+			}
+		}
+	}
+	return nil
+}</code></pre></div>
+
+  <h3>Secrecy discipline</h3>
+  <ul>
+    <li>Helper <strong>stdout is never</strong> written to a log, an error message, or a JSON <code>cause</code>. A response that fails to parse reports only <code>credential helper "..." returned invalid JSON</code> — the malformed text, which may well contain the token, is dropped.</li>
+    <li>Helper <strong>stderr <em>is</em></strong> included in the failure message when the helper exits non-zero, because that is where a helper explains itself. A helper must therefore never print a secret to stderr.</li>
+    <li>Output is size-bounded before it is buffered, so a runaway helper cannot exhaust memory while DAC waits for it.</li>
+    <li>The 30-second limit is a constant, deliberately not tied to <code>--timeout</code>: that limit covers a multi-gigabyte transfer, and a helper that has not answered in half a minute is stuck.</li>
+    <li>A timeout is distinguished from a cancellation — if the parent context is still live, the error says the helper timed out, naming the command and the limit.</li>
+  </ul>
+
+  <h3>Where helpers apply</h3>
+  <p>
+    <code>add</code>, <code>pull</code>, and <code>verify --refresh</code> — every command that makes a request.
+    <code>--credential-helper</code> is repeatable, and <code>DAC_CREDENTIAL_HELPER</code> sets the same option for a
+    whole job. When no helper is configured at all, the resolver is <code>nil</code> and the header lookup returns
+    immediately, so the unauthenticated path costs nothing.
+  </p>
+
+  <h3>A minimal helper, end to end</h3>
+<div class="codeblock"><div class="codebar"><span class="name">dac-cred-static — a token from a file</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  get) ;;
+  *) echo "unsupported operation: ${1:-none}" &gt;&amp;2; exit 2 ;;
+esac
+
+# Read the request. Ignoring it is fine for a single-host helper, but a helper
+# bound to several hosts should branch on the URI.
+uri=$(jq -r '.uri')
+
+case "$uri" in
+  https://files.internal/*)
+    token=$(cat /run/secrets/artifacts-token) ;;
+  *)
+    # No credentials for this host: answer with no headers, not an error.
+    echo '{"headers":{}}'; exit 0 ;;
+esac
+
+jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pre></div>
+
+  <div class="callout warn">
+    <span class="label">Helper authoring checklist</span>
+    <p>
+      Answer within 30 seconds · exit 0 on success · write only JSON to stdout · never write a secret to
+      stderr · return an empty <code>headers</code> object rather than failing for a host you do not handle ·
+      expect to be called once per request <em>and once per redirect hop</em>, so cache tokens in the helper
+      if minting one is expensive.
+    </p>
+  </div>
+</section>
+
+<section id="policy">
+  <p class="h2-kicker">Execution</p>
+  <h2>URL policy and the rewrite config</h2>
+
+  <h3>URL policy</h3>
+  <p>
+    <code>urlpolicy</code> is four rules and no configuration:
+  </p>
+  <ul>
+    <li>A URL carrying userinfo (<code>https://user:pass@host/</code>) is refused outright — credentials come from helpers, and a URL that carries one would end up in a committed file.</li>
+    <li>HTTPS is always permitted.</li>
+    <li>A non-HTTP(S) scheme is refused.</li>
+    <li>HTTP is permitted for <code>localhost</code> and loopback addresses, or when the caller opted in.</li>
+  </ul>
+  <p>
+    It belongs to neither the project file nor the HTTP client: the manifest applies it when it validates an
+    asset, and the client applies it again to every request and every redirect target. So it sits below both.
+    Its <code>ErrNotPermitted</code> sentinel is what lets the retry logic tell a permanent rejection from a
+    transient network failure.
+  </p>
+
+  <h3>Rewrite evaluation</h3>
+  <p>
+    A rewrite pattern is a Go regular expression matched against <code>host + path</code> with any query string
+    appended — the same subject Bazel's downloader config uses, so a pattern can key on the host without
+    having to allow for the scheme.
+  </p>
+  <ol>
+    <li><strong>Exactly one rewrite rule may match.</strong> Two matches is <code>ErrAmbiguousRewrite</code>, not a silent first-wins. A configuration whose behaviour depends on rule order is a configuration nobody can reason about.</li>
+    <li><strong>The replacement may omit the scheme</strong>, in which case the original URL's scheme is kept.</li>
+    <li><strong>Host policy is applied to the result</strong>, not the original. Allow the host you rewrote <em>to</em>.</li>
+    <li><strong>Allow beats block, always.</strong> The allow list and the block list are scanned separately, so directive order cannot change the decision. A host with no match is allowed. <code>*</code> matches everything; any other pattern matches a host and its subdomains.</li>
+  </ol>
+  <p>
+    <code>Apply</code> returns an error for a blocked host; <code>Evaluate</code> returns the same decision as data,
+    which is what lets <code>dac info</code> print the request URL and the policy result for a host it would
+    refuse to fetch from. <code>Check</code> is the redirect path: host policy only, no rewriting.
+  </p>
+
+  <div class="callout rulebox">
+    <span class="label">Trust model</span>
+    <p>
+      A rewrite cannot change what DAC <em>accepts</em>. <code>pull</code> still checks the locked digest, so a
+      mirror serving the wrong bytes fails exactly as a corrupted transfer does. The one case with no
+      expected digest is resolving an asset that carries no <code>integrity</code> value — there is nothing to
+      check against yet, so a rewrite config is trusted input in precisely the same way a manifest URL is.
+      Treat it as part of the project, not as a runtime setting.
+    </p>
+  </div>
+</section>
+
+<section id="cache">
+  <p class="h2-kicker">Storage</p>
+  <h2>The object cache</h2>
+
+  <p>
+    The cache is keyed by digest and nothing else. Several versions of an asset sit in it side by side with
+    no arrangement needed, two assets that resolved to the same bytes cost one object between them, and
+    there is no layout to migrate when the project schema changes.
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">layout</span><button type="button" class="copy">copy</button></div><pre><code class="lang-text">&lt;cache&gt;/blobs/sha256/&lt;hex&gt;         the object, mode 0444
+&lt;cache&gt;/blobs/sha256/&lt;hex&gt;.meta    the sidecar
+&lt;cache&gt;/locks/&lt;hex&gt;.lock           the per-digest process lock
+&lt;cache&gt;/tmp/download-*             in-flight downloads</code></pre></div>
+
+  <p>
+    The root resolves from <code>--cache-dir</code>, then <code>DAC_CACHE_DIR</code>, then
+    <code>XDG_CACHE_HOME/dac</code>, then <code>$HOME/.cache/dac</code> — and if none of those yields an absolute
+    path, the command fails saying so rather than guessing.
+  </p>
+
+  <h3>The problem the sidecar solves</h3>
+  <p>
+    A content-addressed name is a <em>claim</em> about content, not a fact. Checking the claim means hashing
+    the whole object — and an asset can be gigabytes while <code>dac path</code> runs in the middle of a build.
+    Hashing on every read is unaffordable; trusting the filename is exactly the guarantee DAC exists to make.
+  </p>
+  <p>
+    So each object carries a sidecar recording the size and modification time it had at install. A stat that
+    still matches means nothing has written to the object, and DAC uses it without reading it. Anything else
+    — an object edited in place, a truncated one, a restored backup, a cache written by an older DAC — costs
+    one hash, after which the object is either recorded as good or reported as corrupt.
+  </p>
+
+  <div class="callout rulebox">
+    <span class="label">The key consequence</span>
+    <p>
+      <strong>The object's own timestamp is the evidence, so DAC never touches it after install.</strong> The
+      liveness signal that garbage collection needs lives in the sidecar instead, and a cache hit refreshes
+      the <em>sidecar's</em> timestamp. That one split is why the cache can be both tamper-evident and
+      collectable without either mechanism destroying the other.
+    </p>
+  </div>
+
+  <h3>The trust ladder</h3>
+  <ol class="ladder">
+    <li>
+      <h4>This process already hashed these exact bytes</h4>
+      <p>A <code>sync.Map</code> on the store memoizes digest → file information. Without it a single command
+      would hash the same object several times: pull stats an object to decide whether it needs it, again
+      under the digest lock, and again to build its result. It also keeps a read-only cache — where no
+      sidecar can ever be written — down to one hash per object.</p>
+      <span class="out">cost: one map lookup</span>
+    </li>
+    <li>
+      <h4>The sidecar describes the object</h4>
+      <p>Sidecar version, size, and modification time in nanoseconds must all match. A sidecar from an
+      unsupported version describes nothing, which sends the object down the hashing path and rewrites the
+      sidecar in the current form — that is how a cache from an older DAC migrates.</p>
+      <span class="out">cost: one stat</span>
+    </li>
+    <li>
+      <h4>Hash the object</h4>
+      <p>On a match, write the sidecar and remember it. On a mismatch, raise <code>CorruptError</code> naming
+      the digest expected, the digest found, and the path.</p>
+      <span class="out">cost: one full read</span>
+    </li>
+  </ol>
+
+  <p>
+    <code>hashFile</code> takes its file information from the <em>open descriptor</em>, not from the path. An
+    install renames a new object over the old one, so a path stat taken after the hash could describe bytes
+    the function never read — and recording it would mark an unverified object as verified.
+  </p>
+  <p>
+    <code>Store.Verify</code>, which backs <code>dac cache verify</code>, deliberately ignores both the memo and
+    the sidecar. Those exist so ordinary commands can avoid reading an object they have reason to trust, and
+    an explicit check that trusted them would only ever confirm its own bookkeeping.
+  </p>
+
+  <h3>Installing an object</h3>
+  <ol>
+    <li>Create a temporary file under <code>&lt;cache&gt;/tmp/download-*</code>.</li>
+    <li>Wrap the reader in a limit — the expected size when known, otherwise <code>--max-size</code> — reading <strong>one extra byte</strong>, so an oversized response cannot look complete.</li>
+    <li>Copy through an <code>io.MultiWriter</code> into the file and a SHA-256 hasher at once.</li>
+    <li>Compare size and digest. An overrun of a <em>known</em> size is a content failure; an overrun of <code>--max-size</code> is a limit the operator chose, and gets a different error.</li>
+    <li><code>Sync</code>, <code>chmod 0444</code>, close.</li>
+    <li>Take the digest lock, unless the caller already holds it, and <code>rename</code> into place.</li>
+    <li>Write the sidecar and record the result.</li>
+  </ol>
+  <p>
+    The install is <strong>unconditional</strong> — it does not skip an object that already exists at the path.
+    These bytes have just been hashed, so they are known good, while an object already there is only known to
+    have the right <em>name</em>, which is exactly the claim this store no longer takes on trust. Renaming
+    over it repairs a corrupt object at no extra cost.
+  </p>
+  <p>
+    A failed sidecar write after a successful install <em>is</em> fatal. The alternative is a cache that
+    silently re-hashes a multi-gigabyte object on every read for the rest of its life, and a filesystem that
+    has just accepted the object but refuses a two-hundred-byte sidecar has a problem worth reporting. The
+    object survives the error, so the next command repairs it.
+  </p>
+
+  <h3>Locking</h3>
+  <p>
+    Each digest has a lock file taken with <code>flock(LOCK_EX)</code>, polled every 25 ms and abandoned on
+    context cancellation. Concurrent DAC processes therefore cannot install the same object at the same time,
+    which is what makes a shared cache on a build machine safe. <code>Release</code> always releases: closing
+    the file drops the lock even when the explicit unlock fails, so a returned error only ever describes a
+    file descriptor the caller has finished with, never a lock that is still held.
+  </p>
+
+  <h3>Collection</h3>
+  <p>
+    <code>dac cache gc</code> ages an object by its sidecar timestamp, which every cache hit refreshes. It
+    also removes temporary files abandoned by an interrupted download and sidecars whose object is gone —
+    collection removes an object and its sidecar together, so one that survives alone describes an object
+    something outside DAC deleted. Each removal happens under that object's digest lock, and the timestamp is
+    re-checked under the lock, because waiting for it takes time during which another process may have used
+    the object.
+  </p>
+  <div class="callout warn">
+    <span class="label">Lock files are never collected</span>
+    <p>
+      Unlinking a lock file that another process holds would let a later process take the same lock through a
+      new inode — two processes holding "the same" lock and neither of them wrong. Lock files are tiny and
+      bounded by the number of distinct digests the machine has ever seen, so they stay.
+    </p>
+  </div>
+
+  <h3>What each command does with a corrupt object</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Command</th><th>Behaviour</th><th>Reasoning</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">dac path</td><td>Refuses.</td><td>It cannot do anything about the damage, and handing back bytes that fail their own claim is worse than handing back nothing.</td></tr>
+      <tr><td class="mono">dac pull</td><td>Downloads again, installs over it, reports <code>repaired</code>.</td><td>The command that noticed the damage is also the one that can undo it.</td></tr>
+      <tr><td class="mono">dac pull --offline</td><td>Fails with <code>cache_object_corrupt</code>.</td><td>Damage to report, and no way to repair it here.</td></tr>
+      <tr><td class="mono">dac info</td><td>Prints <code>cache: corrupt</code>.</td><td>Reporting state is its whole job.</td></tr>
+      <tr><td class="mono">dac export</td><td>Refuses.</td><td>A bundle is the one artifact that would carry cache damage onto machines with no way to tell where it came from.</td></tr>
+      <tr><td class="mono">resolve (add / pull --update-lock)</td><td>Falls through to the origin.</td><td>It was about to fetch anyway; good bytes replace bad ones.</td></tr>
+      <tr><td class="mono">dac cache verify</td><td>Reports and exits 1; <code>--repair</code> removes.</td><td>Finding the damage is not the same as it not being there, so a scripted run gets a nonzero status.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    The split is one function pair: <code>cached</code> reports a corrupt object as an error, and
+    <code>usable</code> treats it as absent. Commands that can fetch the object again call <code>usable</code>;
+    commands with no such recourse call <code>cached</code> and report.
+  </p>
+</section>
+
+<section id="bundles">
+  <p class="h2-kicker">Storage</p>
+  <h2>Cache bundles</h2>
+
+  <p>
+    A bundle is a tar file borrowing two ideas from the OCI image layout: an <code>index.json</code> at the tar
+    root, and content-addressed blob paths. It does <em>not</em> borrow OCI's manifest indirection, because a
+    cache bundle has nothing to describe that a flat item list cannot.
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">index.json</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{
+  "schemaVersion": 2,
+  "items": [
+    {
+      "coordinate": "backend-app/geo-database@2026.08",
+      "sourceUrl": "https://example.com/geo/2026.08/database.bin",
+      "file": "blobs/sha256/9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820",
+      "digest": "sha256:9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820",
+      "size": 4194304
+    }
+  ]
+}</code></pre></div>
+
+  <p>
+    An item names the asset by its whole coordinate rather than by parts: the parts exist for a consumer
+    reading a command result, and an index DAC writes and reads back has no use for three fields that could
+    contradict each other.
+  </p>
+
+  <h4>Writing</h4>
+  <ul>
+    <li>The whole archive is written through a temporary file and one rename, like every other file DAC writes.</li>
+    <li>The index goes first, then each <em>unique</em> blob — two assets that resolved to one object share one blob, which is what makes a bundle for a project vendoring the same file under two namespaces no larger than one that does not.</li>
+    <li>Tar headers are fixed: USTAR format, mode <code>0444</code>, modification time at the Unix epoch. The same object set produces the same bytes.</li>
+    <li>Each blob is hashed <em>while</em> it is written and compared to the locked digest, so a corrupt object is caught during export rather than during import on a machine that cannot fix it.</li>
+    <li>A long copy checks the command context between blocks, so cancellation is prompt.</li>
+  </ul>
+
+  <h4>Reading</h4>
+  <p>
+    <code>import</code> validates the schema version, every coordinate, a non-empty source URL, a non-negative
+    size, and — critically — that each item's <code>file</code> equals the path <em>derived from its own
+    digest</em>. It rejects duplicate coordinates and inconsistent metadata for one file, and it caps the
+    index at 16 MiB. The whole index is validated before a single object is installed, and each object is
+    installed through the same <code>Put</code> path as a download, so it is hashed and checked on the way in.
+    <code>import</code> reads no project files, so one bundle can seed several checkouts.
+  </p>
+</section>
+
+<section id="errors">
+  <p class="h2-kicker">Contracts</p>
+  <h2>Errors and output</h2>
+
+  <h3>One error type</h3>
+<div class="codeblock"><div class="codebar"><span class="name">internal/fault/fault.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">// Error contains a stable code and a user message.
+type Error struct {
+	Code    string
+	Message string
+	Details map[string]any
+	Cause   error
+}</code></pre></div>
+
+  <p>
+    <code>Code</code> and <code>Message</code> are stable enough to branch on, which is exactly why neither says
+    anything specific about a failure: <em>"The asset request failed"</em> is equally true of a refused
+    connection, a 404, and an expired certificate. <code>Cause</code> carries the part an operator acts on, and
+    <code>Details</code> repeats the useful parts of it as data — <code>url</code> and <code>status</code> for a request
+    failure, expected and actual digests for a content failure, locked and resolved digests for a
+    <code>version_rebind</code>, the two versions and the shared object for a <code>version_collision</code>.
+  </p>
+  <p>
+    <code>Error()</code> trims the message's full stop before appending the cause, because messages are
+    sentences and causes are clauses, and joining them with the stop still in place reads as a typo.
+    <code>fault.As</code> maps any unrecognized error to <code>internal_error</code>, so every failure leaves the
+    program with a code.
+  </p>
+  <p>
+    At the parallel boundary, <code>withAsset</code> clones the details and adds the coordinate, so every
+    per-asset failure names its asset without each call site remembering to.
+  </p>
+
+  <h3>Stream discipline</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Content</th><th>Stream</th><th>In JSON mode</th></tr></thead>
+    <tbody>
+      <tr><td>Command result</td><td>stdout</td><td>One envelope, <code>ok: true</code></td></tr>
+      <tr><td>Command failure</td><td>stderr (human) / stdout (JSON)</td><td>One envelope, <code>ok: false</code></td></tr>
+      <tr><td>Progress bars and lines</td><td>stderr</td><td>Suppressed for <code>pull</code>, so exactly one document lands on stdout</td></tr>
+      <tr><td>Help and usage</td><td>stderr</td><td>Not written</td></tr>
+      <tr><td><code>dac completion</code></td><td>stdout</td><td>Outside the output contract entirely — a shell evaluates it, nothing parses it</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Versioning the contract</h3>
+  <p>
+    The envelope carries <code>outputVersion</code>. Version 2 moved <code>info</code>'s counters into a
+    <code>summary</code> object, dropped <code>allowedCount</code>, and added <code>cause</code> to every error. Version 3
+    gave every asset a <code>coordinate</code> and a <code>namespace</code> alongside its <code>name</code> and
+    <code>version</code>, dropped <code>replaced</code> from an <code>add</code> result because adding a version no longer
+    retires one, and added <code>siblings</code>, <code>sharedSources</code>, and <code>remaining</code> so that a command
+    changing one version says what happened to the others.
+  </p>
+  <p>
+    Exit status is three values: <code>0</code> success, <code>1</code> the command failed, <code>2</code> DAC rejected
+    the arguments. A write failure on the result itself also exits <code>1</code>, without trying to write a
+    second document explaining that the first one could not be written.
+  </p>
+</section>
+
+<section id="concurrency">
+  <p class="h2-kicker">Contracts</p>
+  <h2>Concurrency model</h2>
+
+  <h3>Within one command</h3>
+<div class="codeblock"><div class="codebar"><span class="name">internal/application/parallel.go</span><button type="button" class="copy">copy</button></div><pre><code class="lang-go">func parallel[K fmt.Stringer, T any](ctx context.Context, limit int, names []K,
+	operation func(context.Context, K) (T, error)) ([]T, error) {
+
+	group, runCtx := errgroup.WithContext(ctx)
+	group.SetLimit(max(limit, 1))
+	results := make([]T, len(names))
+	for index, name := range names {
+		group.Go(func() error {
+			// Another asset has already failed and cancelled the run. Report
+			// nothing for this one: a column of cancellations would bury the
+			// single failure that caused them.
+			if runCtx.Err() != nil {
+				return nil
+			}
+			value, err := operation(runCtx, name)
+			if err != nil {
+				return withAsset(err, name.String())
+			}
+			results[index] = value
+			return nil
+		})
+	}
+	// ...
+}</code></pre></div>
+
+  <p>
+    Results are written into a pre-sized slice by index, so there is no mutex and the output order is the
+    coordinate order regardless of completion order. The first failure cancels the rest through
+    <code>errgroup</code>'s context.
+  </p>
+  <p>
+    The subtlety worth naming: <strong>an operation whose context is already cancelled belongs to that first
+    failure, not to a problem of its own.</strong> Callers check <code>ctx.Err()</code> before reporting anything
+    to the progress reporter, because an asset cut short mid-transfer would otherwise surface a message
+    describing a completely different asset's failure. After <code>Wait</code>, <code>parallel</code> re-checks the
+    parent context so a cancelled command reports cancellation rather than an empty success.
+  </p>
+
+  <h3>Across processes</h3>
+  <p>
+    Two DAC processes sharing a cache — two CI jobs on one runner, two Docker builds against one cache mount
+    — coordinate through the per-digest <code>flock</code>. The install path takes it around the rename; the pull
+    path takes it around the entire decide-then-download sequence and re-checks the cache under it, so the
+    second process gets a cache hit rather than a duplicate download. Collection takes it around each removal.
+  </p>
+  <p>
+    <code>cache.Store</code> must not be copied: its <code>sync.Map</code> memo is what keeps a command from hashing
+    the same object repeatedly, and a copy would silently start again from nothing.
+  </p>
+</section>
+
+<section id="decisions">
+  <p class="h2-kicker">Contracts</p>
+  <h2>Decision log</h2>
+  <p>The choices that shaped everything above, each with the consequence it buys.</p>
+
+  <div class="decision">
+    <h4>Return a path; never unpack, install, or run</h4>
+    <dl>
+      <dt>Because</dt><dd>Every consumer wants something different from a tarball, and a fetcher that unpacks has to grow flags for strip-components, overwrite policy, and ownership — none of which it can get right for everyone.</dd>
+      <dt>Buys</dt><dd>DAC works behind <code>make</code>, Docker, Bazel, and Ansible without any of them agreeing with each other, and its blast radius is one directory of read-only files.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>The version is part of the key, not a field</h4>
+    <dl>
+      <dt>Because</dt><dd>A <code>version</code> field inside an entry is a second place to say what the key already says, and therefore the place the two can disagree.</dd>
+      <dt>Buys</dt><dd>A project holds several versions of an asset naturally; editing a version in place cannot quietly redefine the asset that was already there; there is nothing to keep in sync.</dd>
+      <dt>Costs</dt><dd>A hard break from schema version 1, with no migration — the file is rejected with a message naming the new shape.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>Two local rules about versions, and no version semantics at all</h4>
+    <dl>
+      <dt>Because</dt><dd>Choosing versions is a package manager's job. Guaranteeing that the version you wrote down is the version you get is not, and nobody else was doing it.</dd>
+      <dt>Buys</dt><dd>No ordering, no ranges, no <code>latest</code>, no resolution algorithm — and both rules are decidable from the project's own two files, with no network and no registry.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>A sidecar records the object's stat at install</h4>
+    <dl>
+      <dt>Because</dt><dd>A content-addressed name is a claim, and checking it means hashing gigabytes in the middle of a build. Trusting the filename gives up the guarantee; hashing every time gives up the performance.</dd>
+      <dt>Buys</dt><dd>Ordinary commands verify with one stat and catch every case that actually happens — edited in place, truncated, restored from backup. <code>dac cache verify</code> covers the rest at the cost of reading everything.</dd>
+      <dt>Follows</dt><dd>The object's own timestamp becomes evidence, so liveness had to move into the sidecar — which is why a cache hit touches the sidecar and never the object.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>Install unconditionally, even over an existing object</h4>
+    <dl>
+      <dt>Because</dt><dd>Freshly hashed bytes are known good; an object already at that path is only known to have the right name.</dd>
+      <dt>Buys</dt><dd>Corruption repair for free — the pull that noticed the damage is the command that fixes it.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>A per-digest <code>flock</code>, and lock files are never deleted</h4>
+    <dl>
+      <dt>Because</dt><dd>A global cache lock would serialize unrelated downloads. And unlinking a lock another process holds lets a later process take the same lock through a new inode.</dd>
+      <dt>Buys</dt><dd>Safe shared caches on build machines, with concurrency bounded by assets rather than by the cache.</dd>
+      <dt>Costs</dt><dd>Unix only — made explicit with a build constraint so a Windows build fails at <code>proclock</code> rather than somewhere deep in the cache.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>Credentials come only from a helper process</h4>
+    <dl>
+      <dt>Because</dt><dd>Token lifetime, refresh, and revocation belong to whatever issues the token, and none of that fits in a committed file.</dd>
+      <dt>Buys</dt><dd>DAC stores no secret and logs no secret; project files stay safe to commit; and clearing credentials per redirect hop is a rule in one function rather than a property of a config format.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>Rewrites are separate from the manifest</h4>
+    <dl>
+      <dt>Because</dt><dd>A manifest records where an asset comes from upstream. Where <em>this deployment</em> fetches it from is one site's topology, and putting it in the manifest spreads that topology across every repository that uses the asset.</dd>
+      <dt>Buys</dt><dd>The same commit builds on a laptop with open egress and on a fleet that can reach exactly one host. The lock file stays canonical, so a digest recorded behind a mirror still means something upstream.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>ETags only for unpinned assets</h4>
+    <dl>
+      <dt>Because</dt><dd>A publisher digest already settles which bytes are correct. Revalidating against a weak cache header adds a request and answers a question already answered.</dd>
+      <dt>Buys</dt><dd>A pinned asset is answered from the cache or downloaded outright, and its lock entry carries no <code>etag</code> field to go stale.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4><code>--max-size</code> bounds only unknown-size responses</h4>
+    <dl>
+      <dt>Because</dt><dd>When the size is known, it <em>is</em> the limit. A separate ceiling then only exists to stop a runaway stream, not to express a policy about how large assets may be.</dd>
+      <dt>Buys</dt><dd>A default of 2 GiB that is a real guard rather than a knob generating questions — and a distinct error for "the operator chose this limit" versus "the content is wrong".</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>Stable codes, specific causes</h4>
+    <dl>
+      <dt>Because</dt><dd>A message you can branch on cannot also be a message that diagnoses, and a tool that mixes the two ends up with neither.</dd>
+      <dt>Buys</dt><dd>Scripts branch on <code>code</code>; humans read <code>cause</code>; machines read <code>details</code>. A CI failure someone can read, rather than one someone has to reproduce by hand.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h4>No <code>dac lock</code> command</h4>
+    <dl>
+      <dt>Because</dt><dd>Resolving an asset stores its bytes, so the command that resolved everything and the command that installed everything were one command under two names.</dd>
+      <dt>Buys</dt><dd>One mental model: <code>pull</code> installs, and lock flags say whether it may write. Nothing writes the lock file without being asked — <code>add</code> and <code>remove</code> maintain it because they are already changing the project.</dd>
+    </dl>
+  </div>
+</section>
+
+<section id="constraints">
+  <p class="h2-kicker">Contracts</p>
+  <h2>Constraints and dependencies</h2>
+
+  <div class="grid two">
+    <div class="card">
+      <span class="tag">platform</span>
+      <h3>Unix, Go 1.26</h3>
+      <p><code>proclock</code> carries <code>//go:build unix</code>. There is no Windows build and no plan for one: the cache's correctness rests on <code>flock</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag">dependencies</span>
+      <h3>Three direct, all small</h3>
+      <p><code>urfave/cli/v3</code> for the command tree, <code>vbauerster/mpb/v8</code> for concurrent progress bars, <code>golang.org/x/sync</code> for <code>errgroup</code>. Everything else is the standard library.</p>
+    </div>
+    <div class="card">
+      <span class="tag">testing</span>
+      <h3>Fakes at the ports</h3>
+      <p>Command tests substitute a fake store and fetcher rather than standing up a server; <code>internal/projecttest</code> shares project fixtures. <code>mise run check</code> is <code>go vet</code> plus the full suite under <code>-race</code>.</p>
+    </div>
+    <div class="card">
+      <span class="tag">compatibility</span>
+      <h3>Four version numbers</h3>
+      <p>Application <code>6.0.0</code>, manifest and lock schema <code>2</code>, output contract <code>3</code>, bundle schema <code>2</code>, sidecar <code>1</code>. Each moves for its own reasons and each rejects what it does not understand.</p>
+    </div>
+  </div>
+
+  <hr class="sep">
+
+  <p>
+    For what all of this is <em>for</em> — the feature tour, use cases, and nine pipeline playbooks including
+    Docker, CI, air-gapped delivery, and egress lockdown — see the
+    <a href="dac-guide.html">guide</a>.
+  </p>
+</section>
+
+<footer class="page">
+  <p>DAC — <code>github.com/tom/dac</code> · architecture as of application version 6.0.0.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var LANGS = {
+    bash: [
+      ["com",  "#[^\\n]*"],
+      ["str",  "\"(?:\\\\[^]|[^\"\\\\])*\"|'[^']*'"],
+      ["url",  "https?://[^\\s\"'`)]+"],
+      ["var",  "\\$\\{[^}]*\\}|\\$\\(|\\$[A-Za-z_][A-Za-z0-9_]*|\\$[0-9@?*#]"],
+      ["flag", "\\s--?[A-Za-z][A-Za-z0-9-]*"],
+      ["kw",   "\\b(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|return|exit|set|local|export|source|shift|trap)\\b"],
+      ["fn",   "\\b(?:dac|docker|jq|tar|install|curl|wget|mkdir|cp|mv|rm|echo|printf|git|make|go|kubectl|aws|gcloud|vault|sha256sum|cut|cat|read|apt-get|bazel|npm)\\b"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    json: [
+      ["com",  "//[^\\n]*"],
+      ["key",  "\"(?:\\\\.|[^\"\\\\])*\"(?=\\s*:)"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\""],
+      ["lit",  "\\b(?:true|false|null)\\b"],
+      ["num",  "-?\\b[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b"],
+      ["punc", "[{}\\[\\],:]"]
+    ],
+    dockerfile: [
+      ["com",  "#[^\\n]*"],
+      ["kw",   "^\\s*(?:FROM|RUN|COPY|ADD|WORKDIR|ENV|ARG|CMD|ENTRYPOINT|USER|LABEL|EXPOSE|VOLUME|SHELL|HEALTHCHECK|STOPSIGNAL|ONBUILD)\\b"],
+      ["kw2",  "\\bAS\\b"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\""],
+      ["url",  "https?://[^\\s\"']+"],
+      ["var",  "\\$\\{[^}]*\\}|\\$\\(|\\$[A-Za-z_][A-Za-z0-9_]*"],
+      ["flag", "\\s--[A-Za-z][A-Za-z0-9-]*"],
+      ["fn",   "\\b(?:dac|apt-get|install|tar|mkdir|rm)\\b"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    yaml: [
+      ["com",  "#[^\\n]*"],
+      ["var",  "\\$\\{\\{[^}]*\\}\\}"],
+      ["key",  "^\\s*(?:-\\s+)?[A-Za-z_][A-Za-z0-9_.-]*(?=\\s*:)"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'"],
+      ["url",  "https?://[^\\s\"']+"],
+      ["lit",  "\\b(?:true|false|null)\\b"],
+      ["flag", "\\s--?[A-Za-z][A-Za-z0-9-]*"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    cfg: [
+      ["com",  "#[^\\n]*"],
+      ["kw",   "^\\s*(?:allow_insecure_http|allow|block|rewrite)\\b"],
+      ["url",  "https?://\\S+"],
+      ["var",  "\\$[0-9]+"],
+      ["punc", "\\*"]
+    ],
+    go: [
+      ["com",  "//[^\\n]*|/\\*[^]*?\\*/"],
+      ["str",  "`[^`]*`|\"(?:\\\\.|[^\"\\\\])*\""],
+      ["kw",   "\\b(?:package|import|func|type|struct|interface|map|chan|const|var|return|if|else|for|range|switch|case|default|break|continue|go|defer|select|nil|true|false)\\b"],
+      ["typ",  "\\b(?:string|int|int64|bool|error|byte|any|context|http|os|io|time)\\b"],
+      ["fn",   "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\()"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ]
+  };
+
+  function esc(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  var cache = {};
+  function regexFor(lang){
+    if(cache[lang]) return cache[lang];
+    var rules = LANGS[lang];
+    if(!rules) return null;
+    var src = rules.map(function(r){ return "(?<" + r[0] + ">" + r[1] + ")"; }).join("|");
+    var re;
+    try { re = new RegExp(src, "gm"); } catch(e){ re = null; }
+    cache[lang] = re;
+    return re;
+  }
+
+  function highlight(code, lang){
+    var re = regexFor(lang);
+    if(!re) return esc(code);
+    re.lastIndex = 0;
+    var out = "", last = 0, m;
+    while((m = re.exec(code)) !== null){
+      if(m[0] === ""){ re.lastIndex++; continue; }
+      if(m.index > last) out += esc(code.slice(last, m.index));
+      var name = "";
+      for(var k in m.groups){ if(m.groups[k] !== undefined){ name = k; break; } }
+      out += '<span class="t-' + name.replace(/[0-9]+$/,"") + '">' + esc(m[0]) + "</span>";
+      last = re.lastIndex;
+    }
+    out += esc(code.slice(last));
+    return out;
+  }
+
+  var blocks = document.querySelectorAll("pre > code");
+  for(var i = 0; i < blocks.length; i++){
+    var el = blocks[i];
+    var match = (el.className || "").match(/lang-([a-z]+)/);
+    if(!match || !LANGS[match[1]]) continue;
+    el.innerHTML = highlight(el.textContent, match[1]);
+  }
+
+  document.addEventListener("click", function(ev){
+    var btn = ev.target.closest ? ev.target.closest("button.copy") : null;
+    if(!btn) return;
+    var block = btn.closest(".codeblock");
+    var code = block && block.querySelector("code");
+    if(!code) return;
+    var text = code.textContent;
+    var done = function(){
+      var old = btn.textContent;
+      btn.textContent = "copied";
+      setTimeout(function(){ btn.textContent = old; }, 1200);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done, function(){ fallback(text, done); });
+    } else {
+      fallback(text, done);
+    }
+  });
+
+  function fallback(text, done){
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); done(); } catch(e){}
+    document.body.removeChild(area);
+  }
+
+  var btn = document.getElementById("themeBtn");
+  var modes = ["auto", "dark", "light"];
+  var stored = null;
+  try { stored = localStorage.getItem("dac-theme"); } catch(e){}
+  var mode = modes.indexOf(stored) >= 0 ? stored : "auto";
+
+  function applyTheme(){
+    if(mode === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", mode);
+    if(btn) btn.textContent = "Theme: " + mode;
+    try { localStorage.setItem("dac-theme", mode); } catch(e){}
+  }
+  applyTheme();
+  if(btn){
+    btn.addEventListener("click", function(){
+      mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+      applyTheme();
+    });
+  }
+
+  var links = {};
+  var navAnchors = document.querySelectorAll("#toc a");
+  for(var j = 0; j < navAnchors.length; j++){
+    var href = navAnchors[j].getAttribute("href");
+    if(href && href.charAt(0) === "#") links[href.slice(1)] = navAnchors[j];
+  }
+  var sections = document.querySelectorAll("section[id]");
+  if("IntersectionObserver" in window && sections.length){
+    var visible = {};
+    var observer = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){ visible[entry.target.id] = entry.isIntersecting; });
+      var current = null;
+      for(var s = 0; s < sections.length; s++){
+        if(visible[sections[s].id]){ current = sections[s].id; break; }
+      }
+      for(var id in links) links[id].classList.remove("active");
+      if(current && links[current]) links[current].classList.add("active");
+    }, { rootMargin: "-10% 0px -70% 0px", threshold: 0 });
+    for(var t = 0; t < sections.length; t++) observer.observe(sections[t]);
+  }
+})();
+</script>
+</body>
+</html>

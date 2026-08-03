@@ -1,0 +1,1445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAC — Guide, use cases, and pipeline playbooks</title>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+
+:root{
+  color-scheme:dark light;
+  --bg:#0c0f14; --bg-soft:#10141b; --panel:#141a23; --panel-2:#0f141b;
+  --border:#232c39; --border-soft:#1b222d;
+  --text:#dbe3ee; --text-strong:#ffffff; --muted:#8d9aad; --faint:#66748a;
+  --accent:#6ea8ff; --accent-soft:rgba(110,168,255,.12);
+  --green:#7ee787; --amber:#f0b72f; --red:#ff8f80; --purple:#c8a6ff; --cyan:#63d2d2;
+  --shadow:0 1px 2px rgba(0,0,0,.45), 0 10px 30px rgba(0,0,0,.28);
+  --radius:12px;
+  --font:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#f6f8fb; --bg-soft:#eef2f7; --panel:#ffffff; --panel-2:#f8fafc;
+    --border:#dbe3ec; --border-soft:#e8edf3;
+    --text:#1c2530; --text-strong:#0a0f16; --muted:#5a6675; --faint:#7a8697;
+    --accent:#1a5fd0; --accent-soft:rgba(26,95,208,.09);
+    --green:#1a7f4b; --amber:#8a5d00; --red:#bd2f2f; --purple:#7434bd; --cyan:#0b6f80;
+    --shadow:0 1px 2px rgba(16,24,40,.06), 0 10px 28px rgba(16,24,40,.07);
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f6f8fb; --bg-soft:#eef2f7; --panel:#ffffff; --panel-2:#f8fafc;
+  --border:#dbe3ec; --border-soft:#e8edf3;
+  --text:#1c2530; --text-strong:#0a0f16; --muted:#5a6675; --faint:#7a8697;
+  --accent:#1a5fd0; --accent-soft:rgba(26,95,208,.09);
+  --green:#1a7f4b; --amber:#8a5d00; --red:#bd2f2f; --purple:#7434bd; --cyan:#0b6f80;
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 10px 28px rgba(16,24,40,.07);
+}
+
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font); font-size:16px; line-height:1.65;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+/* ---------- layout ---------- */
+.layout{display:grid; grid-template-columns:274px minmax(0,1fr); gap:0; max-width:1440px; margin:0 auto}
+.sidebar{
+  position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+  border-right:1px solid var(--border-soft); padding:26px 18px 40px 26px;
+  background:linear-gradient(180deg,var(--bg-soft),var(--bg));
+}
+main{padding:26px 40px 120px; min-width:0}
+@media (max-width:1000px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .sidebar{position:static; height:auto; border-right:0; border-bottom:1px solid var(--border-soft); padding:20px 22px}
+  main{padding:8px 22px 90px}
+}
+
+/* ---------- sidebar ---------- */
+.brand{display:flex; align-items:center; gap:10px; margin-bottom:2px}
+.brand .mark{
+  width:30px;height:30px;border-radius:8px;flex:none;
+  background:linear-gradient(140deg,var(--accent),var(--purple));
+  display:grid;place-items:center;color:#fff;font-weight:700;font-size:13px;letter-spacing:.5px;
+}
+.brand b{color:var(--text-strong); font-size:17px; letter-spacing:-.01em}
+.brand-sub{color:var(--faint); font-size:12.5px; margin:0 0 18px 40px}
+nav ul{list-style:none; margin:0; padding:0}
+nav a{
+  display:block; padding:5px 10px; border-radius:7px; color:var(--muted);
+  text-decoration:none; font-size:13.5px; border-left:2px solid transparent; line-height:1.45;
+}
+nav a:hover{color:var(--text); background:var(--accent-soft)}
+nav a.active{color:var(--accent); background:var(--accent-soft); border-left-color:var(--accent)}
+nav .nav-group{margin:16px 0 6px; padding-left:10px; font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); font-weight:700}
+.side-foot{margin-top:26px; padding-top:18px; border-top:1px solid var(--border-soft); display:flex; flex-direction:column; gap:10px}
+.sidelink{
+  display:flex; align-items:center; gap:8px; font-size:13px; text-decoration:none;
+  color:var(--text); border:1px solid var(--border); background:var(--panel);
+  padding:9px 11px; border-radius:9px;
+}
+.sidelink:hover{border-color:var(--accent); color:var(--accent)}
+.sidelink span{color:var(--faint); font-size:11.5px; display:block}
+button.theme{
+  font:inherit; font-size:13px; cursor:pointer; color:var(--muted);
+  background:transparent; border:1px solid var(--border); border-radius:9px; padding:8px 11px; text-align:left;
+}
+button.theme:hover{color:var(--text); border-color:var(--accent)}
+
+/* ---------- hero ---------- */
+.hero{padding:44px 0 10px; border-bottom:1px solid var(--border-soft); margin-bottom:36px}
+h1{
+  font-size:clamp(30px,4.4vw,46px); line-height:1.1; letter-spacing:-.028em;
+  margin:0 0 14px; color:var(--text-strong); font-weight:760;
+}
+.lede{font-size:clamp(16.5px,1.6vw,19px); color:var(--muted); max-width:70ch; margin:0 0 22px; line-height:1.6}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:26px}
+.chip{
+  font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border);
+  background:var(--panel); color:var(--muted); font-family:var(--mono);
+}
+.chip.on{border-color:var(--accent); color:var(--accent); background:var(--accent-soft)}
+
+/* ---------- typography ---------- */
+section{margin:0 0 60px; scroll-margin-top:20px}
+h2{
+  font-size:clamp(22px,2.4vw,28px); letter-spacing:-.02em; color:var(--text-strong);
+  margin:0 0 6px; font-weight:700; scroll-margin-top:24px;
+}
+.h2-kicker{font-family:var(--mono); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 6px}
+h3{font-size:17.5px; letter-spacing:-.01em; color:var(--text-strong); margin:30px 0 8px; font-weight:660}
+h4{font-size:14.5px; color:var(--text-strong); margin:22px 0 6px; font-weight:660}
+p{margin:0 0 14px; max-width:78ch}
+ul,ol{max-width:78ch; padding-left:22px; margin:0 0 16px}
+li{margin:5px 0}
+a{color:var(--accent)}
+strong{color:var(--text-strong); font-weight:640}
+hr.sep{border:0; border-top:1px solid var(--border-soft); margin:34px 0}
+code{
+  font-family:var(--mono); font-size:.875em; background:var(--bg-soft);
+  border:1px solid var(--border-soft); border-radius:5px; padding:1px 5px; color:var(--text-strong);
+  word-break:break-word;
+}
+h2 code,h3 code{font-size:.9em}
+
+/* ---------- cards ---------- */
+.grid{display:grid; gap:14px; margin:20px 0}
+.grid.two{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.grid.three{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px;
+}
+.card h3{margin:0 0 6px; font-size:15px}
+.card p{margin:0; font-size:14px; color:var(--muted); max-width:none}
+.card .tag{font-family:var(--mono); font-size:11px; color:var(--accent); display:block; margin-bottom:6px; letter-spacing:.06em}
+
+/* ---------- callouts ---------- */
+.callout{
+  border:1px solid var(--border); border-left:3px solid var(--accent);
+  background:var(--panel); border-radius:10px; padding:14px 16px; margin:20px 0;
+}
+.callout p:last-child{margin-bottom:0}
+.callout .label{
+  display:block; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--accent); margin-bottom:5px; font-weight:700;
+}
+.callout.warn{border-left-color:var(--amber)} .callout.warn .label{color:var(--amber)}
+.callout.rulebox{border-left-color:var(--purple)} .callout.rulebox .label{color:var(--purple)}
+.callout.good{border-left-color:var(--green)} .callout.good .label{color:var(--green)}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); margin:20px 0; background:var(--panel)}
+table{border-collapse:collapse; width:100%; font-size:14px; min-width:520px}
+th,td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--border-soft); vertical-align:top}
+th{color:var(--text-strong); font-weight:640; font-size:12.5px; letter-spacing:.03em; background:var(--panel-2); white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td code{background:transparent; border:0; padding:0; color:var(--accent)}
+td.mono,th.mono{font-family:var(--mono); font-size:13px}
+
+/* ---------- code ---------- */
+.codeblock{
+  border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;
+  margin:16px 0; background:var(--panel-2);
+}
+.codebar{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:7px 12px; background:var(--panel); border-bottom:1px solid var(--border-soft);
+}
+.codebar .name{font-family:var(--mono); font-size:11.5px; color:var(--faint); letter-spacing:.05em}
+.codebar button{
+  font:inherit; font-family:var(--mono); font-size:11px; cursor:pointer; color:var(--muted);
+  background:transparent; border:1px solid var(--border); border-radius:6px; padding:3px 9px;
+}
+.codebar button:hover{color:var(--accent); border-color:var(--accent)}
+pre{margin:0; padding:14px 16px; overflow-x:auto; font-family:var(--mono); font-size:13.2px; line-height:1.62; tab-size:2}
+pre code{background:transparent; border:0; padding:0; font-size:inherit; color:var(--text); white-space:pre}
+
+.t-com{color:var(--faint); font-style:italic}
+.t-str{color:var(--green)}
+.t-num{color:var(--amber)}
+.t-kw{color:var(--purple)}
+.t-fn{color:var(--accent)}
+.t-var{color:var(--cyan)}
+.t-key{color:var(--accent)}
+.t-lit{color:var(--amber)}
+.t-url{color:var(--cyan)}
+.t-flag{color:var(--amber)}
+.t-punc{color:var(--faint)}
+.t-typ{color:var(--cyan)}
+
+/* ---------- flow diagram ---------- */
+.flow{display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; margin:24px 0}
+.flow .node{
+  flex:1 1 150px; min-width:145px; background:var(--panel); border:1px solid var(--border);
+  border-radius:10px; padding:12px 13px;
+}
+.flow .node .k{display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); margin-bottom:4px}
+.flow .node b{display:block; font-family:var(--mono); font-size:13.5px; color:var(--text-strong); margin-bottom:3px}
+.flow .node span.d{font-size:12.5px; color:var(--muted); display:block; line-height:1.45}
+.flow .arr{display:grid; place-items:center; color:var(--faint); font-size:17px; flex:0 0 14px}
+@media (max-width:640px){.flow .arr{display:none}}
+
+/* ---------- playbooks ---------- */
+.playbook{
+  border:1px solid var(--border); border-radius:14px; background:var(--panel);
+  padding:20px 22px; margin:22px 0; box-shadow:var(--shadow);
+}
+.pb-head{display:flex; align-items:flex-start; gap:13px; margin-bottom:4px}
+.pb-num{
+  flex:none; width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+  font-family:var(--mono); font-size:12.5px; font-weight:700; color:var(--accent);
+  background:var(--accent-soft); border:1px solid var(--border);
+}
+.pb-head h3{margin:2px 0 0; font-size:17px}
+.pb-goal{color:var(--muted); font-size:14px; margin:6px 0 14px 43px}
+@media (max-width:640px){.pb-goal{margin-left:0}}
+.playbook .codeblock{background:var(--panel-2)}
+ol.steps{counter-reset:s; list-style:none; padding-left:0; margin:12px 0}
+ol.steps>li{counter-increment:s; position:relative; padding-left:30px; margin:10px 0}
+ol.steps>li::before{
+  content:counter(s); position:absolute; left:0; top:1px; width:20px; height:20px; border-radius:6px;
+  display:grid; place-items:center; font-family:var(--mono); font-size:11px; color:var(--muted);
+  background:var(--bg-soft); border:1px solid var(--border);
+}
+
+.kv{display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:14px; margin:14px 0}
+.kv dt{font-family:var(--mono); font-size:12.5px; color:var(--accent); white-space:nowrap}
+.kv dd{margin:0; color:var(--muted)}
+
+footer.page{border-top:1px solid var(--border-soft); padding-top:22px; color:var(--faint); font-size:13px}
+footer.page a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside class="sidebar">
+  <div class="brand"><div class="mark">DAC</div><b>DAC</b></div>
+  <p class="brand-sub">Guide &amp; playbooks</p>
+
+  <nav id="toc">
+    <div class="nav-group">Understand</div>
+    <ul>
+      <li><a href="#what">What DAC is</a></li>
+      <li><a href="#model">The model</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#versions">What a version means</a></li>
+      <li><a href="#commands">Command reference</a></li>
+    </ul>
+    <div class="nav-group">Apply</div>
+    <ul>
+      <li><a href="#usecases">Where it fits</a></li>
+      <li><a href="#playbooks">Playbooks</a></li>
+      <li><a href="#pb-docker">1 · Docker image build</a></li>
+      <li><a href="#pb-ci">2 · CI pipeline</a></li>
+      <li><a href="#pb-drift">3 · Scheduled drift watch</a></li>
+      <li><a href="#pb-airgap">4 · Air-gapped build</a></li>
+      <li><a href="#pb-private">5 · Private artifact host</a></li>
+      <li><a href="#pb-mirror">6 · Egress lockdown</a></li>
+      <li><a href="#pb-bump">7 · Bumping a version</a></li>
+      <li><a href="#pb-make">8 · Make &amp; build scripts</a></li>
+      <li><a href="#pb-hygiene">9 · Runner cache hygiene</a></li>
+    </ul>
+    <div class="nav-group">Operate</div>
+    <ul>
+      <li><a href="#scripting">Scripting DAC</a></li>
+      <li><a href="#nongoals">Non-goals</a></li>
+    </ul>
+  </nav>
+
+  <div class="side-foot">
+    <a class="sidelink" href="dac-architecture.html">
+      <div>Architecture<span>Internals, credential helper, decisions</span></div>
+    </a>
+    <button class="theme" id="themeBtn" type="button">Theme: auto</button>
+  </div>
+</aside>
+
+<main>
+
+<div class="hero">
+  <h1>DAC</h1>
+  <p class="lede">
+    DAC locks remote files and keeps them in a local content-addressed cache. It gives deployment
+    and infrastructure tools one stable way to fetch data files, policy bundles, provider binaries,
+    and similar build inputs — and then it gets out of the way.
+  </p>
+  <div class="chips">
+    <span class="chip on">go 1.26</span>
+    <span class="chip">unix only</span>
+    <span class="chip">sha-256 content addressed</span>
+    <span class="chip">manifest + lock</span>
+    <span class="chip">v6.0.0 · output v3</span>
+  </div>
+</div>
+
+<section id="what">
+  <p class="h2-kicker">Overview</p>
+  <h2>What DAC is</h2>
+  <p>
+    A build needs files that are not code: a GeoIP database, a model checkpoint, an OPA policy bundle,
+    a vendored toolchain tarball. The usual answer is a <code>curl</code> in a Dockerfile, and it fails in the
+    same three ways every time — the URL moves, the bytes change without the name changing, and nobody
+    can tell you what the last green build actually downloaded.
+  </p>
+  <p>
+    DAC replaces that <code>curl</code> with two committed files and one command. <strong>You name an asset by a
+    coordinate</strong>, DAC resolves it once, records the exact digest, and every later machine gets those
+    bytes or a hard failure. Nothing in between.
+  </p>
+
+  <div class="callout">
+    <span class="label">The boundary</span>
+    <p>
+      DAC does not unpack or install assets. It returns the verified cache path and stops. The calling
+      script decides what to do with it — which is why DAC fits behind <code>make</code>, <code>docker build</code>,
+      Bazel, Ansible, or a shell script without any of them having to agree with each other.
+    </p>
+  </div>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac init
+dac add backend-app/geo-database@2026.08 \
+  --source https://example.com/geo/2026.08/database.bin --pin
+dac pull
+
+# DAC returns a path. Extraction belongs to whatever consumes it.
+geo_database="$(dac path backend-app/geo-database@2026.08)"
+tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div>
+
+  <p>
+    <code>add</code> resolves the asset and updates both project files. Commit <code>dac.json</code> and
+    <code>dac-lock.json</code>. From then on, <code>dac pull</code> in CI reproduces the project as committed —
+    and uses a matching cache object with no network request at all.
+  </p>
+</section>
+
+<section id="model">
+  <p class="h2-kicker">Concepts</p>
+  <h2>The model</h2>
+  <p>Four things, and nothing else to learn.</p>
+
+  <div class="flow">
+    <div class="node">
+      <span class="k">identity</span><b>coordinate</b>
+      <span class="d">namespace / name @ version — all three required</span>
+    </div>
+    <div class="arr">→</div>
+    <div class="node">
+      <span class="k">intent</span><b>dac.json</b>
+      <span class="d">where each coordinate comes from</span>
+    </div>
+    <div class="arr">→</div>
+    <div class="node">
+      <span class="k">fact</span><b>dac-lock.json</b>
+      <span class="d">the exact digest and size that resolved</span>
+    </div>
+    <div class="arr">→</div>
+    <div class="node">
+      <span class="k">bytes</span><b>object cache</b>
+      <span class="d">shared, keyed by digest only</span>
+    </div>
+    <div class="arr">→</div>
+    <div class="node">
+      <span class="k">use</span><b>dac path</b>
+      <span class="d">a verified filesystem path</span>
+    </div>
+  </div>
+
+  <h3>The coordinate</h3>
+  <p>
+    An asset is named <code>&lt;namespace&gt;/&lt;name&gt;@&lt;version&gt;</code>. All three parts are required and
+    together they are the whole identity. A namespace lets <code>backend-app/database</code> and
+    <code>frontend-app/database</code> be two different files rather than an argument about who owns the name.
+    A namespace is a grouping label: nothing owns one, nothing registers one, and two projects using the
+    same namespace is not a conflict.
+  </p>
+  <p>
+    A namespace and a name take lowercase letters, digits, and <code>.</code> <code>_</code> <code>-</code>. A version also
+    takes uppercase and <code>+</code>, because it is copied from whatever the publisher calls a release. Every
+    part starts and ends alphanumeric, and none exceeds 64 characters.
+  </p>
+
+  <h3>The two files</h3>
+  <div class="grid two">
+    <div>
+<div class="codeblock"><div class="codebar"><span class="name">dac.json — source intent</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{
+  "schemaVersion": 2,
+  "assets": {
+    "backend-app/geo-database@2026.08": {
+      "url": "https://example.com/geo/2026.08/database.bin",
+      "integrity": "sha256:optional-publisher-digest",
+      "allowInsecureHttp": false
+    },
+    "backend-app/geo-database@2026.09": {
+      "url": "https://example.com/geo/2026.09/database.bin"
+    }
+  }
+}</code></pre></div>
+    </div>
+    <div>
+<div class="codeblock"><div class="codebar"><span class="name">dac-lock.json — resolved bytes</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{
+  "lockVersion": 2,
+  "manifestDigest": "sha256:...",
+  "assets": {
+    "backend-app/geo-database@2026.08": {
+      "url": "https://example.com/geo/2026.08/database.bin",
+      "digest": "sha256:...",
+      "size": 4194304,
+      "etag": "\"4f12535150d37a844beafcc03868e865\""
+    }
+  }
+}</code></pre></div>
+    </div>
+  </div>
+  <p>
+    The lock carries a <code>manifestDigest</code>, so a lock file either describes the manifest beside it or it
+    does not — there is no partial agreement. Commit both. A hand edit to <code>dac.json</code> resolves nothing
+    until you ask for it with <code>dac pull --update-lock</code>.
+  </p>
+
+  <h3>The cache</h3>
+  <p>
+    Objects live in a shared per-machine cache keyed by digest and nothing else, so several versions of an
+    asset sit side by side with no arrangement needed, and two assets that resolved to the same bytes cost
+    one object between them. The default location is the XDG cache directory; <code>--cache-dir</code> or
+    <code>DAC_CACHE_DIR</code> moves it, and <code>dac cache dir</code> prints where it resolved to.
+  </p>
+<div class="codeblock"><div class="codebar"><span class="name">cache layout</span><button type="button" class="copy">copy</button></div><pre><code class="lang-text">&lt;cache&gt;/blobs/sha256/&lt;digest&gt;
+&lt;cache&gt;/blobs/sha256/&lt;digest&gt;.meta</code></pre></div>
+  <p>
+    The sidecar is what keeps <code>dac path</code> from hashing a multi-gigabyte file in the middle of a build
+    while still refusing to hand back bytes it cannot vouch for. That mechanism is covered in the
+    <a href="dac-architecture.html#cache">architecture document</a>.
+  </p>
+</section>
+
+<section id="features">
+  <p class="h2-kicker">Capabilities</p>
+  <h2>Features</h2>
+
+  <div class="grid three">
+    <div class="card"><span class="tag">identity</span><h3>Coordinates, not filenames</h3><p>Namespace, name, and version are the key of both project files. A project holds as many versions of an asset as it names.</p></div>
+    <div class="card"><span class="tag">reproducibility</span><h3>A version means one thing</h3><p>Once a coordinate is locked to a digest, nothing rewrites it. Drift fails the command instead of silently changing the build.</p></div>
+    <div class="card"><span class="tag">integrity</span><h3>Verified paths only</h3><p><code>dac path</code> returns an object that still holds the bytes DAC installed, or it refuses. Corruption is reported, never handed back.</p></div>
+    <div class="card"><span class="tag">speed</span><h3>Warm pulls cost nothing</h3><p>An asset the lock already describes and the cache already holds needs no request. A whole <code>dac pull</code> can be zero packets.</p></div>
+    <div class="card"><span class="tag">freshness</span><h3>ETag revalidation</h3><p>An unpinned asset records the origin's ETag and replays it as <code>If-None-Match</code>; a <code>304</code> confirms it without a transfer.</p></div>
+    <div class="card"><span class="tag">trust</span><h3>Publisher pinning</h3><p><code>--pin</code> records the resolved digest as <code>integrity</code>. DAC also reads the SRI <code>sha256-&lt;base64&gt;</code> spelling and normalizes it.</p></div>
+    <div class="card"><span class="tag">secrets</span><h3>Credential helpers</h3><p>No tokens in the manifest, the lock, or a config file. A helper program answers per request, per host, and is re-asked after every redirect.</p></div>
+    <div class="card"><span class="tag">topology</span><h3>Rewrite config</h3><p>Send requests to a mirror without editing a single manifest, and allow/block hosts outright. Canonical URLs stay canonical.</p></div>
+    <div class="card"><span class="tag">isolation</span><h3>Bundles and distdir</h3><p><code>export</code>/<code>import</code> move a whole locked cache across an air gap as one tar; <code>--distdir</code> installs from a directory of digest-named files.</p></div>
+    <div class="card"><span class="tag">automation</span><h3>Machine output</h3><p><code>--json</code> writes one versioned envelope with a stable error <code>code</code>, a human <code>cause</code>, and structured <code>details</code>.</p></div>
+    <div class="card"><span class="tag">maintenance</span><h3>Cache hygiene</h3><p><code>cache gc</code> collects by last use, <code>cache verify --repair</code> hashes objects and removes the ones that no longer match.</p></div>
+    <div class="card"><span class="tag">throughput</span><h3>Parallel and safe</h3><p>Assets download concurrently, and concurrent DAC processes coordinate through a per-digest lock, so shared runners cannot corrupt each other.</p></div>
+  </div>
+
+  <h3>Guarantees worth stating plainly</h3>
+  <ul>
+    <li>A plain <code>dac pull</code> <strong>never writes the lock file</strong> and refuses one that does not describe the manifest.</li>
+    <li>A failed <code>dac add</code> changes <strong>neither</strong> project file.</li>
+    <li><code>dac verify --refresh</code> writes nothing, ever — it reports and exits <code>1</code>.</li>
+    <li>DAC requires HTTPS. Plain HTTP is allowed only for loopback hosts, or with an explicit opt-in per asset.</li>
+    <li>Credentials are cleared on every redirect and re-requested for the new host.</li>
+    <li>Project files are written with atomic renames, and unknown fields, duplicate keys, and unsupported schema versions are rejected on read.</li>
+  </ul>
+</section>
+
+<section id="versions">
+  <p class="h2-kicker">The core rule</p>
+  <h2>What a version means</h2>
+  <p>
+    A version is part of an asset's identity, not a field describing it. Two rules follow from that, and
+    between them they are the whole of what DAC knows about versions.
+  </p>
+
+  <div class="callout rulebox">
+    <span class="label">Rule 1 — a locked coordinate always names the same bytes</span>
+    <p>
+      Once the lock binds <code>backend-app/database@1.0.0</code> to a digest, nothing rewrites that digest. An
+      origin that replaced what it serves behind a stable URL, and a manifest edited to point one version
+      somewhere else, both fail with <code>version_rebind</code>, which reports the digest the lock holds and the
+      digest that arrived. The way forward is a new version. <code>--rebind</code> exists for the project that
+      genuinely tracks a rolling source and has decided to accept the change; it writes the lock file, so it
+      only works alongside <code>--update-lock</code> or <code>--refresh-lock</code>.
+    </p>
+  </div>
+
+  <div class="callout rulebox">
+    <span class="label">Rule 2 — two versions of one asset never name the same bytes</span>
+    <p>
+      Adding <code>backend-app/database@2.0.0</code> with the source <code>@1.0.0</code> already had resolves to bytes
+      that already have a version, and fails with <code>version_collision</code>. Editing a version in place fails
+      the same way: the old coordinate leaves the manifest, so the two never appear together, but the
+      previous lock file still remembers what it named.
+    </p>
+  </div>
+
+  <p>
+    Neither rule reads anything but the project's own two files. DAC does not order versions, compare them,
+    parse them, or ask an origin what exists — deciding <em>which</em> version to use is a package manager's
+    job. This is only about the version you already wrote down meaning what it says.
+  </p>
+  <p>
+    Two versions of one asset served from one URL is <em>not</em> refused. Only one set of bytes is at a URL,
+    so a cold cache can restore only one of them, and <code>add</code> reports that in <code>sharedSources</code>
+    rather than deciding it for you.
+  </p>
+</section>
+
+<section id="commands">
+  <p class="h2-kicker">Reference</p>
+  <h2>Command reference</h2>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Command</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">dac init [--force]</td><td>Create matching empty project files.</td></tr>
+      <tr><td class="mono">dac add &lt;coordinate&gt; --source &lt;url&gt;</td><td>Add one asset version and resolve it. Flags: <code>--pin</code>, <code>--integrity</code>, <code>--force</code>, <code>--rebind</code>, <code>--allow-insecure-http</code>, <code>--offline</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac remove &lt;coordinate&gt;</td><td>Remove one asset version without network access.</td></tr>
+      <tr><td class="mono">dac info [&lt;ns&gt;/&lt;name&gt;[@&lt;version&gt;]]</td><td>Show asset, request, lock, and cache information. No network.</td></tr>
+      <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--update-lock</code>, <code>--refresh-lock</code>, <code>--rebind</code>, <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac path &lt;coordinate&gt;</td><td>Print one verified cache path.</td></tr>
+      <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
+      <tr><td class="mono">dac export --file &lt;tar&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
+      <tr><td class="mono">dac import --file &lt;tar&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
+      <tr><td class="mono">dac cache verify [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
+      <tr><td class="mono">dac cache gc [--max-age] [--dry-run]</td><td>Remove cache objects nothing has used recently. Accepts <code>30d</code>, <code>2w</code>, or any Go duration.</td></tr>
+      <tr><td class="mono">dac cache dir</td><td>Print the resolved cache directory.</td></tr>
+      <tr><td class="mono">dac completion &lt;shell&gt;</td><td>Write a shell completion script.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    <code>add</code>, <code>remove</code>, and <code>path</code> require exactly one complete coordinate; a bare name would
+    work until somebody added a second version, which is the worst moment for a command to start guessing.
+    <code>info</code> is the exception, because answering what a project has is its job: it accepts nothing, one
+    coordinate, or one <code>&lt;namespace&gt;/&lt;name&gt;</code> whose versions it should list.
+  </p>
+
+  <h3>Which command touches what</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Command</th><th>Lock file</th><th>Network</th><th>Fails when</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">pull</td><td>read; must agree</td><td>only for objects the cache lacks</td><td>the lock does not describe the manifest (<code>lock_stale</code>)</td></tr>
+      <tr><td class="mono">pull --update-lock</td><td>written</td><td>resolves only entries the lock does not describe</td><td>a locked coordinate resolves to other bytes (<code>version_rebind</code>)</td></tr>
+      <tr><td class="mono">pull --refresh-lock</td><td>written</td><td>resolves every asset against its origin</td><td>same, plus <code>version_collision</code></td></tr>
+      <tr><td class="mono">pull --offline</td><td>read; must agree</td><td>none</td><td>a needed object is not cached (<code>offline_cache_miss</code>)</td></tr>
+      <tr><td class="mono">verify</td><td>read; must agree</td><td>none</td><td>the two files disagree</td></tr>
+      <tr><td class="mono">verify --refresh</td><td>read only — never written</td><td>resolves every asset</td><td>an origin no longer serves the locked bytes (<code>lock_drift</code>)</td></tr>
+      <tr><td class="mono">add</td><td>written</td><td>resolves the new asset and any the lock does not describe</td><td>the coordinate already exists without <code>--force</code></td></tr>
+      <tr><td class="mono">add --offline</td><td>untouched</td><td>none</td><td>—</td></tr>
+      <tr><td class="mono">remove</td><td>written</td><td>none</td><td>the coordinate is not in the manifest</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Options</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Option</th><th>Environment</th><th>Default</th><th>Commands</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">--manifest</td><td></td><td class="mono">dac.json</td><td>global</td></tr>
+      <tr><td class="mono">--lock</td><td></td><td class="mono">dac-lock.json</td><td>global</td></tr>
+      <tr><td class="mono">--cache-dir</td><td class="mono">DAC_CACHE_DIR</td><td>XDG cache</td><td>global</td></tr>
+      <tr><td class="mono">--json, -j</td><td></td><td class="mono">false</td><td>global</td></tr>
+      <tr><td class="mono">--timeout</td><td class="mono">DAC_TIMEOUT</td><td class="mono">5m</td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--retries</td><td class="mono">DAC_RETRIES</td><td class="mono">2</td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--concurrency</td><td class="mono">DAC_CONCURRENCY</td><td class="mono">4</td><td>pull, verify</td></tr>
+      <tr><td class="mono">--max-size</td><td class="mono">DAC_MAX_SIZE</td><td class="mono">2GiB</td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--progress</td><td></td><td class="mono">true</td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--no-rewrite</td><td></td><td class="mono">false</td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--credential-helper</td><td class="mono">DAC_CREDENTIAL_HELPER</td><td></td><td>add, pull, verify</td></tr>
+      <tr><td class="mono">--distdir</td><td class="mono">DAC_DISTDIR</td><td></td><td>pull</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    <code>--timeout</code> is an <em>inactivity</em> timeout, not a total deadline — a transfer that keeps making
+    progress keeps running. <code>--max-size</code> bounds only a response whose size DAC does not know ahead of
+    time, so it exists to stop a runaway stream rather than to express a policy about asset sizes.
+  </p>
+</section>
+
+<section id="usecases">
+  <p class="h2-kicker">Fit</p>
+  <h2>Where it fits</h2>
+  <p>
+    DAC is for build inputs that are <em>files</em>, published by someone else, and too large or too
+    licence-encumbered to commit. If a package manager already handles it, use the package manager.
+  </p>
+
+  <div class="grid three">
+    <div class="card"><h3>Reference databases</h3><p>GeoIP and ASN databases, timezone data, spam lists, vulnerability feeds — files that ship on a calendar and get baked into images.</p></div>
+    <div class="card"><h3>Model artifacts</h3><p>Checkpoints, tokenizers, embeddings, ONNX exports. Large, immutable, and exactly the thing you want a digest on.</p></div>
+    <div class="card"><h3>Policy bundles</h3><p>OPA bundles, Falco rule sets, CA root stores, WAF signature packs — governance inputs that must be auditable back to a byte.</p></div>
+    <div class="card"><h3>Toolchains &amp; binaries</h3><p>Vendored SDK tarballs, Terraform providers, protoc plugins, linters. Pin them per project instead of per Dockerfile.</p></div>
+    <div class="card"><h3>Firmware &amp; images</h3><p>Device firmware blobs, base rootfs tarballs, VM images that a deployment job stages onto hardware.</p></div>
+    <div class="card"><h3>Test corpora</h3><p>Golden files, fuzzing corpora, recorded fixtures. Too big for git, and a silent change turns into a mystery test failure.</p></div>
+    <div class="card"><h3>Licensed datasets</h3><p>Vendor data behind an authenticated URL, fetched with a credential helper so no token lands in the repository.</p></div>
+    <div class="card"><h3>Air-gapped delivery</h3><p>Build the bundle once on a connected machine, carry one tar across the boundary, pull offline on the other side.</p></div>
+    <div class="card"><h3>Multi-tool builds</h3><p>Anything where <code>make</code>, Docker, Ansible, and a deploy script all need the same file and must agree on which one.</p></div>
+  </div>
+
+  <div class="callout warn">
+    <span class="label">Not a fit</span>
+    <p>
+      Application dependencies with a resolver (npm, Go modules, pip), anything needing version ranges or
+      transitive resolution, anything that must be unpacked or installed by the fetcher, mirroring an entire
+      upstream repository, or artifacts you publish yourself and could simply address by digest in a registry.
+    </p>
+  </div>
+</section>
+
+<section id="playbooks">
+  <p class="h2-kicker">Practice</p>
+  <h2>Playbooks</h2>
+  <p>
+    Nine patterns, each one a complete recipe. They assume the two project files are committed and a
+    <code>dac</code> binary is on <code>PATH</code>.
+  </p>
+</section>
+
+<section id="pb-docker">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">01</div><h3>Fetch assets into a Docker image</h3></div>
+    <p class="pb-goal">Bake locked build inputs into an image without shipping the cache, the manifest, or a network dependency into the runtime layer.</p>
+
+    <p>
+      The shape is a dedicated <em>assets</em> stage that owns the fetch, a BuildKit cache mount that keeps the
+      content-addressed store out of the image layers, and a final stage that copies only the extracted result.
+    </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">Dockerfile</span><button type="button" class="copy">copy</button></div><pre><code class="lang-dockerfile"># syntax=docker/dockerfile:1.7
+
+# ---- assets: resolve every build input from the lock file --------------------
+FROM debian:bookworm-slim AS assets
+RUN apt-get update \
+ &amp;&amp; apt-get install -y --no-install-recommends ca-certificates \
+ &amp;&amp; rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/example/dac:6 /usr/local/bin/dac /usr/local/bin/dac
+
+WORKDIR /project
+# Copying only the project files means this layer is invalidated exactly when
+# the lock file changes -- not when application source changes.
+COPY dac.json dac-lock.json ./
+
+# The cache mount keeps the object store out of the image and makes a rebuild
+# that changed nothing cost zero downloads. DAC takes a per-digest lock, so the
+# default sharing=shared is safe for parallel builds on one machine.
+RUN --mount=type=cache,target=/root/.cache/dac \
+    dac pull --progress=false \
+ &amp;&amp; install -D "$(dac path backend-app/geo-database@2026.08)" /out/geo/database.bin \
+ &amp;&amp; mkdir -p /out/policy \
+ &amp;&amp; tar -xzf "$(dac path platform/opa-bundle@1.12.0)" -C /out/policy
+
+# ---- runtime -----------------------------------------------------------------
+FROM gcr.io/distroless/base-debian12
+COPY --from=assets /out/geo/database.bin /var/lib/app/geo/database.bin
+COPY --from=assets /out/policy           /etc/app/policy
+COPY app /usr/local/bin/app
+ENTRYPOINT ["/usr/local/bin/app"]</code></pre></div>
+
+    <h4>Why each piece is there</h4>
+    <dl class="kv">
+      <dt>plain <code>dac pull</code></dt><dd>Refuses a lock file that does not describe the manifest. Someone who edits <code>dac.json</code> without locking it breaks the image build loudly instead of shipping something nobody chose.</dd>
+      <dt>cache mount</dt><dd>The cache never becomes a layer, so the image does not carry a second copy of every asset, and a rebuild reuses objects across builds of unrelated images.</dd>
+      <dt><code>dac path</code></dt><dd>Returns a path only for an object that still holds the bytes DAC installed. A truncated or edited cache object fails the build here rather than inside the running container.</dd>
+      <dt><code>--progress=false</code></dt><dd>BuildKit logs are not a terminal, so DAC would emit start/finish lines per asset. Turning it off keeps the log short; leave it on if you want per-asset timing.</dd>
+    </dl>
+
+    <h4>Fully hermetic variant</h4>
+    <p>
+      If the build must make no requests at all, pre-warm the cache mount in an earlier step or bind-mount a
+      populated cache, then forbid the network:
+    </p>
+<div class="codeblock"><div class="codebar"><span class="name">Dockerfile fragment</span><button type="button" class="copy">copy</button></div><pre><code class="lang-dockerfile">RUN --mount=type=cache,target=/root/.cache/dac \
+    --network=none \
+    dac pull --offline --progress=false \
+ &amp;&amp; install -D "$(dac path backend-app/geo-database@2026.08)" /out/geo/database.bin</code></pre></div>
+    <p>
+      <code>--offline</code> makes a cache miss a hard failure with the code <code>offline_cache_miss</code>, which is
+      what you want: a hermetic build that quietly reached the internet is not hermetic.
+    </p>
+
+    <div class="callout">
+      <span class="label">Alternative: keep the asset out of the image</span>
+      <p>
+        For a large database that changes on its own schedule, copy the object into a volume at deploy time
+        instead of into the image. The image stays small and the same DAC coordinate names what the volume
+        should contain: <code>dac pull &amp;&amp; install -D "$(dac path backend-app/geo-database@2026.08)" /srv/data/geo.bin</code>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="pb-ci">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">02</div><h3>CI pipeline with a warm cache</h3></div>
+    <p class="pb-goal">Make repeat builds fetch nothing, and make an unlocked manifest fail the job rather than the release.</p>
+
+<div class="codeblock"><div class="codebar"><span class="name">.github/workflows/build.yml</span><button type="button" class="copy">copy</button></div><pre><code class="lang-yaml">name: build
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The lock file names every digest this build needs, so it is the exact
+      # cache key: a hit means every object is already on disk.
+      - name: Restore the DAC object cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/dac
+          key: dac-${{ runner.os }}-${{ hashFiles('dac-lock.json') }}
+          restore-keys: dac-${{ runner.os }}-
+
+      - name: Check that the project files agree
+        run: dac verify
+
+      - name: Fetch build inputs
+        run: dac pull --progress=false --concurrency 8
+
+      - name: Build
+        run: make build GEO_DB="$(dac path backend-app/geo-database@2026.08)"</code></pre></div>
+
+    <ol class="steps">
+      <li><strong>Key the cache on the lock file.</strong> Content-addressed objects never change under a digest, so a hit is always valid; <code>restore-keys</code> gives a partial hit when one asset changed, and <code>pull</code> fetches only that one.</li>
+      <li><strong>Run <code>dac verify</code> first.</strong> It reads two files, makes no requests, and separates "somebody forgot to lock" from "the download failed" before a single byte moves.</li>
+      <li><strong>Raise <code>--concurrency</code> on a big project.</strong> The default is 4; runners with real bandwidth do better at 8–16. The first failure cancels the rest, so a broken origin does not cost you the whole timeout.</li>
+      <li><strong>Never run <code>--update-lock</code> in a normal CI job.</strong> A job that rewrites the lock is a job that decides what your build uses. Keep that on a human's branch, or on a deliberate, separate workflow.</li>
+    </ol>
+
+    <div class="callout warn">
+      <span class="label">Self-hosted runners</span>
+      <p>
+        Point every job at one persistent cache directory with <code>DAC_CACHE_DIR</code> and let them share it.
+        Concurrent DAC processes coordinate with a per-digest lock, so two jobs pulling the same asset at the
+        same time is safe. Pair it with the hygiene playbook so the directory does not grow forever.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="pb-drift">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">03</div><h3>Scheduled drift watch</h3></div>
+    <p class="pb-goal">Find out that an origin replaced the bytes behind a stable URL — without changing what your project uses.</p>
+
+    <p>
+      <code>dac verify --refresh</code> resolves every asset, writes nothing, and exits <code>1</code> with the code
+      <code>lock_drift</code> and the drifted asset names when the origins no longer serve the locked bytes. Run it
+      nightly. Resolving an asset means downloading it, so a refresh also warms the cache on its way past.
+    </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">scripts/drift-watch.sh</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+if dac verify --refresh --json &gt; verify.json; then
+  echo "Every origin still serves the locked bytes."
+  exit 0
+fi
+
+code=$(jq -r '.error.code' verify.json)
+
+if [ "$code" != "lock_drift" ]; then
+  # A real failure: an unreachable origin, a blocked host, a bad lock file.
+  jq -r '"\(.error.code): \(.error.cause)"' verify.json &gt;&amp;2
+  exit 1
+fi
+
+echo "The following origins changed what they serve:"
+jq -r '.error.details.assets[]' verify.json
+
+# Turn it into whatever your team reads: an issue, a Slack message, an alert.
+exit 1</code></pre></div>
+
+    <div class="callout">
+      <span class="label">What to do about drift</span>
+      <p>
+        Drift is a decision, not a defect, which is why <code>verify</code> refuses to fix it. Either the publisher
+        released something new — add a new version and retire the old one (<a href="#pb-bump">playbook 7</a>) —
+        or the URL is genuinely rolling, in which case <code>dac pull --refresh-lock --rebind</code> accepts the new
+        bytes under the same coordinate and records them in a lock diff a human can review.
+      </p>
+    </div>
+
+    <p>
+      Note what this <em>cannot</em> tell you: nothing reports that version <code>2026.09</code> exists upstream. DAC
+      does not track releases. Bumping a version stays a manual edit.
+    </p>
+  </div>
+</section>
+
+<section id="pb-airgap">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">04</div><h3>Air-gapped or isolated build</h3></div>
+    <p class="pb-goal">Move a complete, verified set of build inputs across a network boundary as one file.</p>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell — connected side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># From a checkout of the exact commit the isolated machine will build.
+git checkout v1.8.0
+dac pull
+dac export --file dac-cache.tar
+
+# The bundle carries every locked object plus an index naming each coordinate,
+# source URL, digest, and size. Two assets that resolved to the same bytes
+# share one blob, so the bundle is no larger than the object set.
+sha256sum dac-cache.tar</code></pre></div>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac import --file dac-cache.tar   # validates index, paths, sizes, and digests
+dac pull --offline                # installs from the cache; no requests at all
+make build</code></pre></div>
+
+    <p>
+      <code>import</code> checks the index, the entry type, the path, the size, and the digest, and rejects an
+      invalid bundle before it installs anything. It does not read the project files, so one bundle can seed
+      several checkouts. <code>export</code> refuses if any locked object is missing or corrupt — a bundle is the one
+      artifact that would carry cache damage onto a machine with no way to tell where it came from.
+    </p>
+
+    <h4>Variant: a distribution directory</h4>
+    <p>
+      If your transfer mechanism is a mounted share rather than a tar, <code>--distdir</code> installs locked assets
+      from a directory before requesting them. Each file must be named by its SHA-256 hexadecimal digest —
+      the only name a consumer can actually check.
+    </p>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># Populate the share, naming each file by its digest.
+for file in /staging/*; do
+  install -D "$file" "/mnt/dist/$(sha256sum "$file" | cut -d' ' -f1)"
+done
+
+# On the isolated machine:
+dac pull --distdir /mnt/dist --offline</code></pre></div>
+  </div>
+</section>
+
+<section id="pb-private">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">05</div><h3>Assets behind a private artifact host</h3></div>
+    <p class="pb-goal">Fetch authenticated URLs without putting a token in the repository, the environment, or a log.</p>
+
+    <p>
+      DAC gets request credentials <strong>only</strong> from a credential helper: a program DAC runs as
+      <code>&lt;command&gt; get</code>, hands one request URL on standard input, and reads headers back from standard
+      output. Nothing about the token lives in <code>dac.json</code>, <code>dac-lock.json</code>, or any DAC config.
+    </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">/usr/local/bin/dac-cred-artifacts</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+# DAC invokes this as: dac-cred-artifacts get
+set -euo pipefail
+[ "${1:-}" = "get" ] || { echo "unsupported operation" &gt;&amp;2; exit 2; }
+
+request=$(cat)                        # {"uri":"https://files.internal/geo.bin"}
+uri=$(printf '%s' "$request" | jq -r '.uri')
+
+# Mint or read a short-lived token however your platform does it.
+token=$(vault read -field=token "secret/artifacts?uri=$uri")
+
+jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pre></div>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># One host, one helper. A host-specific helper wins over a general one.
+dac pull --credential-helper files.internal=/usr/local/bin/dac-cred-artifacts
+
+# Several hosts: repeat the flag.
+dac pull \
+  --credential-helper files.internal=/usr/local/bin/dac-cred-artifacts \
+  --credential-helper models.vendor.com=/usr/local/bin/dac-cred-vendor
+
+# For a whole CI job, set it once.
+export DAC_CREDENTIAL_HELPER=/usr/local/bin/dac-cred-artifacts
+dac pull</code></pre></div>
+
+    <div class="callout warn">
+      <span class="label">Two rules for helper authors</span>
+      <p>
+        A helper has 30 seconds to answer, and a failing helper fails the command. DAC never writes helper
+        <em>output</em> to a log or an error message — but it does include a failing helper's <em>standard error</em>
+        in the failure message, so never print a secret there.
+      </p>
+    </div>
+
+    <p>
+      DAC clears credentials on each redirect and asks again for the new host, so one host's credentials never
+      reach another — including a redirect to a signed CDN URL that needs no credentials at all. The full
+      protocol, selection rules, and limits are in the
+      <a href="dac-architecture.html#credentials">architecture document</a>.
+    </p>
+  </div>
+</section>
+
+<section id="pb-mirror">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">06</div><h3>Egress lockdown and internal mirroring</h3></div>
+    <p class="pb-goal">Send every request through an internal mirror and refuse anything else, without editing a single manifest.</p>
+
+    <p>
+      A manifest records where an asset comes from <em>upstream</em>. A rewrite config decides where DAC
+      actually sends the request. The manifest and the lock file keep the canonical URL, so the same
+      repository works on a laptop with open egress and on a build fleet that can only reach one host.
+    </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">dac-rewrite.cfg</span><button type="button" class="copy">copy</button></div><pre><code class="lang-cfg"># Block every host that no allow rule permits.
+block *
+
+# The mirror, and the one origin allowed through directly.
+allow artifacts.internal
+allow releases.internal
+
+# Send vendor downloads to the mirror. The pattern is a Go regular expression
+# matched against "host/path" with any query string appended.
+rewrite ^vendor\.example\.com/(.*)$   https://artifacts.internal/vendor/$1
+rewrite ^objects\.githubusercontent\.com/(.*)$ https://artifacts.internal/gh/$1</code></pre></div>
+
+    <p>
+      Save it as <code>dac-rewrite.cfg</code> beside the manifest and DAC loads it automatically.
+      <code>DAC_REWRITE_CONFIG</code> points at a different file, and that file must exist. <code>--no-rewrite</code>
+      disables the whole config for one command.
+    </p>
+
+    <h4>Rules that matter in practice</h4>
+    <ul>
+      <li>DAC applies <strong>one</strong> rewrite before it checks <code>allow</code> and <code>block</code>, so allow the <em>rewritten</em> host, not the original.</li>
+      <li>A URL matching two rewrite rules is an error, not a race. Keep patterns disjoint.</li>
+      <li>An <code>allow</code> match overrides all <code>block</code> matches, and directive order does not change that. A host with no match is allowed; <code>*</code> matches every host; other patterns match a host and its subdomains.</li>
+      <li>Redirect targets get the same host policy but are never rewritten — a redirect must not start a rewrite chain.</li>
+      <li>A replacement without a scheme keeps the original URL's scheme. Add a bare <code>allow_insecure_http</code> directive to permit plain HTTP for rewritten URLs.</li>
+    </ul>
+
+    <p>Check the result before you trust it — <code>dac info</code> shows the source URL, the request URL, and the host policy result for each asset, and makes no network request:</p>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac info backend-app/geo-database@2026.08</code></pre></div>
+<div class="codeblock"><div class="codebar"><span class="name">output</span><button type="button" class="copy">copy</button></div><pre><code class="lang-text">backend-app/geo-database@2026.08
+source: https://vendor.example.com/geo/2026.08/database.bin
+request: https://artifacts.internal/vendor/geo/2026.08/database.bin
+policy: allowed
+lock: current
+cache: cached
+integrity: sha256:9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820
+digest: sha256:9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820
+size: 4.0 MiB
+path: /home/build/.cache/dac/blobs/sha256/9c01741d...</code></pre></div>
+
+    <div class="callout">
+      <span class="label">A rewrite cannot change what DAC accepts</span>
+      <p>
+        <code>pull</code> still checks the locked digest, so a mirror that serves the wrong bytes fails exactly as a
+        corrupted transfer does. The exception is resolving an asset that has no <code>integrity</code> value yet:
+        there is no expected digest, so a rewrite config is trusted input in the same way a manifest URL is.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="pb-bump">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">07</div><h3>Bumping a version</h3></div>
+    <p class="pb-goal">Move to a new release without ever changing what the old coordinate meant.</p>
+
+    <p>The whole procedure, in the order that lets consumers roll over one at a time:</p>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># 1. Add the new version alongside the old one. This does not retire anything.
+dac add backend-app/geo-database@2026.09 \
+  --source https://example.com/geo/2026.09/database.bin --pin
+
+# 2. Move consumers over. Both versions resolve, so this can be a normal PR.
+#    dac path backend-app/geo-database@2026.09
+
+# 3. Retire the old one when nothing references it.
+dac remove backend-app/geo-database@2026.08
+
+# 4. Commit both project files together.
+git add dac.json dac-lock.json</code></pre></div>
+
+    <p>
+      <code>--pin</code> records the digest the asset resolved to as its <code>integrity</code> value, so every later
+      command holds the publisher to the bytes this <code>add</code> saw. Without it the lock file still pins the
+      bytes; the manifest just does not say so.
+    </p>
+
+    <h4>The two failures you will meet, and what they mean</h4>
+    <div class="tablewrap">
+    <table>
+      <thead><tr><th>Code</th><th>What happened</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">version_rebind</td>
+          <td>A coordinate the lock already binds resolved to different bytes — the origin replaced them behind a stable URL, or the manifest was edited to point that version somewhere else.</td>
+          <td>Add a new version. If the source is genuinely rolling and you accept the change, <code>dac pull --refresh-lock --rebind</code>.</td>
+        </tr>
+        <tr>
+          <td class="mono">version_collision</td>
+          <td>Two versions of one asset name the same bytes, or a new version resolved to bytes a retired version already had. Almost always: the URL was not changed along with the version.</td>
+          <td>Point the new version at the source it was meant to have, or drop it. One of the two is a label, not a version.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>
+      Both errors carry the data in JSON <code>details</code>: <code>lockedDigest</code> and <code>resolvedDigest</code> for a
+      rebind, the two <code>versions</code> and the shared <code>digest</code> for a collision. You never have to re-download
+      anything by hand to find out what changed.
+    </p>
+
+    <h4>Editing the manifest by hand</h4>
+    <p>Nothing resolves a hand edit until you ask:</p>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">$EDITOR dac.json
+dac pull --update-lock    # resolves only what the lock does not describe
+dac verify                # confirm the two files agree before committing</code></pre></div>
+    <p>
+      <code>dac add --offline</code> is the same idea from the other direction: it updates only <code>dac.json</code>,
+      makes no request, and leaves <code>dac-lock.json</code> alone for a later <code>pull --update-lock</code>. Useful
+      when you are adding ten assets on a plane.
+    </p>
+  </div>
+</section>
+
+<section id="pb-make">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">08</div><h3>Make and build-script integration</h3></div>
+    <p class="pb-goal">Let a build system depend on an asset without teaching it anything about DAC.</p>
+
+<div class="codeblock"><div class="codebar"><span class="name">Makefile</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">GEO := backend-app/geo-database@2026.08
+TOOLCHAIN := tools/toolchain@1.4
+
+.PHONY: assets
+assets:
+	dac pull --progress=false
+
+# A recipe asks for the path at the moment it runs, so a stale cache object or
+# a missing pull fails here with a real message instead of a confusing one.
+vendor/toolchain/bin/tool: assets
+	mkdir -p vendor/toolchain
+	tar -xzf "$$(dac path $(TOOLCHAIN))" -C vendor/toolchain
+
+build: assets vendor/toolchain/bin/tool
+	./build.sh --geo-database "$$(dac path $(GEO))"</code></pre></div>
+
+    <div class="callout warn">
+      <span class="label">Do not call <code>dac path</code> at parse time</span>
+      <p>
+        <code>GEO_DB := $(shell dac path ...)</code> runs before <code>assets</code> has pulled anything, so a cold
+        checkout fails with an empty variable rather than a message. Call it inside a recipe, where a failure
+        stops the build with <code>cache_object_invalid: The cache object is missing. Run dac pull.</code>
+      </p>
+    </div>
+
+    <p>The same pattern in a plain script, with the paths resolved once up front:</p>
+<div class="codeblock"><div class="codebar"><span class="name">build.sh</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+dac pull --progress=false
+
+geo_database="$(dac path backend-app/geo-database@2026.08)"
+policy_bundle="$(dac path platform/opa-bundle@1.12.0)"
+
+# The paths are inside the shared cache and the objects are read-only, so treat
+# them as inputs: copy or extract, never write in place.
+install -D "$geo_database" build/data/geo.bin
+tar -xzf "$policy_bundle" -C build/policy</code></pre></div>
+
+    <p>
+      Cache objects are installed read-only. A build step that wants to modify an asset must copy it out
+      first — which is the same discipline that makes the cache shareable between projects.
+    </p>
+  </div>
+</section>
+
+<section id="pb-hygiene">
+  <div class="playbook">
+    <div class="pb-head"><div class="pb-num">09</div><h3>Runner cache hygiene</h3></div>
+    <p class="pb-goal">Keep a long-lived shared cache bounded and honest.</p>
+
+<div class="codeblock"><div class="codebar"><span class="name">scripts/dac-hygiene.sh — run weekly</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+export DAC_CACHE_DIR=/var/cache/dac
+
+# See what would go before it goes.
+dac cache gc --max-age 14d --dry-run
+
+# Collect objects nothing has used in two weeks, plus temporary files left by
+# interrupted downloads and sidecars whose object is gone.
+dac cache gc --max-age 14d
+
+# Hash every object in the shared cache and drop the ones that no longer match.
+# Without --repair this exits 1 when it finds damage, which is the scripted
+# signal to act; with --repair it removes them and a later pull replaces them.
+dac cache verify --all --repair</code></pre></div>
+
+    <ul>
+      <li><strong>Age is the only liveness signal a content-addressed store has.</strong> Every cache hit refreshes the object's sidecar timestamp, so <code>--max-age</code> means "nothing has used this in that long", not "this was downloaded that long ago".</li>
+      <li><strong>Collection never removes a digest lock file.</strong> Unlinking a lock another process holds would let a later process take the same lock through a new inode.</li>
+      <li><strong><code>cache gc</code> collects the whole shared cache</strong> and reads no project files. Run it on the machine, not per project.</li>
+      <li><strong>Ordinary commands already detect damage</strong> by comparing an object against the sidecar written at install. <code>cache verify</code> answers the harder question — storage that changed bytes without changing the stat — at the cost of reading everything it checks.</li>
+    </ul>
+
+    <p>Recovering a damaged cache is two commands, and no project file changes:</p>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac cache verify --repair   # remove the corrupt objects this project locked
+dac pull                    # download them again and install good bytes</code></pre></div>
+
+    <p>
+      Damage is reported wherever it turns up: <code>dac path</code> and <code>dac export</code> refuse, <code>dac info</code>
+      reports <code>cache: corrupt</code>, and <code>dac pull</code> downloads the asset again and reports it as
+      <code>repaired</code>.
+    </p>
+  </div>
+</section>
+
+<section id="scripting">
+  <p class="h2-kicker">Automation</p>
+  <h2>Scripting DAC</h2>
+
+  <p>
+    Use <code>--json</code> (or <code>-j</code>) to write one versioned JSON document to standard output. Human errors,
+    help, and progress go to standard error; JSON mode writes no human summaries, and <code>pull</code> also
+    disables progress in JSON mode so that exactly one document lands on stdout.
+  </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":3,"ok":true,"command":"path","data":{}}</code></pre></div>
+
+<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":3,"ok":false,"command":"pull","error":{
+  "code":"network_error",
+  "message":"The asset request failed.",
+  "cause":"https://example.com/db: unconditional request returned HTTP 404",
+  "details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}</code></pre></div>
+
+  <p>
+    <code>code</code> and <code>message</code> are stable enough to branch on, which is exactly why neither says
+    anything specific about a failure. <code>cause</code> carries the part an operator acts on, and
+    <code>details</code> repeats the useful parts of it as data.
+  </p>
+
+  <h3>Exit status</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">0</td><td>Success.</td></tr>
+      <tr><td class="mono">1</td><td>The command failed.</td></tr>
+      <tr><td class="mono">2</td><td>DAC rejected the arguments.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Error codes worth branching on</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Code</th><th>Means</th><th>Usual fix</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">lock_stale</td><td>The lock file does not describe the manifest.</td><td><code>dac pull --update-lock</code></td></tr>
+      <tr><td class="mono">lock_missing</td><td>There is no lock file.</td><td><code>dac pull --update-lock</code></td></tr>
+      <tr><td class="mono">lock_drift</td><td>An origin no longer serves the locked bytes.</td><td>A decision: new version, or <code>--rebind</code></td></tr>
+      <tr><td class="mono">version_rebind</td><td>A locked coordinate resolved to different bytes.</td><td>New version, or <code>--rebind</code></td></tr>
+      <tr><td class="mono">version_collision</td><td>Two versions of one asset name the same bytes.</td><td>Fix the source URL, or drop the version</td></tr>
+      <tr><td class="mono">content_mismatch</td><td>Downloaded bytes failed their digest or size check.</td><td>Retry; if it persists, the publisher or mirror changed</td></tr>
+      <tr><td class="mono">cache_object_corrupt</td><td>A cache object no longer matches its digest.</td><td><code>dac cache verify --repair</code> then <code>dac pull</code></td></tr>
+      <tr><td class="mono">cache_object_invalid</td><td>The object is simply missing.</td><td><code>dac pull</code></td></tr>
+      <tr><td class="mono">offline_cache_miss</td><td>Offline mode needed an object the cache lacks.</td><td>Warm the cache, import a bundle, or drop <code>--offline</code></td></tr>
+      <tr><td class="mono">network_error</td><td>The request failed. <code>details.status</code> and <code>details.url</code> say how.</td><td>Depends on the status</td></tr>
+      <tr><td class="mono">timeout</td><td>The transfer stalled or the request timed out.</td><td>Raise <code>--timeout</code>, or look at the origin</td></tr>
+      <tr><td class="mono">url_not_permitted</td><td>URL policy or the rewrite config refused the host.</td><td>Fix the manifest URL or the rewrite config</td></tr>
+      <tr><td class="mono">asset_too_large</td><td>An unknown-size response exceeded <code>--max-size</code>.</td><td>Raise <code>--max-size</code> for genuinely large assets</td></tr>
+      <tr><td class="mono">asset_unknown</td><td>The project has no such coordinate. <code>details.versions</code> lists the ones it does have.</td><td>Fix the coordinate</td></tr>
+      <tr><td class="mono">invalid_arguments</td><td>Bad flags or arguments. Exits <code>2</code>.</td><td>Fix the command line</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>A defensive wrapper</h3>
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
+set -euo pipefail
+
+if ! out=$(dac pull --json 2&gt;/dev/null); then
+  code=$(printf '%s' "$out" | jq -r '.error.code // "unknown"')
+  case "$code" in
+    lock_stale|lock_missing)
+      echo "The lock file is out of date. Commit a pull --update-lock." &gt;&amp;2 ;;
+    cache_object_corrupt)
+      dac cache verify --repair &amp;&amp; dac pull ;;
+    *)
+      printf '%s' "$out" | jq -r '.error.cause // .error.message' &gt;&amp;2
+      exit 1 ;;
+  esac
+fi
+
+printf '%s' "$out" | jq -r '.assets[] | "\(.coordinate)\t\(.status)\t\(.path)"'</code></pre></div>
+
+  <p>
+    Every asset a command touched comes back with its whole <code>coordinate</code> plus <code>namespace</code>,
+    <code>name</code>, and <code>version</code> separately — the whole is what you pass back to <code>dac path</code>, the
+    parts are what you branch on. Statuses you will see from <code>pull</code>: <code>cached</code>,
+    <code>downloaded</code>, <code>not_modified</code>, <code>distdir</code>, <code>repaired</code>.
+  </p>
+</section>
+
+<section id="nongoals">
+  <p class="h2-kicker">Scope</p>
+  <h2>Non-goals</h2>
+  <p>
+    Knowing what a tool refuses to do is how you decide whether to adopt it. DAC's list is short and it is
+    not going to grow.
+  </p>
+
+  <div class="grid two">
+    <div class="card">
+      <h3>It does not unpack, install, or run anything</h3>
+      <p>Extraction and installation belong to whatever consumes the path <code>dac path</code> returns.</p>
+    </div>
+    <div class="card">
+      <h3>It does not order or compare versions</h3>
+      <p>No ranges, no constraints, no <code>latest</code>, no dependencies between assets. It has no idea whether <code>10</code> follows <code>9</code>, or whether either is a number.</p>
+    </div>
+    <div class="card">
+      <h3>It hosts nothing</h3>
+      <p>No mirror, no remote cache, no registry, no plugin language.</p>
+    </div>
+    <div class="card">
+      <h3>It records no signature or provenance</h3>
+      <p>A digest says the bytes did not change. It does not say who made them.</p>
+    </div>
+    <div class="card">
+      <h3>It resumes no partial download</h3>
+      <p>A failed transfer starts over. Objects are installed only after the whole stream has been hashed and checked.</p>
+    </div>
+    <div class="card">
+      <h3>It does not track upstream releases</h3>
+      <p><code>verify --refresh</code> reports that an origin changed what it serves at a URL you already have. Nothing tells you a newer version exists.</p>
+    </div>
+  </div>
+
+  <p>
+    There is also no Windows build. The cache coordinates concurrent processes with <code>flock</code>, and the
+    Unix build constraint makes that explicit rather than letting it fail somewhere deep in the cache.
+  </p>
+
+  <hr class="sep">
+
+  <p>
+    For the internals behind all of this — the resolve ladder, the credential helper protocol, the cache's
+    tamper-evidence design, and the reasoning behind each decision — continue to the
+    <a href="dac-architecture.html">architecture document</a>.
+  </p>
+</section>
+
+<footer class="page">
+  <p>DAC — <code>github.com/tom/dac</code> · application version 6.0.0 · manifest &amp; lock schema 2 · output contract 3.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- syntax highlighting ---------------- */
+  var LANGS = {
+    bash: [
+      ["com",  "#[^\\n]*"],
+      ["str",  "\"(?:\\\\[^]|[^\"\\\\])*\"|'[^']*'"],
+      ["url",  "https?://[^\\s\"'`)]+"],
+      ["var",  "\\$\\{[^}]*\\}|\\$\\(|\\$[A-Za-z_][A-Za-z0-9_]*|\\$[0-9@?*#]"],
+      ["flag", "\\s--?[A-Za-z][A-Za-z0-9-]*"],
+      ["kw",   "\\b(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|return|exit|set|local|export|source|shift|trap)\\b"],
+      ["fn",   "\\b(?:dac|docker|jq|tar|install|curl|wget|mkdir|cp|mv|rm|echo|printf|git|make|go|kubectl|aws|gcloud|vault|sha256sum|cut|read|apt-get|bazel|npm)\\b"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    json: [
+      ["com",  "//[^\\n]*"],
+      ["key",  "\"(?:\\\\.|[^\"\\\\])*\"(?=\\s*:)"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\""],
+      ["lit",  "\\b(?:true|false|null)\\b"],
+      ["num",  "-?\\b[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b"],
+      ["punc", "[{}\\[\\],:]"]
+    ],
+    dockerfile: [
+      ["com",  "#[^\\n]*"],
+      ["kw",   "^\\s*(?:FROM|RUN|COPY|ADD|WORKDIR|ENV|ARG|CMD|ENTRYPOINT|USER|LABEL|EXPOSE|VOLUME|SHELL|HEALTHCHECK|STOPSIGNAL|ONBUILD)\\b"],
+      ["kw2",  "\\bAS\\b"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\""],
+      ["url",  "https?://[^\\s\"']+"],
+      ["var",  "\\$\\{[^}]*\\}|\\$\\(|\\$[A-Za-z_][A-Za-z0-9_]*"],
+      ["flag", "\\s--[A-Za-z][A-Za-z0-9-]*"],
+      ["fn",   "\\b(?:dac|apt-get|install|tar|mkdir|rm)\\b"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    yaml: [
+      ["com",  "#[^\\n]*"],
+      ["var",  "\\$\\{\\{[^}]*\\}\\}"],
+      ["key",  "^\\s*(?:-\\s+)?[A-Za-z_][A-Za-z0-9_.-]*(?=\\s*:)"],
+      ["str",  "\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'"],
+      ["url",  "https?://[^\\s\"']+"],
+      ["lit",  "\\b(?:true|false|null)\\b"],
+      ["flag", "\\s--?[A-Za-z][A-Za-z0-9-]*"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ],
+    cfg: [
+      ["com",  "#[^\\n]*"],
+      ["kw",   "^\\s*(?:allow_insecure_http|allow|block|rewrite)\\b"],
+      ["url",  "https?://\\S+"],
+      ["var",  "\\$[0-9]+"],
+      ["punc", "\\*"]
+    ],
+    go: [
+      ["com",  "//[^\\n]*|/\\*[^]*?\\*/"],
+      ["str",  "`[^`]*`|\"(?:\\\\.|[^\"\\\\])*\""],
+      ["kw",   "\\b(?:package|import|func|type|struct|interface|map|chan|const|var|return|if|else|for|range|switch|case|default|break|continue|go|defer|select|nil)\\b"],
+      ["typ",  "\\b(?:string|int|int64|bool|error|byte|any|context|http)\\b"],
+      ["fn",   "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\()"],
+      ["num",  "\\b[0-9]+(?:\\.[0-9]+)?\\b"]
+    ]
+  };
+
+  function esc(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  var cache = {};
+  function regexFor(lang){
+    if(cache[lang]) return cache[lang];
+    var rules = LANGS[lang];
+    if(!rules) return null;
+    var src = rules.map(function(r){ return "(?<" + r[0] + ">" + r[1] + ")"; }).join("|");
+    var re;
+    try { re = new RegExp(src, "gm"); } catch(e){ re = null; }
+    cache[lang] = re;
+    return re;
+  }
+
+  function highlight(code, lang){
+    var re = regexFor(lang);
+    if(!re) return esc(code);
+    re.lastIndex = 0;
+    var out = "", last = 0, m;
+    while((m = re.exec(code)) !== null){
+      if(m[0] === ""){ re.lastIndex++; continue; }
+      if(m.index > last) out += esc(code.slice(last, m.index));
+      var name = "";
+      for(var k in m.groups){ if(m.groups[k] !== undefined){ name = k; break; } }
+      out += '<span class="t-' + name.replace(/[0-9]+$/,"") + '">' + esc(m[0]) + "</span>";
+      last = re.lastIndex;
+    }
+    out += esc(code.slice(last));
+    return out;
+  }
+
+  var blocks = document.querySelectorAll("pre > code");
+  for(var i = 0; i < blocks.length; i++){
+    var el = blocks[i];
+    var cls = el.className || "";
+    var match = cls.match(/lang-([a-z]+)/);
+    if(!match) continue;
+    var lang = match[1];
+    if(!LANGS[lang]) continue;
+    el.innerHTML = highlight(el.textContent, lang);
+  }
+
+  /* ---------------- copy buttons ---------------- */
+  document.addEventListener("click", function(ev){
+    var btn = ev.target.closest ? ev.target.closest("button.copy") : null;
+    if(!btn) return;
+    var block = btn.closest(".codeblock");
+    var code = block && block.querySelector("code");
+    if(!code) return;
+    var text = code.textContent;
+    var done = function(){
+      var old = btn.textContent;
+      btn.textContent = "copied";
+      setTimeout(function(){ btn.textContent = old; }, 1200);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done, function(){ fallback(text, done); });
+    } else {
+      fallback(text, done);
+    }
+  });
+
+  function fallback(text, done){
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); done(); } catch(e){}
+    document.body.removeChild(area);
+  }
+
+  /* ---------------- theme ---------------- */
+  var btn = document.getElementById("themeBtn");
+  var modes = ["auto", "dark", "light"];
+  var stored = null;
+  try { stored = localStorage.getItem("dac-theme"); } catch(e){}
+  var mode = modes.indexOf(stored) >= 0 ? stored : "auto";
+
+  function applyTheme(){
+    if(mode === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", mode);
+    if(btn) btn.textContent = "Theme: " + mode;
+    try { localStorage.setItem("dac-theme", mode); } catch(e){}
+  }
+  applyTheme();
+  if(btn){
+    btn.addEventListener("click", function(){
+      mode = modes[(modes.indexOf(mode) + 1) % modes.length];
+      applyTheme();
+    });
+  }
+
+  /* ---------------- active section in the sidebar ---------------- */
+  var links = {};
+  var navAnchors = document.querySelectorAll("#toc a");
+  for(var j = 0; j < navAnchors.length; j++){
+    links[navAnchors[j].getAttribute("href").slice(1)] = navAnchors[j];
+  }
+  var sections = document.querySelectorAll("section[id]");
+  if("IntersectionObserver" in window && sections.length){
+    var visible = {};
+    var observer = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        visible[entry.target.id] = entry.isIntersecting;
+      });
+      var current = null;
+      for(var s = 0; s < sections.length; s++){
+        if(visible[sections[s].id]){ current = sections[s].id; break; }
+      }
+      for(var id in links) links[id].classList.remove("active");
+      if(current && links[current]) links[current].classList.add("active");
+    }, { rootMargin: "-10% 0px -70% 0px", threshold: 0 });
+    for(var t = 0; t < sections.length; t++) observer.observe(sections[t]);
+  }
+})();
+</script>
+</body>
+</html>
