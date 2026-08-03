@@ -36,7 +36,7 @@ func (runner *runner) addCommand() *urfave.Command {
 			var maxSize int64
 			if !current.Bool("offline") {
 				var client *httpclient.Client
-				service, client, err = runner.networkService(current, false)
+				service, client, err = runner.networkService(ctx, current, false)
 				if err != nil {
 					return nil, "", err
 				}

@@ -2,6 +2,7 @@
 package progress
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -13,12 +14,16 @@ import (
 )
 
 // New selects bars for a terminal and lines for other writers.
-func New(writer io.Writer, terminal, enabled bool) application.Reporter {
+//
+// The context is the command's, and the bar container is built on it so that
+// cancelling the command ends the display. See newBars: without it an interrupt
+// leaves the process alive with nothing left to draw.
+func New(ctx context.Context, writer io.Writer, terminal, enabled bool) application.Reporter {
 	if !enabled {
 		return application.NopReporter{}
 	}
 	if terminal {
-		return newBars(writer)
+		return newBars(ctx, writer)
 	}
 	return &lines{writer: writer}
 }
@@ -63,9 +68,18 @@ type barState struct {
 	status string
 }
 
-func newBars(writer io.Writer) *bars {
+// newBars builds the bar container on the command's context.
+//
+// Wait blocks until every bar it started has finished, and a transfer that an
+// interrupt cuts short finishes none of them: the command reports nothing for
+// an asset whose context was cancelled, because that message would describe the
+// interrupt rather than the asset. Building the container on the same context
+// makes the cancellation itself end those bars, so Wait returns and the process
+// exits. Without it Ctrl+C stopped every download and then hung in Wait, with
+// no signal left that could get the operator out of it.
+func newBars(ctx context.Context, writer io.Writer) *bars {
 	return &bars{
-		output:  mpb.New(mpb.WithOutput(writer), mpb.ForceAutoRefresh(), mpb.PopCompletedMode()),
+		output:  mpb.NewWithContext(ctx, mpb.WithOutput(writer), mpb.ForceAutoRefresh(), mpb.PopCompletedMode()),
 		entries: map[string]*barState{},
 	}
 }
