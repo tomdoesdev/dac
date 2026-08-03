@@ -1227,6 +1227,23 @@ type Error struct {
     parent context so a cancelled command reports cancellation rather than an empty success.
   </p>
 
+  <h3>Interrupts</h3>
+  <p>
+    An interrupt cancels the command context, and everything that can block takes it: the transfers, the
+    per-digest <code>flock</code> wait, retry backoff, and the progress container. The container matters as much
+    as the transfers. Its <code>Wait</code> blocks until every bar it started has finished, and the rule above
+    means an asset cut short by the interrupt is reported to nobody — so no bar is finished by hand, and a
+    container built on <code>context.Background</code> waits for bars that will never complete. Building it on the
+    command's context makes the cancellation itself end them.
+  </p>
+  <p>
+    The first interrupt also restores the default signal action, so a second one terminates the process
+    outright. <code>signal.NotifyContext</code> keeps its handler installed for the life of the process and drops
+    every interrupt after the one it cancelled on, which leaves an operator with no way out of a shutdown that
+    does not finish. A hard termination costs a partial download in the cache's temporary directory, which is
+    what an interrupted transfer leaves anyway and what <code>dac cache gc</code> sweeps.
+  </p>
+
   <h3>Across processes</h3>
   <p>
     Two DAC processes sharing a cache — two CI jobs on one runner, two Docker builds against one cache mount

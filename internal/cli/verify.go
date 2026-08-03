@@ -28,7 +28,7 @@ func (runner *runner) verifyCommand() *urfave.Command {
 				result, err := runner.projectService(current).Verify(ctx, application.NetworkOptions{})
 				return result, "Project files are valid.", err
 			}
-			service, client, err := runner.networkService(current, false)
+			service, client, err := runner.networkService(ctx, current, false)
 			if err != nil {
 				return nil, "", err
 			}

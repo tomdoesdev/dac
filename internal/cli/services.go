@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,7 +35,11 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 // networkService builds one application service for a network command.
 // suppressProgress disables progress regardless of --progress, which JSON mode
 // needs so that pull writes exactly one document to standard output.
-func (runner *runner) networkService(current *urfave.Command, suppressProgress bool) (*application.Service, *httpclient.Client, error) {
+//
+// The context is the command's, and it reaches the progress reporter as well as
+// the transfers: an interrupt has to end the display along with the downloads
+// it was following.
+func (runner *runner) networkService(ctx context.Context, current *urfave.Command, suppressProgress bool) (*application.Service, *httpclient.Client, error) {
 	service, err := runner.storeService(current)
 	if err != nil {
 		return nil, nil, err
@@ -68,7 +73,7 @@ func (runner *runner) networkService(current *urfave.Command, suppressProgress b
 	})
 	service.Fetcher = client
 	progressEnabled := current.Bool("progress") && !suppressProgress
-	service.Reporter = progress.New(runner.stderr, isTerminal(runner.stderr), progressEnabled)
+	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled)
 	return service, client, nil
 }
 

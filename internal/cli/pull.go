@@ -44,7 +44,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 			if rebind && !updateLock {
 				return nil, "", fault.New("invalid_arguments", "Rebinding a version writes the lock file. Use --rebind with --update-lock or --refresh-lock.")
 			}
-			service, client, err := runner.networkService(current, runner.json)
+			service, client, err := runner.networkService(ctx, current, runner.json)
 			if err != nil {
 				return nil, "", err
 			}
