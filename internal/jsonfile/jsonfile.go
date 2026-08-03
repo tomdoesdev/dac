@@ -74,10 +74,21 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(temporaryPath, path)
 }
 
+// maxDepth bounds how deeply the duplicate-key scan will nest.
+//
+// The scan walks the document with one stack frame per level, so without a
+// bound a document of nothing but open brackets exhausts the goroutine stack --
+// which the runtime reports as a fatal error rather than a panic, so nothing
+// above can turn it into a failed command. A cache bundle's index arrives from
+// wherever the bundle came from, and the index size cap alone leaves room for
+// millions of levels. Project files nest three deep, so this is far past
+// anything a real document reaches.
+const maxDepth = 128
+
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := visitValue(decoder); err != nil {
+	if err := visitValue(decoder, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -89,7 +100,7 @@ func rejectDuplicateKeys(data []byte) error {
 	return nil
 }
 
-func visitValue(decoder *json.Decoder) error {
+func visitValue(decoder *json.Decoder, depth int) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -97,6 +108,9 @@ func visitValue(decoder *json.Decoder) error {
 	delimiter, ok := token.(json.Delim)
 	if !ok {
 		return nil
+	}
+	if depth >= maxDepth {
+		return fmt.Errorf("JSON nests more than %d levels deep", maxDepth)
 	}
 	switch delimiter {
 	case '{':
@@ -114,13 +128,13 @@ func visitValue(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate JSON object key %q", key)
 			}
 			keys[key] = struct{}{}
-			if err := visitValue(decoder); err != nil {
+			if err := visitValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for decoder.More() {
-			if err := visitValue(decoder); err != nil {
+			if err := visitValue(decoder, depth+1); err != nil {
 				return err
 			}
 		}

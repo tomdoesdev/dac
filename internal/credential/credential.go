@@ -21,6 +21,18 @@ import (
 // memory while DAC waits for it.
 const maxOutput = 1 << 20
 
+// waitGrace is how long DAC waits for a killed helper's output pipes to close
+// before it abandons them.
+//
+// Killing the helper is not enough on its own. A helper is usually a shell
+// script, and a script that runs "aws", "vault", or "sleep" hands that child the
+// same stdout and stderr pipes. Killing the script leaves the grandchild holding
+// the write end, and the read that collects the helper's output blocks until the
+// grandchild exits -- which is the hang the timeout exists to prevent, arriving
+// through the back door. WaitDelay closes the pipes instead of waiting for
+// whoever still holds them.
+const waitGrace = time.Second
+
 // Resolver runs credential helpers for asset requests.
 type Resolver struct {
 	helpers []helper
@@ -93,6 +105,7 @@ func (resolver *Resolver) Headers(ctx context.Context, rawURL string) (http.Head
 	defer cancel()
 
 	command := exec.CommandContext(runCtx, selected.command, "get")
+	command.WaitDelay = waitGrace
 	command.Stdin = bytes.NewReader(payload)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &limitedWriter{buffer: &stdout, remaining: maxOutput}
@@ -100,6 +113,12 @@ func (resolver *Resolver) Headers(ctx context.Context, rawURL string) (http.Head
 	if err := command.Run(); err != nil {
 		if runCtx.Err() != nil && ctx.Err() == nil {
 			return nil, fmt.Errorf("credential helper %q timed out after %s", selected.command, resolver.timeout)
+		}
+		// The helper itself finished, but something it started still holds the
+		// pipes DAC reads. Naming that is worth a case of its own: the generic
+		// wording sends an operator looking at a helper that did nothing wrong.
+		if errors.Is(err, exec.ErrWaitDelay) {
+			return nil, fmt.Errorf("credential helper %q left a child process holding its output", selected.command)
 		}
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return nil, fmt.Errorf("credential helper %q failed: %w: %s", selected.command, err, detail)

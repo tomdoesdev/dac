@@ -102,6 +102,11 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	result := application.GCResult{Digests: []string{}, DryRun: options.DryRun}
 	cutoff := time.Now().Add(-options.MaxAge)
+	// collected names the objects this run took, so the sidecar sweep can tell
+	// the pairs it removed itself from the sidecars that were already alone. The
+	// sweep reads a directory listing taken before any of this, where the two
+	// look identical.
+	collected := map[string]struct{}{}
 
 	blobs := filepath.Join(store.Root, "blobs", "sha256")
 	entries, err := os.ReadDir(blobs)
@@ -137,6 +142,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 			result.Digests = append(result.Digests, value)
 			result.ObjectCount++
 			result.ByteCount += size
+			collected[entry.Name()] = struct{}{}
 		}
 	}
 	slices.Sort(result.Digests)
@@ -147,7 +153,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	result.TempCount = temporary
 
-	sidecars, abandoned, err := store.collectSidecars(blobs, entries, cutoff, options.DryRun)
+	sidecars, abandoned, err := store.collectSidecars(blobs, entries, collected, cutoff, options.DryRun)
 	if err != nil {
 		return application.GCResult{}, err
 	}
@@ -231,7 +237,13 @@ func (store *Store) collect(ctx context.Context, value string, cutoff time.Time,
 // files are the sidecar equivalent of an abandoned download: a write that dies
 // between creating its temporary file and renaming it leaves one here, where
 // the download sweep does not look.
-func (store *Store) collectSidecars(directory string, entries []os.DirEntry, cutoff time.Time, dryRun bool) (int, int, error) {
+//
+// The entries come from a listing taken before the objects were collected, so
+// collected names the ones this run removed. Without it every collected object
+// would be reported a second time as an orphaned sidecar, which is the one
+// number in the summary that is supposed to mean something went wrong outside
+// DAC.
+func (store *Store) collectSidecars(directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff time.Time, dryRun bool) (int, int, error) {
 	sidecars, abandoned := 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -252,8 +264,11 @@ func (store *Store) collectSidecars(directory string, entries []os.DirEntry, cut
 			}
 			abandoned++
 		case strings.HasSuffix(name, metaSuffix):
-			object := filepath.Join(directory, strings.TrimSuffix(name, metaSuffix))
-			if _, err := os.Stat(object); err == nil {
+			objectName := strings.TrimSuffix(name, metaSuffix)
+			if _, taken := collected[objectName]; taken {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(directory, objectName)); err == nil {
 				continue
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return 0, 0, err

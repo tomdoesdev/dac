@@ -304,11 +304,12 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	request.Header.Set(body.precondition.name, body.precondition.value)
-	if err := body.client.authorize(requestCtx, request); err != nil {
+	credentials := body.client.authorizer()
+	if err := credentials.apply(requestCtx, request); err != nil {
 		return nil, err
 	}
 
-	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(requestCtx, body.insecure)}
+	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(requestCtx, body.insecure, credentials)}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, err

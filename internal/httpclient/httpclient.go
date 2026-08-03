@@ -149,12 +149,13 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 	if input.ETag != "" {
 		request.Header.Set("If-None-Match", input.ETag)
 	}
-	if err := client.authorize(headCtx, request); err != nil {
+	credentials := client.authorizer()
+	if err := credentials.apply(headCtx, request); err != nil {
 		cancel()
 		return nil, err
 	}
 
-	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(headCtx, input.AllowInsecureHTTP)}
+	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(headCtx, input.AllowInsecureHTTP, credentials)}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		cancel()
@@ -175,7 +176,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 
 // checkRedirect applies URL policy, host policy, and credential rules to each
 // redirect target.
-func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool) func(*http.Request, []*http.Request) error {
+func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, credentials *authorizer) func(*http.Request, []*http.Request) error {
 	return func(request *http.Request, via []*http.Request) error {
 		if len(via) > maxRedirects {
 			return fmt.Errorf("server returned more than %d redirects", maxRedirects)
@@ -186,26 +187,49 @@ func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool) fun
 		if err := client.options.Rewriter.Check(request.URL); err != nil {
 			return err
 		}
-		return client.authorize(ctx, request)
+		return credentials.apply(ctx, request)
 	}
 }
 
-// authorize sets the credentials for one request host. It clears any header
-// carried over from a previous hop first, so a redirect never forwards one
-// host's credentials to another.
-func (client *Client) authorize(ctx context.Context, request *http.Request) error {
+// authorizer sets the credentials for each host in one redirect chain.
+//
+// It remembers every header name it has applied, because clearing Authorization
+// alone does not clear credentials. A helper answers with whatever header its
+// registry wants -- PRIVATE-TOKEN, X-JFrog-Art-Api, X-Api-Key -- and net/http
+// copies the initial request's headers onto every redirect target, stripping
+// only the four it knows are sensitive. Anything else would arrive at the next
+// host still carrying the first host's secret.
+//
+// One authorizer belongs to one request chain, and net/http runs a chain's
+// redirect callbacks on the goroutine that started it, so it needs no locking.
+type authorizer struct {
+	client *Client
+	// applied names every header this chain has set. It accumulates rather than
+	// replacing, because the headers copied onto a redirect come from the
+	// initial request rather than from the hop before it.
+	applied map[string]struct{}
+}
+
+func (client *Client) authorizer() *authorizer {
+	return &authorizer{client: client, applied: map[string]struct{}{}}
+}
+
+// apply clears the credentials of the previous host and sets this host's.
+func (credentials *authorizer) apply(ctx context.Context, request *http.Request) error {
 	request.Header.Del("Authorization")
-	header, err := client.options.Credentials.Headers(ctx, request.URL.String())
+	for name := range credentials.applied {
+		request.Header.Del(name)
+	}
+	header, err := credentials.client.options.Credentials.Headers(ctx, request.URL.String())
 	if err != nil {
 		return err
 	}
-	if len(header) > 0 {
-		for name, values := range header {
-			request.Header.Del(name)
-			for _, value := range values {
-				request.Header.Add(name, value)
-			}
+	for name, values := range header {
+		request.Header.Del(name)
+		for _, value := range values {
+			request.Header.Add(name, value)
 		}
+		credentials.applied[name] = struct{}{}
 	}
 	return nil
 }
