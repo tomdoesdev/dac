@@ -1,0 +1,13 @@
+# Build output. The binary is produced by "mise run build", never committed.
+/bin/
+
+# Test and coverage artifacts.
+*.out
+*.test
+
+# Local project files used to exercise DAC against a development server.
+/dac.json
+/dac-lock.json
+/dac-rewrite.cfg
+/dacserve.json
+.agents/skills/.DS_Store

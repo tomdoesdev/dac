@@ -1,0 +1,127 @@
+// Package jsonfile reads strict JSON files and writes atomic JSON files.
+package jsonfile
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+)
+
+// ReadStrict reads one JSON value. It rejects unknown fields and duplicate keys.
+func ReadStrict(path string, value any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return DecodeStrict(data, value)
+}
+
+// DecodeStrict decodes one JSON value. It rejects unknown fields and duplicate keys.
+func DecodeStrict(data []byte, value any) error {
+	if err := rejectDuplicateKeys(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON contains more than one value")
+		}
+		return err
+	}
+	return nil
+}
+
+// WriteAtomic writes data through a synced temporary file and one rename.
+func WriteAtomic(path string, data []byte, mode os.FileMode) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".dac-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if err := temporary.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func rejectDuplicateKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := visitValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON contains more than one value")
+		}
+		return err
+	}
+	return nil
+}
+
+func visitValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("JSON object key is not a string")
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			keys[key] = struct{}{}
+			if err := visitValue(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := visitValue(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return errors.New("JSON has an invalid delimiter")
+	}
+	_, err = decoder.Token()
+	return err
+}

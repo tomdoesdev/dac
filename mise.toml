@@ -1,0 +1,27 @@
+[tasks.build]
+description = "Build DAC in the project bin directory."
+run = "mkdir -p bin && go build -o bin/dac ./cmd/dac"
+
+[tasks.test]
+description = "Run all Go tests with the race detector."
+run = "go test -race ./..."
+
+[tasks.cover]
+description = "Report test coverage for each package."
+run = "go test -cover ./..."
+
+[tasks.vet]
+description = "Run go vet over all packages."
+run = "go vet ./..."
+
+[tasks.format]
+description = "Format all Go packages."
+run = "go fmt ./..."
+
+[tasks.fix]
+description = "Apply the Go modernizers."
+run = "go fix ./..."
+
+[tasks.check]
+description = "Run the checks that CI runs."
+depends = ["vet", "test"]
