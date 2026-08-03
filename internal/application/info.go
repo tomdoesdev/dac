@@ -77,9 +77,13 @@ type InfoAsset struct {
 	Rewritten     bool   `json:"rewritten"`
 	CacheStatus   string `json:"cacheStatus"`
 	Integrity     string `json:"integrity,omitempty"`
-	Digest        string `json:"digest,omitempty"`
-	Size          *int64 `json:"size,omitempty"`
-	Path          string `json:"path,omitempty"`
+	// Filename is what the origin calls this asset. It comes from the lock, so
+	// it is absent for the same reason digest and size are: a missing or stale
+	// lock holds nothing that describes the manifest in front of it.
+	Filename string `json:"filename,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+	Size     *int64 `json:"size,omitempty"`
+	Path     string `json:"path,omitempty"`
 }
 
 // InfoResult reports the selected project assets and their aggregate states.
@@ -204,6 +208,7 @@ func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, l
 	if err != nil {
 		return InfoAsset{}, withAsset(err, name.String())
 	}
+	result.Filename = view.Filename
 	result.Digest = view.Digest
 	result.Size = &view.Size
 	switch {

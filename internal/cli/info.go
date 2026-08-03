@@ -50,6 +50,9 @@ func infoText(result application.InfoResult) string {
 			"%s\nsource: %s\nrequest: %s\npolicy: %s\nlock: %s\ncache: %s\n",
 			asset.Coordinate, asset.SourceURL, asset.RequestURL,
 			asset.RequestStatus, result.Summary.LockStatus, asset.CacheStatus)
+		if asset.Filename != "" {
+			_, _ = fmt.Fprintf(&text, "filename: %s\n", asset.Filename)
+		}
 		if asset.Integrity != "" {
 			_, _ = fmt.Fprintf(&text, "integrity: %s\n", asset.Integrity)
 		}

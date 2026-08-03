@@ -35,6 +35,10 @@ func TestCommandLifecycle(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		writer.Header().Set("ETag", "\"asset-1\"")
+		// The server URL carries no path, so the header is the only thing that
+		// names this asset. It covers the whole chain from response to lock
+		// entry to reported field.
+		writer.Header().Set("Content-Disposition", `attachment; filename="geo.bin"`)
 		_, _ = writer.Write(content)
 	}))
 	defer server.Close()
@@ -62,6 +66,9 @@ func TestCommandLifecycle(t *testing.T) {
 		lock.Assets[coord.MustParse("app/geo@2026.08")].Digest == "" {
 		t.Fatalf("add did not update both files: %#v %#v", manifest, lock)
 	}
+	if name := lock.Assets[coord.MustParse("app/geo@2026.08")].Filename; name != "geo.bin" {
+		t.Fatalf("the lock recorded the file name %q", name)
+	}
 
 	result = runJSON(t, appendArgs(base, "info"))
 	assertSuccess(t, result, "info")
@@ -74,6 +81,7 @@ func TestCommandLifecycle(t *testing.T) {
 	if infoAsset["coordinate"] != "app/geo@2026.08" || infoAsset["namespace"] != "app" ||
 		infoAsset["name"] != "geo" || infoAsset["version"] != "2026.08" || infoAsset["sourceUrl"] != server.URL || infoAsset["requestUrl"] != server.URL ||
 		infoAsset["requestStatus"] != "allowed" || infoAsset["rewritten"] != false || infoAsset["cacheStatus"] != "cached" ||
+		infoAsset["filename"] != "geo.bin" ||
 		infoAsset["digest"] != lock.Assets[coord.MustParse("app/geo@2026.08")].Digest || infoAsset["size"] != float64(len(content)) || infoAsset["path"] == "" {
 		t.Fatalf("unexpected info asset: %#v", infoAsset)
 	}
@@ -136,6 +144,7 @@ func TestCommandLifecycle(t *testing.T) {
 		"policy: allowed\n" +
 		"lock: current\n" +
 		"cache: cached\n" +
+		"filename: geo.bin\n" +
 		"digest: " + lock.Assets[coord.MustParse("app/geo@2026.08")].Digest + "\n" +
 		"size: 14 B\n" +
 		"path: " + objectPath + "\n"

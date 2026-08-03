@@ -114,8 +114,13 @@ type FetchRequest struct {
 type FetchResponse struct {
 	NotModified bool
 	ETag        string
-	Length      int64
-	Body        io.ReadCloser
+	// Filename is the name the origin gives this asset, already reduced to a
+	// safe single path element, or empty when the origin names none. The
+	// adapter derives it because the spelling is an HTTP concern; what to
+	// record is not, and that decision stays in resolve.
+	Filename string
+	Length   int64
+	Body     io.ReadCloser
 }
 
 // Fetcher is the remote source boundary used by the service.

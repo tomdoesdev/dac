@@ -12,6 +12,7 @@ import (
 
 	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
+	"github.com/tom/dac/internal/filename"
 	"github.com/tom/dac/internal/jsonfile"
 	"github.com/tom/dac/internal/urlpolicy"
 )
@@ -48,11 +49,24 @@ type Lock struct {
 }
 
 // LockAsset records one resolved asset.
+//
+// Filename is the name the origin gives the asset, which a cache path cannot
+// carry: that path is a digest, and a digest is the right name for bytes and
+// the wrong name for a tool that switches on an extension. It belongs here
+// rather than beside the cached object because it describes the source and not
+// the bytes -- two coordinates that resolve to the same object share one file
+// in the cache and may well disagree about what it is called.
+//
+// It is advisory. Nothing decides anything by it, no other field is checked
+// against it, and it is absent from a lock written before it existed, so it
+// stays out of every comparison that asks whether a lock still describes a
+// manifest.
 type LockAsset struct {
-	URL    string `json:"url"`
-	Digest string `json:"digest"`
-	Size   int64  `json:"size"`
-	ETag   string `json:"etag,omitempty"`
+	URL      string `json:"url"`
+	Digest   string `json:"digest"`
+	Size     int64  `json:"size"`
+	ETag     string `json:"etag,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 // VersionCollisionError reports two versions of one asset that name the same
@@ -193,6 +207,13 @@ func (lock Lock) Validate() error {
 		if asset.Size < 0 {
 			return fmt.Errorf("lock asset %q has a negative size", name)
 		}
+		// A name is the one field here that a caller is invited to use as a path
+		// element, and a lock file is a text file somebody can edit. Checking it
+		// against the form DAC writes is what stops an entry naming "../../etc"
+		// from reaching a script that trusted the lock.
+		if asset.Filename != "" && filename.Clean(asset.Filename) != asset.Filename {
+			return fmt.Errorf("lock asset %q has an invalid filename", name)
+		}
 	}
 	return CheckVersions(lock.Assets)
 }
@@ -262,6 +283,12 @@ func Agrees(asset Asset, locked LockAsset, exists bool) bool {
 //
 // The version is not compared here because it cannot differ: both entries are
 // found by the same coordinate, and the coordinate carries it.
+//
+// The file name is not compared either, and that is deliberate rather than an
+// omission. It is a label the origin supplied, the manifest holds nothing to
+// compare it against, and every lock written before it existed carries none --
+// so comparing it would report every asset of every existing project as stale
+// over a field that decides nothing.
 func disagreement(asset Asset, locked LockAsset, exists bool) string {
 	switch {
 	case !exists:

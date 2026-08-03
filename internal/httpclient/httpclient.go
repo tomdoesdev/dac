@@ -15,6 +15,7 @@ import (
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/credential"
+	"github.com/tom/dac/internal/filename"
 	"github.com/tom/dac/internal/rewrite"
 	"github.com/tom/dac/internal/urlpolicy"
 )
@@ -189,9 +190,30 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 	return &application.FetchResponse{
 		NotModified: response.StatusCode == http.StatusNotModified,
 		ETag:        response.Header.Get("ETag"),
+		Filename:    responseFilename(response),
 		Length:      response.ContentLength,
 		Body:        client.body(downloadCtx, input, response, cancel, cancelHead, cache),
 	}, nil
+}
+
+// responseFilename reports the name the origin gives an asset.
+//
+// A Content-Disposition header is the origin saying the name outright, so it
+// wins. Without one the last element of the URL is the only other thing that
+// ever spells a name, and the URL used here is the one the request finished at:
+// an asset served through a redirect to a distribution host is named there,
+// while the URL the manifest holds may be an opaque download endpoint. Both
+// answers are advisory, and either may be empty.
+func responseFilename(response *http.Response) string {
+	if name := filename.FromDisposition(response.Header.Get("Content-Disposition")); name != "" {
+		return name
+	}
+	// Request is the final request of the redirect chain, and its URL is
+	// resolved against the one before it.
+	if response.Request == nil || response.Request.URL == nil {
+		return ""
+	}
+	return filename.FromURL(response.Request.URL.String())
 }
 
 // checkRedirect applies URL policy, host policy, and credential rules to each
