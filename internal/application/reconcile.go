@@ -13,6 +13,7 @@ import (
 
 	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
+	"github.com/tom/dac/internal/filename"
 	"github.com/tom/dac/internal/project"
 )
 
@@ -73,6 +74,14 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			// lock file contradict what the manifest says about the asset.
 			if source.Integrity != "" {
 				locked.ETag = ""
+			}
+			// An entry from a lock written before file names were recorded has
+			// none, and it will never be resolved again while it still agrees
+			// with the manifest. The URL spells a name without asking anybody,
+			// so fill it in here: the alternative is a project that only gains
+			// names for the assets that happen to change.
+			if locked.Filename == "" {
+				locked.Filename = filename.FromURL(source.URL)
 			}
 			return resolvedAsset{lock: locked, status: statusLocked}, nil
 		}

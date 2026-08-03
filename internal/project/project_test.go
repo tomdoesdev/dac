@@ -266,6 +266,17 @@ func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 		{"a negative size", func(lock *Lock) {
 			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: -1}
 		}, "negative size"},
+		// A hand edit is the only way any of these reaches a lock file, and a
+		// name is the one field here a script is invited to use as a path.
+		{"a filename that escapes its directory", func(lock *Lock) {
+			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, Filename: "../../etc/passwd"}
+		}, "invalid filename"},
+		{"a filename carrying a control byte", func(lock *Lock) {
+			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, Filename: "geo\x00.bin"}
+		}, "invalid filename"},
+		{"a filename that is not the form DAC writes", func(lock *Lock) {
+			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, Filename: "  geo.bin  "}
+		}, "invalid filename"},
 	} {
 		lock := sound()
 		testCase.break_(&lock)
@@ -569,5 +580,69 @@ func TestLockAllowsTwoAssetsThatShareAnObject(t *testing.T) {
 		coord.MustParse("frontend/geo@1"): {URL: "https://example.com/geo", Digest: value, Size: 5},
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A file name decides nothing, so it belongs to no comparison that asks whether
+// a lock still describes a manifest. Every lock written before the field
+// existed carries none, and comparing it would report every asset of every
+// existing project as stale.
+func TestAFileNameNeverMakesALockStale(t *testing.T) {
+	value := digest.Bytes([]byte("geo"))
+	name := coord.MustParse("app/geo@1")
+	manifest := Manifest{
+		SchemaVersion: ManifestVersion,
+		Assets:        map[coord.Coordinate]Asset{name: {URL: "https://example.com/geo.bin"}},
+	}
+	source := manifest.Assets[name]
+	for _, recorded := range []string{"", "geo.bin", "something-else.bin"} {
+		locked := LockAsset{URL: "https://example.com/geo.bin", Digest: value, Size: 3, Filename: recorded}
+		if !Agrees(source, locked, true) {
+			t.Fatalf("a lock naming the file %q was reported as stale", recorded)
+		}
+		lock, err := NewLock(manifest, map[coord.Coordinate]LockAsset{name: locked})
+		if err != nil {
+			t.Fatalf("%q: %v", recorded, err)
+		}
+		if err := CheckLock(manifest, lock); err != nil {
+			t.Fatalf("a lock naming the file %q did not describe its manifest: %v", recorded, err)
+		}
+	}
+}
+
+// The field is optional on the way in as well as out: a lock file DAC wrote
+// before it existed has to keep reading.
+func TestLockWithNoFileNameSurvivesARoundTrip(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "dac-lock.json")
+	value := digest.Bytes([]byte("geo"))
+	name := coord.MustParse("app/geo@1")
+	if err := os.WriteFile(path, []byte(`{
+  "lockVersion": 2,
+  "manifestDigest": "`+digest.Bytes([]byte("manifest"))+`",
+  "assets": {
+    "app/geo@1": {"url": "https://example.com/geo.bin", "digest": "`+value+`", "size": 3}
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := ReadLock(path)
+	if err != nil {
+		t.Fatalf("a lock with no file name was rejected: %v", err)
+	}
+	if lock.Assets[name].Filename != "" {
+		t.Fatalf("the entry gained the name %q on read", lock.Assets[name].Filename)
+	}
+	// Writing it back must not invent the field either, so a project that never
+	// resolves anything keeps a stable lock file.
+	if err := Write(path, lock); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "filename") {
+		t.Fatalf("writing an entry with no name emitted the field: %s", data)
 	}
 }

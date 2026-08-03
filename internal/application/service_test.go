@@ -783,6 +783,10 @@ func lockedProject(t *testing.T, content []byte) (string, string) {
 			URL:    "https://example.com/asset",
 			Digest: digest.Bytes(content),
 			Size:   int64(len(content)),
+			// The name the URL spells, which is what a lock DAC wrote carries. A
+			// fixture without it would be a lock from before file names were
+			// recorded, and the tests for that migration write one deliberately.
+			Filename: "asset",
 		},
 	})
 	if err != nil {
@@ -1836,5 +1840,301 @@ func TestAddReportsASharedSourceURL(t *testing.T) {
 	}
 	if len(result.Siblings) != 1 || result.Siblings[0] != "1" {
 		t.Fatalf("add did not report the sibling version: %#v", result.Siblings)
+	}
+}
+
+// namedFetcher serves one body under a name the origin supplies, which is what
+// a Content-Disposition header amounts to by the time it reaches the service.
+func namedFetcher(content []byte, name string) *fakeFetcher {
+	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		value := response(content)
+		value.Filename = name
+		return value, nil
+	}}
+}
+
+// unlockedProject writes a lock entry with no file name: a project locked by a
+// DAC from before the field existed. It is the starting state for every
+// migration test here.
+func unlockedNameProject(t *testing.T, content []byte) (string, string) {
+	t.Helper()
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	manifest := project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/geo/database.bin"},
+		},
+	}
+	lock, err := project.NewLock(manifest, map[coord.Coordinate]project.LockAsset{
+		at("asset@1"): {
+			URL:    "https://example.com/geo/database.bin",
+			Digest: digest.Bytes(content),
+			Size:   int64(len(content)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.WritePair(manifestPath, lockPath, manifest, lock); err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath, lockPath
+}
+
+func lockedFilename(t *testing.T, lockPath string) string {
+	t.Helper()
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lock.Assets[at("asset@1")].Filename
+}
+
+// The name an origin supplies is the whole point of the field: a URL ending in
+// an opaque endpoint spells nothing useful, and the header is the only place
+// the real name appears.
+func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(),
+		namedFetcher(content, "database.bin"), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("lock recorded %q, want the supplied name", name)
+	}
+}
+
+// Without a supplied name the URL is the only thing left that spells one.
+func TestResolveFallsBackToTheNameTheURLSpells(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("lock recorded %q, want the name the URL spells", name)
+	}
+}
+
+// A name an origin supplies that is not one path element is refused rather than
+// repaired, and the URL answers instead. Nothing about the command fails: the
+// field decides nothing, so a hostile header costs a worse name and no more.
+func TestResolveRefusesASuppliedNameThatEscapesItsDirectory(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(),
+		namedFetcher(content, "../../etc/passwd"), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("lock recorded %q, want the URL name instead of the escaping one", name)
+	}
+}
+
+// A lock from before the field existed gains a name without a request, because
+// the URL already holds the answer. An asset that agrees with its manifest is
+// never resolved again, so a migration that waited for a resolution would never
+// reach a project that had settled.
+func TestUpdateLockBackfillsAMissingFilenameWithoutARequest(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := unlockedNameProject(t, content)
+	if name := lockedFilename(t, lockPath); name != "" {
+		t.Fatalf("the fixture already carries the name %q", name)
+	}
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, UpdateLock: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("the backfilled name is %q", name)
+	}
+
+	// The rewrite is the migration and happens once. A pull that kept rewriting
+	// the lock would have anything watching the project directory read a change
+	// on every run.
+	before := projecttest.MustRead(t, lockPath)
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, UpdateLock: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("a second pull rewrote the lock file again")
+	}
+}
+
+// A missing name never makes a lock look stale. Every project locked before
+// this field existed would otherwise have to re-resolve every asset it holds.
+func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := unlockedNameProject(t, content)
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatalf("a lock with no file name was rejected: %v", err)
+	}
+	if len(result.Assets) != 1 || result.Assets[0].Cached != true {
+		t.Fatalf("unexpected pull result: %#v", result.Assets)
+	}
+	// A pull without --update-lock writes nothing, so the name is still absent.
+	if name := lockedFilename(t, lockPath); name != "" {
+		t.Fatalf("a plain pull wrote %q to the lock file", name)
+	}
+}
+
+// A manifest that repoints an asset replaces the source the old name described,
+// so the name goes with it rather than following the bytes.
+func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/old/first.bin", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "first.bin" {
+		t.Fatalf("lock recorded %q", name)
+	}
+
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/new/second.bin"},
+		},
+	})
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, UpdateLock: true, AllowRebind: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "second.bin" {
+		t.Fatalf("lock kept %q after the URL moved", name)
+	}
+}
+
+// The asset view is where a script reads the name, so it has to carry what the
+// lock holds.
+func TestInfoReportsTheLockedFilename(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	result, err := service.Info(application.InfoOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Assets) != 1 || result.Assets[0].Filename != "asset" {
+		t.Fatalf("info did not report the locked file name: %#v", result.Assets)
+	}
+}
+
+// A 304 says these are the bytes the lock already describes, so it must not
+// rename them. The response carries no body and rarely repeats the header that
+// named the asset, so honoring whatever it reports would trade a name the origin
+// once gave for whatever the URL happens to spell.
+func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
+	content := []byte("cached")
+	manifestPath, lockPath := lockedProject(t, content)
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := lock.Assets[at("asset@1")]
+	asset.ETag = "\"old\""
+	// A name only a Content-Disposition header could have produced: the URL of
+	// this fixture spells "asset".
+	asset.Filename = "database.bin"
+	lock.Assets[at("asset@1")] = asset
+	if err := project.Write(lockPath, lock); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeStore()
+	warm(t, store, content)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		return &application.FetchResponse{
+			NotModified: true,
+			ETag:        "\"new\"",
+			// What the adapter reports for a 304 with no header: the name the
+			// URL spells, which is worse than the one already recorded.
+			Filename: "asset",
+			Body:     io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	}}
+	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+
+	result, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, UpdateLock: true, Refresh: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assets[0].Status != "not_modified" {
+		t.Fatalf("unexpected pull result: %#v", result.Assets)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("a not-modified response changed the recorded name to %q", name)
+	}
+}
+
+// The same response does fill in an entry that has no name, which is how a lock
+// from before the field existed migrates through a refresh.
+func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := unlockedNameProject(t, content)
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := lock.Assets[at("asset@1")]
+	asset.ETag = "\"old\""
+	lock.Assets[at("asset@1")] = asset
+	if err := project.Write(lockPath, lock); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeStore()
+	warm(t, store, content)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		return &application.FetchResponse{
+			NotModified: true,
+			ETag:        "\"new\"",
+			Filename:    "database.bin",
+			Body:        io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	}}
+	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, UpdateLock: true, Refresh: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("the backfilled name is %q", name)
 	}
 }

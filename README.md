@@ -202,7 +202,8 @@ read the project files. `cache gc` collects the whole shared cache.
     "backend-app/geo-database@2026.08": {
       "url": "https://example.com/geo/2026.08/database.bin",
       "digest": "sha256:...",
-      "size": 123
+      "size": 123,
+      "filename": "database.bin"
     }
   }
 }
@@ -224,6 +225,26 @@ one. A refresh replays it as an `If-None-Match` hint and skips the download on a
 `304`: an origin that answers `304` has confirmed the asset just as well as one
 that sends the bytes again. A pinned asset neither sends nor records an ETag, so
 its lock entry omits the field.
+
+The `filename` field records what the origin calls the asset, which a cache path
+cannot carry: that path is a digest, and a digest is the right name for bytes
+and the wrong name for anything that reads an extension. DAC takes the name from
+a `Content-Disposition` header when the origin sends one, and otherwise from the
+last element of the URL the request finished at, so an asset served through a
+redirect is named where it is served rather than where it was asked for. A name
+that is not a single path element — one holding a separator, a control byte, a
+leading `-`, `.`, or `..` — is refused rather than repaired, and the next source
+answers instead. An asset that nothing names omits the field.
+
+The name is advisory. Nothing decides anything by it, and it takes no part in
+the check that asks whether a lock still describes its manifest, so a lock
+written before the field existed is not stale and does not have to re-resolve
+anything. `dac pull --update-lock` fills in what the URL spells for those
+entries once, without a request.
+
+It belongs to the lock rather than to the cached object because it describes the
+source and not the bytes. Two coordinates that resolve to the same object share
+one file in the cache and may well disagree about what it is called.
 
 DAC rejects unknown JSON fields, duplicate keys, unsupported schema versions,
 and stale lock files. It writes project files with atomic renames.
@@ -392,8 +413,14 @@ Use `--json` or `-j` to write one versioned JSON document to standard output:
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
 object holding the counts. A coordinate filters the array to one item, and a
 `<namespace>/<name>` filters it to that asset's versions. A missing
-or stale lock sets `cacheStatus` to `unavailable` and omits digest, size, and
-path data; a damaged object sets it to `corrupt`.
+or stale lock sets `cacheStatus` to `unavailable` and omits digest, size,
+filename, and path data; a damaged object sets it to `corrupt`.
+
+Every asset carries the optional `filename` its lock entry records, which is
+what the origin calls the asset. The cache path names the bytes, so this is the
+half a script needs to put a file somewhere a later tool will recognize. It is
+absent for an asset nothing names, and it was added without a version bump
+because an added optional field breaks no consumer.
 
 JSON errors use the same stream and framing:
 

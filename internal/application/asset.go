@@ -39,9 +39,14 @@ type Asset struct {
 	Version    string `json:"version"`
 	URL        string `json:"url"`
 	Integrity  string `json:"integrity,omitempty"`
-	Digest     string `json:"digest"`
-	Size       int64  `json:"size"`
-	Cached     bool   `json:"cached"`
+	// Filename is what the origin calls this asset. The cache path names the
+	// bytes, which is the wrong name for anything that reads an extension, so
+	// this is the half a script needs to put the file somewhere useful. It is
+	// absent for an asset no lock entry describes yet.
+	Filename string `json:"filename,omitempty"`
+	Digest   string `json:"digest"`
+	Size     int64  `json:"size"`
+	Cached   bool   `json:"cached"`
 	// Corrupt marks an object the cache holds but cannot vouch for. It is
 	// separate from Cached because the two answer different questions: whether a
 	// command can use the object, and whether it should say why not.
@@ -61,6 +66,7 @@ func (service *Service) assetView(name coord.Coordinate, source project.Asset, l
 		Version:    name.Version,
 		URL:        source.URL,
 		Integrity:  source.Integrity,
+		Filename:   locked.Filename,
 		Digest:     locked.Digest,
 		Size:       locked.Size,
 		Status:     status,
