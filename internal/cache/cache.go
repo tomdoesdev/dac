@@ -153,7 +153,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	result.TempCount = temporary
 
-	sidecars, abandoned, err := store.collectSidecars(blobs, entries, collected, cutoff, options.DryRun)
+	sidecars, abandoned, err := store.collectSidecars(ctx, blobs, entries, collected, cutoff, options.DryRun)
 	if err != nil {
 		return application.GCResult{}, err
 	}
@@ -243,7 +243,7 @@ func (store *Store) collect(ctx context.Context, value string, cutoff time.Time,
 // would be reported a second time as an orphaned sidecar, which is the one
 // number in the summary that is supposed to mean something went wrong outside
 // DAC.
-func (store *Store) collectSidecars(directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff time.Time, dryRun bool) (int, int, error) {
+func (store *Store) collectSidecars(ctx context.Context, directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff time.Time, dryRun bool) (int, int, error) {
 	sidecars, abandoned := 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -263,28 +263,79 @@ func (store *Store) collectSidecars(directory string, entries []os.DirEntry, col
 				continue
 			}
 			abandoned++
-		case strings.HasSuffix(name, metaSuffix):
-			objectName := strings.TrimSuffix(name, metaSuffix)
-			if _, taken := collected[objectName]; taken {
+			if dryRun {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(directory, objectName)); err == nil {
-				continue
-			} else if !errors.Is(err, os.ErrNotExist) {
+			if err := os.Remove(filepath.Join(directory, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return 0, 0, err
 			}
-			sidecars++
-		default:
-			continue
-		}
-		if dryRun {
-			continue
-		}
-		if err := os.Remove(filepath.Join(directory, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return 0, 0, err
+		case strings.HasSuffix(name, metaSuffix):
+			orphaned, err := store.collectSidecar(ctx, directory, name, collected, cutoff, dryRun)
+			if err != nil {
+				return 0, 0, err
+			}
+			if orphaned {
+				sidecars++
+			}
 		}
 	}
 	return sidecars, abandoned, nil
+}
+
+// collectSidecar removes one sidecar that outlived the object it described.
+//
+// It takes that object's digest lock and re-checks under it, like every other
+// removal in this store. The listing it works from was taken before any of the
+// collection, and between the listing and this removal another process can
+// install the object the sidecar belongs to -- at which point the file is a
+// current record rather than a leftover, and taking it costs the next command a
+// full re-hash of an object nothing was ever in doubt about.
+//
+// It also leaves a sidecar the cutoff has not reached, exactly as the sweep
+// leaves a temporary file that new. A sidecar written while this run was walking
+// the directory is by definition too young to be anybody's leftover.
+func (store *Store) collectSidecar(ctx context.Context, directory, name string, collected map[string]struct{}, cutoff time.Time, dryRun bool) (bool, error) {
+	objectName := strings.TrimSuffix(name, metaSuffix)
+	if _, taken := collected[objectName]; taken {
+		return false, nil
+	}
+	// A name this store did not write is not a sidecar, whatever it ends with,
+	// and there is no object lock to take for it.
+	value := digest.Prefix + objectName
+	if _, err := digest.Hex(value); err != nil {
+		return false, nil
+	}
+	path := filepath.Join(directory, name)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.ModTime().Before(cutoff) {
+		return false, nil
+	}
+	orphaned := false
+	err = store.WithLock(ctx, value, func() error {
+		if _, err := os.Stat(filepath.Join(directory, objectName)); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		orphaned = true
+		if dryRun {
+			return nil
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return orphaned, nil
 }
 
 func (store *Store) collectTemporary(cutoff time.Time, dryRun bool) (int, error) {

@@ -447,7 +447,8 @@ func TestGCRemovesOrphanedSidecars(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	age(t, metaPath(path), time.Now().Add(-48*time.Hour))
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,6 +457,97 @@ func TestGCRemovesOrphanedSidecars(t *testing.T) {
 	}
 	if _, err := os.Stat(metaPath(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the orphaned sidecar survived: %v", err)
+	}
+}
+
+// TestGCWaitsForTheDigestLockBeforeTakingASidecar covers the window between the
+// sweep deciding a sidecar is orphaned and removing it. Every other removal in
+// this store happens under the object's lock, and this one used to be the
+// exception: an install that landed in that window made the sidecar a current
+// record, and taking it anyway cost the next command a full re-hash of an object
+// nothing had been in doubt about.
+func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	age(t, metaPath(path), time.Now().Add(-48*time.Hour))
+
+	type outcome struct {
+		result application.GCResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	var early outcome
+	finishedEarly := false
+	err = store.WithLock(context.Background(), object.Digest, func() error {
+		go func() {
+			result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+			done <- outcome{result: result, err: err}
+		}()
+		// Nothing else in this collection needs the lock, so a sweep that
+		// finishes while another process holds it finished without it.
+		select {
+		case early = <-done:
+			finishedEarly = true
+		case <-time.After(250 * time.Millisecond):
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finishedEarly {
+		t.Fatalf("the sweep completed while the object's lock was held: %#v", early.result)
+	}
+	finished := <-done
+	if finished.err != nil {
+		t.Fatal(finished.err)
+	}
+	if finished.result.SidecarCount != 1 {
+		t.Fatalf("the sweep removed %d orphaned sidecars once the lock was free, want 1", finished.result.SidecarCount)
+	}
+}
+
+// TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff ages a sidecar the same way
+// the sweep ages everything else it removes.
+//
+// The sweep walks a listing taken before any of the collection, and it holds no
+// lock while it decides. A sidecar that appeared after that listing belongs to
+// an object another process is installing right now, and removing it costs the
+// next command a full re-hash of an object nothing was in doubt about. Nothing
+// this new is anybody's leftover, which is already why the temporary-file
+// branch beside it checks the same thing.
+func TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SidecarCount != 0 {
+		t.Fatalf("collection took %d sidecars younger than the cutoff", result.SidecarCount)
+	}
+	if _, err := os.Stat(metaPath(path)); err != nil {
+		t.Fatalf("a sidecar younger than the cutoff was removed: %v", err)
 	}
 }
 

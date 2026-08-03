@@ -65,7 +65,16 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	}
 	service.Reporter.Start(name, response.Length)
 	reader := &progressReader{name: name, reader: response.Body, reporter: service.Reporter}
-	object, err := service.Store.Put(ctx, reader, PutAny(source.Integrity, options.MaxSize))
+	// A pinned asset is normally installed against its publisher digest, so
+	// bytes that fail it never reach the cache. A caller that is observing wants
+	// the digest the origin actually served, because the difference between that
+	// and the locked one is its whole answer, and the store cannot report it
+	// while it is also refusing it.
+	expect := source.Integrity
+	if options.Observe {
+		expect = ""
+	}
+	object, err := service.Store.Put(ctx, reader, PutAny(expect, options.MaxSize))
 	if err != nil {
 		return project.LockAsset{}, "", contentError(err)
 	}

@@ -3,9 +3,20 @@ package bytesize
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
+
+// overflow is the first value a byte count may not reach.
+//
+// It is two to the sixty-third, one past the largest int64, because that is the
+// nearest bound a float64 can express exactly: math.MaxInt64 itself has no
+// exact float64 form, so comparing against it would let a value through that
+// the conversion then wraps to a negative number. A negative limit reads as no
+// limit at all further down, which turned a mistyped size into a guard that was
+// silently switched off.
+const overflow = float64(1 << 63)
 
 // units maps a suffix to its multiplier, the longest suffix of each family
 // first so that MiB is never read as M. Both SI and binary suffixes are
@@ -52,10 +63,20 @@ func Parse(value string) (int64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("byte count %q is invalid", value)
 		}
+		// ParseFloat accepts "NaN" and "Inf", so "NaNB" and "InfB" arrive here as
+		// numbers. Neither is negative and neither converts to anything an int64
+		// can hold, so both would otherwise pass every check below.
+		if math.IsNaN(amount) || math.IsInf(amount, 0) {
+			return 0, fmt.Errorf("byte count %q is invalid", value)
+		}
 		if amount < 0 {
 			return 0, fmt.Errorf("byte count %q must not be negative", value)
 		}
-		return int64(amount * float64(unit.multiplier)), nil
+		scaled := amount * float64(unit.multiplier)
+		if scaled >= overflow {
+			return 0, fmt.Errorf("byte count %q is larger than %d bytes", value, int64(math.MaxInt64))
+		}
+		return int64(scaled), nil
 	}
 	amount, err := strconv.ParseInt(trimmed, 10, 64)
 	if err != nil {

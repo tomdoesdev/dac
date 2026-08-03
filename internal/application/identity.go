@@ -85,14 +85,21 @@ func checkRetired(resolved map[coord.Coordinate]project.LockAsset, old project.L
 	return nil
 }
 
-// collisionFault turns the lock invariant into the command error for it. The
-// rule lives in project so that no Lock value can ever hold a collision; the
-// wording lives here so that the operator gets an instruction rather than
-// "the lock file is invalid".
-func collisionFault(err error) error {
+// asCollision turns the lock invariant into the command error for it, and
+// reports whether the error was one. The rule lives in project so that no Lock
+// value can ever hold a collision; the wording lives here so that the operator
+// gets an instruction rather than "the lock file is invalid".
+//
+// It answers two things at once because its callers want different ones. A
+// caller with its own wording for everything else needs to know whether this
+// error was a collision; a caller that has none needs a fault either way. The
+// bool keeps those apart, so that neither ends up reading a nil error as
+// success -- which is what a single function returning nil for "not a
+// collision" invited, and what versionFault below exists to make impossible.
+func asCollision(err error) (*fault.Error, bool) {
 	var collision *project.VersionCollisionError
 	if !errors.As(err, &collision) {
-		return nil
+		return nil, false
 	}
 	return &fault.Error{
 		Code:    "version_collision",
@@ -103,13 +110,22 @@ func collisionFault(err error) error {
 			"digest":   collision.Digest,
 		},
 		Cause: collision,
+	}, true
+}
+
+// versionFault names a failed version check. It always returns an error,
+// because its caller has already decided that the check failed.
+func versionFault(err error) error {
+	if collision, found := asCollision(err); found {
+		return collision
 	}
+	return fault.Wrap("lock_invalid", "DAC could not check the resolved assets.", err)
 }
 
 // lockFault names a lock failure. A version collision keeps its own code and
 // instruction; everything else is a lock file DAC could not use.
 func lockFault(code, message string, err error) error {
-	if collision := collisionFault(err); collision != nil {
+	if collision, found := asCollision(err); found {
 		return collision
 	}
 	return fault.Wrap(code, message, err)

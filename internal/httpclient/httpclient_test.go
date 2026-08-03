@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -216,6 +217,128 @@ func TestFetchSendsTheCredentialsOfEachHost(t *testing.T) {
 	_ = response.Body.Close()
 	if value := received.Load().(string); value != "target-secret" {
 		t.Fatalf("the redirect target received %q, want its own credentials", value)
+	}
+}
+
+// countingCredentialHelper writes a helper that answers with a different token
+// on each run, and returns a function reporting how many times it has run.
+func countingCredentialHelper(t *testing.T) (string, func() int) {
+	t.Helper()
+	directory := t.TempDir()
+	counter := filepath.Join(directory, "runs")
+	path := filepath.Join(directory, "helper")
+	body := fmt.Sprintf("#!/bin/sh\nruns=$(cat %[1]q 2>/dev/null || echo 0)\n"+
+		"runs=$((runs + 1))\nprintf '%%s' \"$runs\" > %[1]q\n"+
+		"printf '{\"headers\":{\"X-Api-Key\":[\"token-%%s\"]}}' \"$runs\"\n", counter)
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path, func() int {
+		t.Helper()
+		data, err := os.ReadFile(counter)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runs
+	}
+}
+
+// TestFetchAsksACredentialHelperOncePerTransfer covers the cost a split
+// download used to pay. Every range request asked the helper again, so an asset
+// large enough to be worth splitting started a program once per 8MiB -- over a
+// thousand times for ten gigabytes, where the same asset streamed whole asks
+// once.
+func TestFetchAsksACredentialHelperOncePerTransfer(t *testing.T) {
+	origin := newRangeServer(assetSize)
+	server := httptest.NewServer(origin)
+	defer server.Close()
+	helper, runs := countingCredentialHelper(t)
+	resolver, err := credential.New([]string{"127.0.0.1=" + helper}, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Options{Timeout: 10 * time.Second, Parallelism: 4, Credentials: resolver})
+	defer client.Close()
+
+	fetchAll(t, client, server.URL)
+	if requests := origin.requests.Load(); requests != 3 {
+		t.Fatalf("the origin answered %d requests, so this was not a split download", requests)
+	}
+	if got := runs(); got != 1 {
+		t.Fatalf("the helper ran %d times for one transfer", got)
+	}
+}
+
+// TestFetchAsksAgainWhenTheOriginRejectsTheCredentials is what keeps the cache
+// from turning a stale token into a failed download. A transfer long enough to
+// need the cache is long enough to outlive the credentials it started with, and
+// a rejection is the only sign of that DAC ever gets.
+func TestFetchAsksAgainWhenTheOriginRejectsTheCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Api-Key") != "token-2" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(writer, "asset")
+	}))
+	defer server.Close()
+	helper, runs := countingCredentialHelper(t)
+	resolver, err := credential.New([]string{"127.0.0.1=" + helper}, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No retries, so the second request can only be the one the rejection
+	// bought rather than the retry machinery covering for it.
+	client := New(Options{Timeout: 5 * time.Second, Retries: 0, Credentials: resolver})
+	defer client.Close()
+
+	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL, AllowInsecureHTTP: true})
+	if err != nil {
+		t.Fatalf("a rejected credential was not replaced: %v", err)
+	}
+	content, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || string(content) != "asset" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if got := runs(); got != 2 {
+		t.Fatalf("the helper ran %d times, want one answer and one replacement", got)
+	}
+}
+
+// TestFetchStopsAfterOneReplacementOfRejectedCredentials keeps the retry from
+// becoming a loop. An origin that refuses every credential is answering about
+// the credentials, not about their age.
+func TestFetchStopsAfterOneReplacementOfRejectedCredentials(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	helper, runs := countingCredentialHelper(t)
+	resolver, err := credential.New([]string{"127.0.0.1=" + helper}, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Options{Timeout: 5 * time.Second, Retries: 0, Credentials: resolver})
+	defer client.Close()
+
+	if _, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL, AllowInsecureHTTP: true}); err == nil {
+		t.Fatal("an origin that refused every credential produced no error")
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("the origin answered %d requests, want the first and one replacement", got)
+	}
+	if got := runs(); got != 2 {
+		t.Fatalf("the helper ran %d times", got)
 	}
 }
 

@@ -168,6 +168,16 @@ type NetworkOptions struct {
 	// backs pull --refresh-lock, which writes what it finds, and verify
 	// --refresh, which reports it.
 	Refresh bool
+	// Observe resolves a pinned asset for the digest its origin now serves
+	// instead of against the one the manifest pins.
+	//
+	// It belongs to verify alone. Every command that writes a lock file has to
+	// enforce a pin, and enforcing one during a download raises
+	// content_mismatch from the store before anything has compared the result
+	// against the lock -- so a refresh would stop at the first drifted asset,
+	// report a failed transfer rather than the drift it exists to find, and
+	// never reach the assets behind it.
+	Observe bool
 	// AllowRebind permits a locked coordinate to end up naming different bytes.
 	// Without it a version means one thing forever, which is the whole reason
 	// to write a version down.

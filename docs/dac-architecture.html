@@ -519,13 +519,22 @@ type RequestDetail interface {
     already had a version" rather than "the lock file is invalid".
   </p>
 
-  <h3>The one command that suspends a rule</h3>
+  <h3>The one command that suspends its rules</h3>
   <p>
     <code>dac verify --refresh</code> resolves with <code>AllowRebind</code> set. Leaving the rebind check on would
     make a refresh fail with <code>version_rebind</code> at the first drifted asset — a second name for the answer
     this command exists to report, delivered before it could finish collecting it. Verify gathers every
     drifted asset and reports them together as <code>lock_drift</code>, and writes nothing: a scheduled job that
     rewrote the lock to match what it found would destroy the evidence on its way to reporting success.
+  </p>
+  <p>
+    It suspends the publisher pin for the same reason, resolving a pinned asset <em>for</em> the digest its origin
+    now serves rather than <em>against</em> the one the manifest pins. Enforced here, the pin raises
+    <code>content_mismatch</code> from the store before anything has compared the result to the lock — so the
+    refresh would stop at the first drifted asset, report a failed transfer instead of the drift it exists to
+    find, and never reach the assets behind it. Precisely the assets somebody cared enough about to pin would
+    be the ones <code>lock_drift</code> never named. Every command that <em>writes</em> a lock file still enforces
+    the pin: <code>pull --refresh-lock</code> against a moved origin is <code>content_mismatch</code>, and correctly so.
   </p>
 
   <h3>The case DAC declines to refuse</h3>
@@ -1023,6 +1032,15 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
     something outside DAC deleted. Each removal happens under that object's digest lock, and the timestamp is
     re-checked under the lock, because waiting for it takes time during which another process may have used
     the object.
+  </p>
+  <p>
+    That includes the sidecar sweep, which works from a directory listing taken before any of the collection.
+    A sidecar can lose its object twice over — once because this run collected the pair, and once because
+    something outside DAC removed the object — and only the second is damage worth reporting, so the sweep
+    is told what this run took. It also leaves a sidecar the cutoff has not reached, exactly as it leaves a
+    temporary file that new: one written while the run was walking the directory belongs to an install
+    happening right now, and taking it would cost the next command a full re-hash of an object nothing had
+    been in doubt about.
   </p>
   <div class="callout warn">
     <span class="label">Lock files are never collected</span>

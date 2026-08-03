@@ -42,6 +42,39 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// TestParseRejectsCountsAnInt64CannotHold covers the values that used to come
+// back as a negative number with no error. A caller reads a negative limit as
+// no limit, so a mistyped size did not raise the bound DAC downloads under --
+// it removed it.
+func TestParseRejectsCountsAnInt64CannotHold(t *testing.T) {
+	for _, value := range []string{"99999999TiB", "1e30B", "InfB", "infB", "+InfKiB", "NaNB", "nanMiB"} {
+		got, err := Parse(value)
+		if err == nil {
+			t.Errorf("Parse(%q) = %d, want an error", value, got)
+		}
+	}
+}
+
+// TestParseAcceptsTheLargestUsableCount keeps the overflow bound clear of the
+// counts a real cache could hold.
+func TestParseAcceptsTheLargestUsableCount(t *testing.T) {
+	for _, testCase := range []struct {
+		value string
+		want  int64
+	}{
+		{"8388607TiB", 8388607 << 40},
+		{"9223372036854775807", 1<<63 - 1},
+	} {
+		got, err := Parse(testCase.value)
+		if err != nil {
+			t.Fatalf("Parse(%q) failed: %v", testCase.value, err)
+		}
+		if got != testCase.want {
+			t.Fatalf("Parse(%q) = %d, want %d", testCase.value, got, testCase.want)
+		}
+	}
+}
+
 func TestFormatUsesBinaryUnits(t *testing.T) {
 	for _, testCase := range []struct {
 		count    int64

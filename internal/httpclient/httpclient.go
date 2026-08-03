@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tom/dac/internal/application"
@@ -87,20 +88,39 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 		return nil, &RequestError{URL: target.URL, Err: err}
 	}
 	request.URL = parsed.String()
+	// One cache for the whole transfer, including the range requests that finish
+	// a split download and every retry along the way.
+	credentials := newCredentialCache(client)
 	var lastErr error
-	for attempt := 0; ; attempt++ {
-		response, err := client.attempt(ctx, request)
+	reauthorized := false
+	for attempt := 0; ; {
+		response, err := client.attempt(ctx, request, credentials)
 		if err == nil {
 			return response, nil
 		}
 		lastErr = err
+		if !reauthorized && rejectedCredentials(err) && credentials.reset() {
+			reauthorized = true
+			continue
+		}
 		if attempt >= client.options.Retries || !retryable(err) || ctx.Err() != nil {
 			return nil, &RequestError{URL: request.URL, Status: statusOf(lastErr), Err: lastErr}
 		}
 		if err := sleep(ctx, backoff(attempt, err)); err != nil {
 			return nil, &RequestError{URL: request.URL, Err: err}
 		}
+		attempt++
 	}
+}
+
+// rejectedCredentials reports a status that says the credentials were the
+// problem. It is the one failure worth asking a helper again for: a cached
+// answer can go stale mid-transfer, and a rejection is the only evidence of it
+// DAC ever sees.
+func rejectedCredentials(err error) bool {
+	var status *statusError
+	return errors.As(err, &status) &&
+		(status.statusCode == http.StatusUnauthorized || status.statusCode == http.StatusForbidden)
 }
 
 // RequestError names the request behind a transport failure.
@@ -132,7 +152,7 @@ func statusOf(err error) int {
 	return 0
 }
 
-func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {
+func (client *Client) attempt(ctx context.Context, input application.FetchRequest, cache *credentialCache) (*application.FetchResponse, error) {
 	downloadCtx, cancelDownload := context.WithCancel(ctx)
 	// The first request gets a cancellation of its own inside the download's, so
 	// that a split download can close it once it has delivered the first chunk
@@ -149,7 +169,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 	if input.ETag != "" {
 		request.Header.Set("If-None-Match", input.ETag)
 	}
-	credentials := client.authorizer()
+	credentials := cache.authorizer()
 	if err := credentials.apply(headCtx, request); err != nil {
 		cancel()
 		return nil, err
@@ -170,7 +190,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 		NotModified: response.StatusCode == http.StatusNotModified,
 		ETag:        response.Header.Get("ETag"),
 		Length:      response.ContentLength,
-		Body:        client.body(downloadCtx, input, response, cancel, cancelHead),
+		Body:        client.body(downloadCtx, input, response, cancel, cancelHead, cache),
 	}, nil
 }
 
@@ -191,6 +211,73 @@ func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, cre
 	}
 }
 
+// credentialCache holds the headers a helper supplied for each URL in one
+// transfer.
+//
+// A helper is a program DAC starts, and a split download asks for the same URL
+// once per chunk. At an 8MiB chunk a 10GiB asset is over a thousand helper runs
+// for a transfer the whole-body path pays for once, which is slow against a
+// helper that shells out to a credential service and fatal against one that is
+// rate limited: the download starts failing partway through for a reason
+// nothing in the transfer explains.
+//
+// The key is the whole URL rather than the host. The helper protocol hands a
+// helper the request URI, so a helper is entitled to answer differently for
+// different paths, and a host key would quietly take that away. Every chunk of
+// one download asks about one URL, so the narrower key costs nothing here.
+//
+// The cache belongs to one Fetch. A Client outlives every asset in a command,
+// and a helper written to prompt or to audit each request should not find one
+// asset answered out of what another collected.
+type credentialCache struct {
+	client  *Client
+	mutex   sync.Mutex
+	entries map[string]http.Header
+}
+
+func newCredentialCache(client *Client) *credentialCache {
+	return &credentialCache{client: client, entries: map[string]http.Header{}}
+}
+
+// headers returns the credentials for one URL, asking the helper only for a URL
+// this transfer has not seen. The result is shared, so a caller may read it but
+// must not modify it.
+//
+// The helper runs with no lock held. Several workers starting on a cold cache
+// can therefore run it at once, which costs one run per worker rather than the
+// one a lock would buy -- and buys back the alternative, where every URL in the
+// transfer waits behind whichever helper is slowest to answer.
+func (cache *credentialCache) headers(ctx context.Context, url string) (http.Header, error) {
+	cache.mutex.Lock()
+	header, found := cache.entries[url]
+	cache.mutex.Unlock()
+	if found {
+		return header, nil
+	}
+	header, err := cache.client.options.Credentials.Headers(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	cache.mutex.Lock()
+	cache.entries[url] = header
+	cache.mutex.Unlock()
+	return header, nil
+}
+
+// reset forgets every answer and reports whether it had any. It clears the
+// whole transfer rather than one URL because a rejection can come from a
+// redirect target the caller never named, and re-asking about a URL that was
+// fine costs one helper run.
+func (cache *credentialCache) reset() bool {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	if len(cache.entries) == 0 {
+		return false
+	}
+	cache.entries = map[string]http.Header{}
+	return true
+}
+
 // authorizer sets the credentials for each host in one redirect chain.
 //
 // It remembers every header name it has applied, because clearing Authorization
@@ -202,16 +289,17 @@ func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, cre
 //
 // One authorizer belongs to one request chain, and net/http runs a chain's
 // redirect callbacks on the goroutine that started it, so it needs no locking.
+// The cache behind it is shared by every chain in the transfer and does.
 type authorizer struct {
-	client *Client
+	cache *credentialCache
 	// applied names every header this chain has set. It accumulates rather than
 	// replacing, because the headers copied onto a redirect come from the
 	// initial request rather than from the hop before it.
 	applied map[string]struct{}
 }
 
-func (client *Client) authorizer() *authorizer {
-	return &authorizer{client: client, applied: map[string]struct{}{}}
+func (cache *credentialCache) authorizer() *authorizer {
+	return &authorizer{cache: cache, applied: map[string]struct{}{}}
 }
 
 // apply clears the credentials of the previous host and sets this host's.
@@ -220,7 +308,7 @@ func (credentials *authorizer) apply(ctx context.Context, request *http.Request)
 	for name := range credentials.applied {
 		request.Header.Del(name)
 	}
-	header, err := credentials.client.options.Credentials.Headers(ctx, request.URL.String())
+	header, err := credentials.cache.headers(ctx, request.URL.String())
 	if err != nil {
 		return err
 	}

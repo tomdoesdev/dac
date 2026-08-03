@@ -28,7 +28,10 @@ type VerifyResult struct {
 //
 // Resolving an asset means downloading it, so a refresh warms the cache as a
 // side effect. Nothing depends on that, but a large project should expect the
-// transfer rather than discover it.
+// transfer rather than discover it. For a drifted asset that includes the bytes
+// the origin now serves, stored under their own digest: a content-addressed
+// name cannot collide with the locked object, so the good bytes stay where they
+// are and the new ones age out of the cache like anything else.
 func (service *Service) Verify(ctx context.Context, options NetworkOptions) (VerifyResult, error) {
 	manifest, lock, err := service.readProject()
 	if err != nil {
@@ -46,6 +49,11 @@ func (service *Service) Verify(ctx context.Context, options NetworkOptions) (Ver
 	// second name for the answer this command exists to report, delivered
 	// before it could finish collecting it.
 	options.AllowRebind = true
+	// For the same reason it resolves a pinned asset for its digest rather than
+	// against it. A pin enforced here would fail the download of the one asset
+	// somebody cared enough about to pin, and report that failure as a broken
+	// transfer instead of as the drift it is.
+	options.Observe = true
 	reconciled, err := service.reconcile(ctx, manifest, lock, options)
 	if err != nil {
 		return VerifyResult{}, err
