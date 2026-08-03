@@ -246,6 +246,7 @@ Request and policy options appear only on commands that use them:
 | `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `pull`, `verify` |
 | `--retries` | `DAC_RETRIES` | `2` | `add`, `pull`, `verify` |
 | `--concurrency` | `DAC_CONCURRENCY` | `4` | `pull`, `verify` |
+| `--download-parts` | `DAC_DOWNLOAD_PARTS` | `4` | `add`, `pull`, `verify` |
 | `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `pull`, `verify` |
 | `--progress` | | `true` | `add`, `pull`, `verify` |
 | `--no-rewrite` | | `false` | `add`, `pull`, `verify` |
@@ -261,6 +262,42 @@ It requests identity encoding and checks redirects with the same URL policy.
 `--max-size` bounds a response whose size DAC does not know ahead of time, so it
 exists to stop a runaway stream rather than to express a policy about asset
 sizes. Raise it for a project with genuinely larger assets.
+
+`--download-parts` sets how many requests one download may be split across. See
+[Split downloads](#split-downloads). It is a budget for the whole command rather
+than a per-asset multiplier, so raising it speeds up a project of one large asset
+without opening `--concurrency` times as many connections for a project of many.
+Set it to `1` to send one request per asset.
+
+## Split downloads
+
+DAC finishes one large download over several parallel requests when the origin
+serves byte ranges. The first response carries the first 8MiB, and the rest of
+the asset arrives as `Range` requests for the 8MiB pieces after it, so splitting
+costs no extra round trip. A fixed piece size rather than a share of the asset is
+what bounds the cost: bytes are hashed in order, so a piece that arrives early
+waits its turn in memory, and only a few are ever in flight.
+
+Three conditions have to hold, and DAC streams the single response it already has
+whenever one does not:
+
+- `--download-parts` is more than `1` and the command has a part to spare.
+- The response says `Accept-Ranges: bytes` and is at least 16MiB.
+- The response carries a strong `ETag` or a `Last-Modified` date.
+
+The last condition is the one worth explaining. A split download reads one asset
+over several requests, so it has to be sure every request answers about the same
+bytes. DAC replays the validator as an `If-Match` or `If-Unmodified-Since`
+precondition, which turns a publisher who replaced the asset mid-download into a
+`412` rather than a file assembled from two versions. Without a validator to
+build that precondition from, DAC does not split at all.
+
+DAC also checks the `Content-Range` of every piece against the range it asked
+for. A pinned asset's digest would catch a misassembled file in the end, but it
+could only report that the bytes were wrong, and the reason they were wrong is
+worth naming. A piece that fails is retried on its own, under the same
+`--retries` and backoff as a whole request: its bytes have not reached the hash
+yet, so the retry costs one piece rather than the asset.
 
 ## Credentials
 

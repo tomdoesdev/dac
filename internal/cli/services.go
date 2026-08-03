@@ -55,9 +55,14 @@ func (runner *runner) networkService(current *urfave.Command, suppressProgress b
 	if err != nil {
 		return nil, nil, fault.Wrap("invalid_arguments", "A credential helper is invalid.", err)
 	}
+	parts := current.Int("download-parts")
+	if parts < 1 {
+		return nil, nil, fault.New("invalid_arguments", "The download part count must be at least 1.")
+	}
 	client := httpclient.New(httpclient.Options{
 		Timeout:     timeout,
 		Retries:     retries,
+		Parallelism: parts,
 		Rewriter:    rewriter,
 		Credentials: credentials,
 	})
@@ -99,6 +104,11 @@ func (runner *runner) networkFlags(withConcurrency, withMaxSize bool) []urfave.F
 	flags := []urfave.Flag{
 		&urfave.DurationFlag{Name: "timeout", Value: 5 * time.Minute, Sources: urfave.EnvVars("DAC_TIMEOUT"), Usage: "Set the transfer inactivity limit."},
 		&urfave.IntFlag{Name: "retries", Value: 2, Sources: urfave.EnvVars("DAC_RETRIES"), Usage: "Set the retry count."},
+		// The part count is a budget for the whole command rather than a
+		// per-asset multiplier, so raising it speeds up a project of one large
+		// asset without opening --concurrency times as many connections for a
+		// project of many.
+		&urfave.IntFlag{Name: "download-parts", Value: 4, Sources: urfave.EnvVars("DAC_DOWNLOAD_PARTS"), Usage: "Set the number of ranged requests one download may be split across."},
 		&urfave.BoolFlag{Name: "progress", Value: true, Usage: "Write transfer progress to standard error."},
 		&urfave.BoolFlag{Name: "no-rewrite", Usage: "Disable URL rewrite and host policy rules."},
 		&urfave.StringSliceFlag{Name: "credential-helper", Sources: urfave.EnvVars("DAC_CREDENTIAL_HELPER"), Usage: "Ask this helper for request headers, as <command> or <host>=<command>."},

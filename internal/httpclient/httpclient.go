@@ -26,6 +26,10 @@ var _ application.RequestDetail = (*RequestError)(nil)
 type Options struct {
 	Timeout time.Duration
 	Retries int
+	// Parallelism is how many requests one asset may be split across when the
+	// origin serves byte ranges. It is a budget for the whole client rather than
+	// a per-download setting: see acquire in ranged.go. One disables splitting.
+	Parallelism int
 	// Rewriter decides the URL DAC requests for a canonical asset URL.
 	Rewriter *rewrite.Config
 	// Credentials supplies request headers for hosts that need them.
@@ -36,18 +40,23 @@ type Options struct {
 type Client struct {
 	options   Options
 	transport *http.Transport
+	// budget holds one slot per range request the client may add to the
+	// transfers it is already running.
+	budget chan struct{}
 }
 
 // New creates an HTTP asset client.
 func New(options Options) *Client {
+	options.Parallelism = max(options.Parallelism, 1)
 	return &Client{
 		options: options,
+		budget:  make(chan struct{}, options.Parallelism),
 		transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: options.Timeout, KeepAlive: 30 * time.Second}).DialContext,
 			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          32,
-			MaxIdleConnsPerHost:   8,
+			MaxIdleConns:          max(32, options.Parallelism*4),
+			MaxIdleConnsPerHost:   max(8, options.Parallelism*2),
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   options.Timeout,
 			ResponseHeaderTimeout: options.Timeout,
@@ -124,8 +133,14 @@ func statusOf(err error) int {
 }
 
 func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {
-	requestCtx, cancel := context.WithCancel(ctx)
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, input.URL, nil)
+	downloadCtx, cancelDownload := context.WithCancel(ctx)
+	// The first request gets a cancellation of its own inside the download's, so
+	// that a split download can close it once it has delivered the first chunk
+	// without cancelling the range requests that finish the asset. Cancelling
+	// the download ends both.
+	headCtx, cancelHead := context.WithCancel(downloadCtx)
+	cancel := func() { cancelHead(); cancelDownload() }
+	request, err := http.NewRequestWithContext(headCtx, http.MethodGet, input.URL, nil)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -134,12 +149,12 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 	if input.ETag != "" {
 		request.Header.Set("If-None-Match", input.ETag)
 	}
-	if err := client.authorize(requestCtx, request); err != nil {
+	if err := client.authorize(headCtx, request); err != nil {
 		cancel()
 		return nil, err
 	}
 
-	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(requestCtx, input.AllowInsecureHTTP)}
+	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(headCtx, input.AllowInsecureHTTP)}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		cancel()
@@ -154,7 +169,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 		NotModified: response.StatusCode == http.StatusNotModified,
 		ETag:        response.Header.Get("ETag"),
 		Length:      response.ContentLength,
-		Body:        guard(response.Body, cancel, client.options.Timeout),
+		Body:        client.body(downloadCtx, input, response, cancel, cancelHead),
 	}, nil
 }
 
