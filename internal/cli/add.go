@@ -8,6 +8,7 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tom/dac/internal/application"
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/httpclient"
 )
 
@@ -17,16 +18,17 @@ func (runner *runner) addCommand() *urfave.Command {
 		&urfave.StringFlag{Name: "integrity", Usage: "Require this sha256 digest."},
 		&urfave.BoolFlag{Name: "pin", Usage: "Record the resolved digest as the asset integrity value."},
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
-		&urfave.BoolFlag{Name: "force", Usage: "Replace an existing asset."},
+		&urfave.BoolFlag{Name: "force", Usage: "Replace the source of an asset version the manifest already has."},
+		&urfave.BoolFlag{Name: "rebind", Usage: "Accept a source that serves different bytes than this version is locked to."},
 		&urfave.BoolFlag{Name: "offline", Usage: "Write only the manifest without network access."},
 	)
 	return &urfave.Command{
 		Name:      "add",
 		Usage:     "Add one asset and update the project files.",
-		ArgsUsage: "<name>@<version>",
+		ArgsUsage: "<namespace>/<name>@<version>",
 		Flags:     flags,
 		Action: runner.run("add", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			name, version, err := coordinate(current)
+			name, err := coordinate(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -45,8 +47,7 @@ func (runner *runner) addCommand() *urfave.Command {
 				}
 			}
 			result, err := service.Add(ctx, application.AddOptions{
-				Name:              name,
-				Version:           version,
+				Coordinate:        name,
 				URL:               current.String("source"),
 				Integrity:         current.String("integrity"),
 				AllowInsecureHTTP: current.Bool("allow-insecure-http"),
@@ -54,11 +55,12 @@ func (runner *runner) addCommand() *urfave.Command {
 				Pin:               current.Bool("pin"),
 				MaxSize:           maxSize,
 				Offline:           current.Bool("offline"),
+				AllowRebind:       current.Bool("rebind"),
 			})
 			if err != nil {
 				return nil, "", err
 			}
-			return result, addText(name, version, result), nil
+			return result, addText(name, result), nil
 		}),
 	}
 }
@@ -66,21 +68,18 @@ func (runner *runner) addCommand() *urfave.Command {
 // addText summarizes one addition.
 //
 // It reports the resolved digest, which is what an operator pastes back into
-// the manifest when they want to pin an asset by hand, and it names any
-// coordinate the addition retired, because DAC keeps one version of each asset
-// name and a silent replacement breaks every reference to the old one.
+// the manifest when they want to pin an asset by hand, and it names the other
+// versions of the asset the project now carries. An add no longer retires the
+// version before it, so the count of things this project fetches went up, and
+// the command that put it up should be the one to mention it.
 //
 // It also names the assets the addition locked on the way past. Adding one
 // asset to a project whose manifest someone hand edited settles the rest too,
 // and an operator reviewing the lock file diff should read about that here
 // rather than infer it from the diff.
-func addText(name, version string, result application.AddResult) string {
+func addText(name coord.Coordinate, result application.AddResult) string {
 	var text strings.Builder
-	if result.Replaced != "" {
-		_, _ = fmt.Fprintf(&text, "Replaced %s with %s@%s", result.Replaced, name, version)
-	} else {
-		_, _ = fmt.Fprintf(&text, "Added %s@%s", name, version)
-	}
+	_, _ = fmt.Fprintf(&text, "Added %s", name)
 	if result.Digest != "" {
 		_, _ = fmt.Fprintf(&text, " (%s)", result.Digest)
 	}
@@ -88,6 +87,13 @@ func addText(name, version string, result application.AddResult) string {
 		text.WriteString(", pinned")
 	}
 	text.WriteByte('.')
+	if len(result.Siblings) > 0 {
+		_, _ = fmt.Fprintf(&text, " %s also has %s.", name.Group(), strings.Join(result.Siblings, ", "))
+	}
+	if len(result.SharedSources) > 0 {
+		_, _ = fmt.Fprintf(&text, " Warning: %s shares this source URL, and one URL serves one set of bytes.",
+			strings.Join(result.SharedSources, ", "))
+	}
 	if len(result.Locked) > 0 {
 		_, _ = fmt.Fprintf(&text, " Locked %s.", strings.Join(result.Locked, ", "))
 	}

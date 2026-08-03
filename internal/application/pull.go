@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
@@ -29,8 +30,8 @@ func (service *Service) Pull(ctx context.Context, options NetworkOptions) (PullR
 	if err != nil {
 		return PullResult{}, err
 	}
-	names := manifest.Names()
-	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name string) (Asset, error) {
+	names := manifest.Coordinates()
+	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
 		source, locked := manifest.Assets[name], lock.Assets[name]
 		// A reconcile that resolved this asset has already installed its bytes
 		// and already reported it. Pulling it again would print a second bar for
@@ -40,7 +41,7 @@ func (service *Service) Pull(ctx context.Context, options NetworkOptions) (PullR
 		}
 		value, err := service.pull(ctx, name, source, locked, options)
 		if err != nil && ctx.Err() == nil {
-			service.Reporter.Fail(name, err)
+			service.Reporter.Fail(name.String(), err)
 		}
 		return value, err
 	})
@@ -99,11 +100,12 @@ func installStatus(status string) string {
 	return status
 }
 
-func (service *Service) pull(ctx context.Context, name string, source project.Asset, locked project.LockAsset, options NetworkOptions) (Asset, error) {
+func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, source project.Asset, locked project.LockAsset, options NetworkOptions) (Asset, error) {
+	name := coordinate.String()
 	object := Object{Digest: locked.Digest, Size: locked.Size}
 	// The view already answers whether the cache holds these bytes, so a hit
 	// costs one lookup rather than one to decide and another to report.
-	view, err := service.assetView(name, source, locked, "cached")
+	view, err := service.assetView(coordinate, source, locked, "cached")
 	if err != nil {
 		return Asset{}, err
 	}
@@ -179,7 +181,7 @@ func (service *Service) pull(ctx context.Context, name string, source project.As
 	if err != nil {
 		return Asset{}, err
 	}
-	return service.assetView(name, source, locked, status)
+	return service.assetView(coordinate, source, locked, status)
 }
 
 // installDist installs one locked asset from a distribution directory. The

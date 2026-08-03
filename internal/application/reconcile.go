@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 )
@@ -29,19 +30,19 @@ const (
 type reconciliation struct {
 	// assets is the complete set for a new lock: the entries this reconcile
 	// resolved and the entries it carried through, together.
-	assets map[string]project.LockAsset
+	assets map[coord.Coordinate]project.LockAsset
 	// resolved records the status of each entry this reconcile had to reach the
 	// origin for. An entry the lock already described is absent, which is how a
 	// caller tells the two apart without comparing lock files.
-	resolved map[string]string
+	resolved map[coord.Coordinate]string
 }
 
 // names returns the assets this reconcile resolved, in manifest order.
-func (result reconciliation) names(order []string) []string {
+func (result reconciliation) names(order []coord.Coordinate) []string {
 	names := make([]string, 0, len(result.resolved))
 	for _, name := range order {
 		if _, found := result.resolved[name]; found {
-			names = append(names, name)
+			names = append(names, name.String())
 		}
 	}
 	return names
@@ -61,8 +62,8 @@ func (result reconciliation) names(order []string) []string {
 // to write both files together or neither, so the decision to write belongs to
 // the caller rather than to this.
 func (service *Service) reconcile(ctx context.Context, manifest project.Manifest, old project.Lock, options NetworkOptions) (reconciliation, error) {
-	names := manifest.Names()
-	settled, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name string) (resolvedAsset, error) {
+	names := manifest.Coordinates()
+	settled, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (resolvedAsset, error) {
 		source := manifest.Assets[name]
 		locked, exists := old.Assets[name]
 		if !options.Refresh && project.Agrees(source, locked, exists) {
@@ -76,22 +77,44 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			return resolvedAsset{lock: locked, status: statusLocked}, nil
 		}
 		value, status, err := service.resolve(ctx, name, source, locked, options)
-		if err != nil && ctx.Err() == nil {
-			service.Reporter.Fail(name, err)
+		if err != nil {
+			if ctx.Err() == nil {
+				service.Reporter.Fail(name.String(), err)
+			}
+			return resolvedAsset{}, err
 		}
-		return resolvedAsset{lock: value, status: status}, err
+		// A coordinate the lock already binds may not come back naming other
+		// bytes. The reporter is not told when it does: the transfer it was
+		// following finished, and what failed is the claim about the bytes.
+		if exists && !options.AllowRebind {
+			if err := checkRebind(name, locked, value); err != nil {
+				return resolvedAsset{}, err
+			}
+		}
+		return resolvedAsset{lock: value, status: status}, nil
 	})
 	if err != nil {
 		return reconciliation{}, err
 	}
 	result := reconciliation{
-		assets:   make(map[string]project.LockAsset, len(names)),
-		resolved: map[string]string{},
+		assets:   make(map[coord.Coordinate]project.LockAsset, len(names)),
+		resolved: map[coord.Coordinate]string{},
 	}
 	for index, name := range names {
 		result.assets[name] = settled[index].lock
 		if settled[index].status != statusLocked {
 			result.resolved[name] = settled[index].status
+		}
+	}
+	// Both version rules run over the finished set rather than per asset,
+	// because both compare one asset against another and neither can be decided
+	// while the other resolutions are still in flight.
+	if err := project.CheckVersions(result.assets); err != nil {
+		return reconciliation{}, collisionFault(err)
+	}
+	if !options.AllowRebind {
+		if err := checkRetired(result.assets, old); err != nil {
+			return reconciliation{}, err
 		}
 	}
 	return result, nil
@@ -108,7 +131,7 @@ type resolvedAsset struct {
 func (service *Service) readLockIfPresent() (project.Lock, error) {
 	lock, _, err := project.ReadLockIfPresent(service.LockPath)
 	if err != nil {
-		return project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
+		return project.Lock{}, lockFault("lock_invalid", "The lock file is invalid.", err)
 	}
 	return lock, nil
 }
@@ -135,10 +158,10 @@ func (service *Service) writeLock(lock project.Lock) (bool, error) {
 }
 
 // newLock builds a lock for a manifest and its resolved assets.
-func newLock(manifest project.Manifest, assets map[string]project.LockAsset) (project.Lock, error) {
+func newLock(manifest project.Manifest, assets map[coord.Coordinate]project.LockAsset) (project.Lock, error) {
 	lock, err := project.NewLock(manifest, assets)
 	if err != nil {
-		return project.Lock{}, fault.Wrap("lock_invalid", "DAC created an invalid lock file.", err)
+		return project.Lock{}, lockFault("lock_invalid", "DAC created an invalid lock file.", err)
 	}
 	return lock, nil
 }

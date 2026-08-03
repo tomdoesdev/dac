@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tom/dac/internal/cache"
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/output"
 	"github.com/tom/dac/internal/project"
@@ -48,7 +49,7 @@ func TestCommandLifecycle(t *testing.T) {
 	assertSuccess(t, result, "init")
 	projecttest.Check(t, manifestPath, lockPath)
 
-	result = runJSON(t, appendArgs(base, "add", "geo@2026.08", "--source", server.URL, "--progress=false"))
+	result = runJSON(t, appendArgs(base, "add", "app/geo@2026.08", "--source", server.URL, "--progress=false"))
 	assertSuccess(t, result, "add")
 	if strings.Contains(result.stdout, "Added") || strings.Contains(result.stdout, "start ") {
 		t.Fatalf("human output reached stdout: %q", result.stdout)
@@ -57,7 +58,8 @@ func TestCommandLifecycle(t *testing.T) {
 		t.Fatalf("JSON add wrote stderr: %q", result.stderr)
 	}
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets["geo"].Version != "2026.08" || lock.Assets["geo"].Digest == "" {
+	if _, exists := manifest.Assets[coord.MustParse("app/geo@2026.08")]; !exists ||
+		lock.Assets[coord.MustParse("app/geo@2026.08")].Digest == "" {
 		t.Fatalf("add did not update both files: %#v %#v", manifest, lock)
 	}
 
@@ -69,9 +71,10 @@ func TestCommandLifecycle(t *testing.T) {
 		t.Fatalf("unexpected info result: %#v", infoData)
 	}
 	infoAsset := infoData["assets"].([]any)[0].(map[string]any)
-	if infoAsset["name"] != "geo" || infoAsset["sourceUrl"] != server.URL || infoAsset["requestUrl"] != server.URL ||
+	if infoAsset["coordinate"] != "app/geo@2026.08" || infoAsset["namespace"] != "app" ||
+		infoAsset["name"] != "geo" || infoAsset["version"] != "2026.08" || infoAsset["sourceUrl"] != server.URL || infoAsset["requestUrl"] != server.URL ||
 		infoAsset["requestStatus"] != "allowed" || infoAsset["rewritten"] != false || infoAsset["cacheStatus"] != "cached" ||
-		infoAsset["digest"] != lock.Assets["geo"].Digest || infoAsset["size"] != float64(len(content)) || infoAsset["path"] == "" {
+		infoAsset["digest"] != lock.Assets[coord.MustParse("app/geo@2026.08")].Digest || infoAsset["size"] != float64(len(content)) || infoAsset["path"] == "" {
 		t.Fatalf("unexpected info asset: %#v", infoAsset)
 	}
 	result = runJSON(t, appendArgs(base, "verify"))
@@ -84,17 +87,17 @@ func TestCommandLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := cache.New(cacheRoot)
-	objectPath, err := store.Path(lock.Assets["geo"].Digest)
+	objectPath, err := store.Path(lock.Assets[coord.MustParse("app/geo@2026.08")].Digest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(objectPath); err != nil {
 		t.Fatal(err)
 	}
-	missingInfo := runJSON(t, appendArgs(base, "info", "geo@2026.08"))
+	missingInfo := runJSON(t, appendArgs(base, "info", "app/geo@2026.08"))
 	assertSuccess(t, missingInfo, "info")
 	missingAsset := missingInfo.value["data"].(map[string]any)["assets"].([]any)[0].(map[string]any)
-	if missingAsset["cacheStatus"] != "missing" || missingAsset["digest"] != lock.Assets["geo"].Digest {
+	if missingAsset["cacheStatus"] != "missing" || missingAsset["digest"] != lock.Assets[coord.MustParse("app/geo@2026.08")].Digest {
 		t.Fatalf("unexpected missing cache info: %#v", missingAsset)
 	}
 	if _, exists := missingAsset["path"]; exists {
@@ -122,36 +125,36 @@ func TestCommandLifecycle(t *testing.T) {
 	if humanPull.status != ExitOK || humanPull.stdout != "Pulled 1 asset.\n" {
 		t.Fatalf("unexpected human pull result: %#v", humanPull)
 	}
-	if !strings.Contains(humanPull.stderr, "start geo ") || !strings.Contains(humanPull.stderr, "done geo downloaded") {
+	if !strings.Contains(humanPull.stderr, "start app/geo@2026.08 ") || !strings.Contains(humanPull.stderr, "done app/geo@2026.08 downloaded") {
 		t.Fatalf("human pull progress is incomplete: %q", humanPull.stderr)
 	}
 
 	human := run(t, appendArgs(base, "info"))
-	expectedInfo := "geo@2026.08\n" +
+	expectedInfo := "app/geo@2026.08\n" +
 		"source: " + server.URL + "\n" +
 		"request: " + server.URL + "\n" +
 		"policy: allowed\n" +
 		"lock: current\n" +
 		"cache: cached\n" +
-		"digest: " + lock.Assets["geo"].Digest + "\n" +
+		"digest: " + lock.Assets[coord.MustParse("app/geo@2026.08")].Digest + "\n" +
 		"size: 14 B\n" +
 		"path: " + objectPath + "\n"
 	if human.status != ExitOK || human.stdout != expectedInfo || human.stderr != "" {
 		t.Fatalf("unexpected human info: %#v", human)
 	}
-	human = run(t, appendArgs(base, "path", "geo@2026.08"))
+	human = run(t, appendArgs(base, "path", "app/geo@2026.08"))
 	if human.status != ExitOK || human.stdout != objectPath+"\n" || human.stderr != "" {
 		t.Fatalf("unexpected human path: %#v", human)
 	}
 
-	result = runJSON(t, appendArgs(base, "path", "geo@2026.08"))
+	result = runJSON(t, appendArgs(base, "path", "app/geo@2026.08"))
 	assertSuccess(t, result, "path")
 	data := result.value["data"].(map[string]any)
 	if data["path"] != objectPath {
 		t.Fatalf("path result is %#v", data)
 	}
 
-	result = runJSON(t, appendArgs(base, "remove", "geo@2026.08"))
+	result = runJSON(t, appendArgs(base, "remove", "app/geo@2026.08"))
 	assertSuccess(t, result, "remove")
 	manifest, lock = projecttest.Check(t, manifestPath, lockPath)
 	if len(manifest.Assets) != 0 || len(lock.Assets) != 0 {
@@ -179,8 +182,8 @@ func TestHumanOutputIsDefaultAndShortJSONAliasWorks(t *testing.T) {
 	if result.status != ExitOK || result.stdout != "No assets.\n" || result.stderr != "" {
 		t.Fatalf("unexpected empty info: %#v", result)
 	}
-	result = run(t, appendArgs(base, "remove", "missing@1"))
-	if result.status != ExitFailure || result.stdout != "" || result.stderr != "Error: The project does not have this asset coordinate.\n" {
+	result = run(t, appendArgs(base, "remove", "app/missing@1"))
+	if result.status != ExitFailure || result.stdout != "" || result.stderr != "Error: The project does not have this asset.\n" {
 		t.Fatalf("unexpected human failure: %#v", result)
 	}
 
@@ -201,12 +204,12 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
 	for _, args := range [][]string{
-		appendArgs(base, "add", "bad@@1", "--source", "https://example.com/asset"),
-		appendArgs(base, "add", "asset@1"),
-		appendArgs(base, "add", "asset@1", "--source", "https://example.com/asset", "--timeout", "0"),
-		appendArgs(base, "add", "asset@1", "--source", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
+		appendArgs(base, "add", "app/bad@@1", "--source", "https://example.com/asset"),
+		appendArgs(base, "add", "app/asset@1"),
+		appendArgs(base, "add", "app/asset@1", "--source", "https://example.com/asset", "--timeout", "0"),
+		appendArgs(base, "add", "app/asset@1", "--source", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
 		appendArgs(base, "info", "asset"),
-		appendArgs(base, "info", "asset@1", "other@1"),
+		appendArgs(base, "info", "app/asset@1", "app/other@1"),
 		appendArgs(base, "list"),
 		appendArgs(base, "rewrite"),
 		// Offline mode resolves nothing, so it has nothing to write a lock file
@@ -236,7 +239,7 @@ func TestCommandFailureUsesExitOne(t *testing.T) {
 		"--cache-dir", filepath.Join(directory, "cache"),
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "remove", "missing@1"))
+	result := runJSON(t, appendArgs(base, "remove", "app/missing@1"))
 	if result.status != ExitFailure {
 		t.Fatalf("status=%d stdout=%s stderr=%s", result.status, result.stdout, result.stderr)
 	}
@@ -282,13 +285,13 @@ func TestOfflineAddWritesOnlyManifest(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	result := runJSON(t, appendArgs(base, "add", "asset@1", "--source", server.URL, "--offline"))
+	result := runJSON(t, appendArgs(base, "add", "app/asset@1", "--source", server.URL, "--offline"))
 	assertSuccess(t, result, "add")
 	manifest, err := project.ReadManifest(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Assets["asset"].Version != "1" {
+	if _, exists := manifest.Assets[coord.MustParse("app/asset@1")]; !exists {
 		t.Fatalf("offline add did not update the manifest: %#v", manifest)
 	}
 	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
@@ -328,13 +331,13 @@ func TestNetworkFlagsReadEnvironmentSources(t *testing.T) {
 	t.Setenv("DAC_CONCURRENCY", "1")
 	t.Setenv("DAC_MAX_SIZE", "1MiB")
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "asset@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", "--source", server.URL, "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--update-lock", "--progress=false")), "pull")
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := cache.New(cacheRoot).Path(lock.Assets["asset"].Digest)
+	path, err := cache.New(cacheRoot).Path(lock.Assets[coord.MustParse("app/asset@1")].Digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +476,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 
 	// A dry run at zero age reports the object without removing it.
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "0d", "--dry-run"))
@@ -482,7 +485,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	if data["objectCount"].(float64) != 1 || data["dryRun"] != true {
 		t.Fatalf("unexpected dry run: %#v", data)
 	}
-	if human := run(t, appendArgs(base, "path", "geo@1")); human.status != ExitOK {
+	if human := run(t, appendArgs(base, "path", "app/geo@1")); human.status != ExitOK {
 		t.Fatalf("the dry run removed the object: %#v", human)
 	}
 
@@ -499,7 +502,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	if result.value["data"].(map[string]any)["objectCount"].(float64) != 1 {
 		t.Fatalf("collection kept the object: %#v", result.value)
 	}
-	if human := run(t, appendArgs(base, "path", "geo@1")); human.status != ExitFailure {
+	if human := run(t, appendArgs(base, "path", "app/geo@1")); human.status != ExitFailure {
 		t.Fatalf("the object survived collection: %#v", human)
 	}
 }
@@ -533,7 +536,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 
 	bundle := filepath.Join(t.TempDir(), "cache.tar")
 	result := runJSON(t, appendArgs(paths.base, "export", "--file", bundle))
@@ -553,7 +556,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	if data["itemCount"] != float64(1) || data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
 		t.Fatalf("unexpected import: %#v", data)
 	}
-	if human := run(t, appendArgs(offline.base, "path", "geo@1")); human.status != ExitOK {
+	if human := run(t, appendArgs(offline.base, "path", "app/geo@1")); human.status != ExitOK {
 		t.Fatalf("the bundle did not populate the cache: %#v", human)
 	}
 }
@@ -562,10 +565,10 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 	paths := newProject(t)
 	manifest := project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"blocked": {Version: "1", URL: "https://blocked.example.com/one"},
-			"kept":    {Version: "2", URL: "https://trusted.example.com/two"},
-			"moved":   {Version: "3", URL: "https://vendor.example.com/three"},
+		Assets: map[coord.Coordinate]project.Asset{
+			coord.MustParse("app/blocked@1"): {URL: "https://blocked.example.com/one"},
+			coord.MustParse("app/kept@2"):    {URL: "https://trusted.example.com/two"},
+			coord.MustParse("app/moved@3"):   {URL: "https://vendor.example.com/three"},
 		},
 	}
 	if err := project.Write(paths.manifestPath, manifest); err != nil {
@@ -582,19 +585,19 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 	}
 
 	human := run(t, appendArgs(paths.base, "info"))
-	expected := "blocked@1\n" +
+	expected := "app/blocked@1\n" +
 		"source: https://blocked.example.com/one\n" +
 		"request: https://denied.internal/one\n" +
 		"policy: blocked\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
-		"kept@2\n" +
+		"app/kept@2\n" +
 		"source: https://trusted.example.com/two\n" +
 		"request: https://trusted.example.com/two\n" +
 		"policy: allowed\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
-		"moved@3\n" +
+		"app/moved@3\n" +
 		"source: https://vendor.example.com/three\n" +
 		"request: https://mirror.internal/three\n" +
 		"policy: allowed\n" +
@@ -624,17 +627,17 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 		t.Fatalf("unexpected moved asset: %#v", moved)
 	}
 
-	single := runJSON(t, appendArgs(paths.base, "info", "moved@3"))
+	single := runJSON(t, appendArgs(paths.base, "info", "app/moved@3"))
 	assertSuccess(t, single, "info")
 	singleData := single.value["data"].(map[string]any)
 	singleAssets := singleData["assets"].([]any)
 	singleSummary := singleData["summary"].(map[string]any)
 	if singleSummary["assetCount"] != float64(1) || singleSummary["blockedCount"] != float64(0) ||
-		len(singleAssets) != 1 || singleAssets[0].(map[string]any)["name"] != "moved" {
+		len(singleAssets) != 1 || singleAssets[0].(map[string]any)["coordinate"] != "app/moved@3" {
 		t.Fatalf("unexpected single info result: %#v", singleData)
 	}
-	singleHuman := run(t, appendArgs(paths.base, "info", "moved@3"))
-	expectedSingle := "moved@3\n" +
+	singleHuman := run(t, appendArgs(paths.base, "info", "app/moved@3"))
+	expectedSingle := "app/moved@3\n" +
 		"source: https://vendor.example.com/three\n" +
 		"request: https://mirror.internal/three\n" +
 		"policy: allowed\n" +
@@ -643,14 +646,24 @@ func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
 	if singleHuman.status != ExitOK || singleHuman.stdout != expectedSingle || singleHuman.stderr != "" {
 		t.Fatalf("unexpected single human info: %#v", singleHuman)
 	}
-	unknown := runJSON(t, appendArgs(paths.base, "info", "moved@2"))
+	unknown := runJSON(t, appendArgs(paths.base, "info", "app/moved@2"))
 	assertError(t, unknown, "asset_unknown")
+
+	// The short form is info's alone: a project can hold several versions of an
+	// asset, and listing them is the question this command exists to answer.
+	group := runJSON(t, appendArgs(paths.base, "info", "app/moved"))
+	assertSuccess(t, group, "info")
+	groupAssets := group.value["data"].(map[string]any)["assets"].([]any)
+	if len(groupAssets) != 1 || groupAssets[0].(map[string]any)["coordinate"] != "app/moved@3" {
+		t.Fatalf("unexpected asset filter result: %#v", groupAssets)
+	}
+	assertError(t, runJSON(t, appendArgs(paths.base, "info", "app/absent")), "asset_unknown")
 }
 
 func TestInfoReportsAStaleLockWithoutCacheData(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", "https://example.com/geo", "--offline")), "add")
 
 	result := runJSON(t, appendArgs(paths.base, "info"))
@@ -697,7 +710,7 @@ func TestRewriteConfigRedirectsRequests(t *testing.T) {
 	}
 
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", "https://upstream.invalid/geo/database.bin",
 		"--progress=false"))
 	assertSuccess(t, result, "add")
@@ -707,11 +720,11 @@ func TestRewriteConfigRedirectsRequests(t *testing.T) {
 
 	// The canonical URL is what gets committed, not the mirror's.
 	manifest, lock := projecttest.Check(t, paths.manifestPath, paths.lockPath)
-	if manifest.Assets["geo"].URL != "https://upstream.invalid/geo/database.bin" {
-		t.Fatalf("the rewrite leaked into the manifest: %q", manifest.Assets["geo"].URL)
+	if manifest.Assets[coord.MustParse("app/geo@1")].URL != "https://upstream.invalid/geo/database.bin" {
+		t.Fatalf("the rewrite leaked into the manifest: %q", manifest.Assets[coord.MustParse("app/geo@1")].URL)
 	}
-	if lock.Assets["geo"].URL != "https://upstream.invalid/geo/database.bin" {
-		t.Fatalf("the rewrite leaked into the lock file: %q", lock.Assets["geo"].URL)
+	if lock.Assets[coord.MustParse("app/geo@1")].URL != "https://upstream.invalid/geo/database.bin" {
+		t.Fatalf("the rewrite leaked into the lock file: %q", lock.Assets[coord.MustParse("app/geo@1")].URL)
 	}
 }
 
@@ -731,11 +744,11 @@ func TestRewriteConfigAppliesToLockAndPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", "https://upstream.invalid/geo/database.bin", "--offline")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--update-lock",
 		"--concurrency", "1", "--progress=false")), "pull")
-	if err := os.Remove(objectPathFor(t, paths, "geo")); err != nil {
+	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull",
@@ -761,11 +774,11 @@ func TestNoRewriteBypassesAllConfigSources(t *testing.T) {
 	}
 	t.Setenv("DAC_REWRITE_CONFIG", filepath.Join(t.TempDir(), "absent"))
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", server.URL, "--no-rewrite", "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--refresh-lock",
 		"--no-rewrite", "--concurrency", "1", "--progress=false")), "pull")
-	if err := os.Remove(objectPathFor(t, paths, "geo")); err != nil {
+	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--no-rewrite",
@@ -792,7 +805,7 @@ func TestRewriteConfigEnvironmentOverridesTheProjectConfig(t *testing.T) {
 	}
 	t.Setenv("DAC_REWRITE_CONFIG", override)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", server.URL, "--progress=false"))
 	assertSuccess(t, result, "add")
 }
@@ -806,7 +819,7 @@ func TestInvalidProjectRewriteConfigIsAnError(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	infoResult := runJSON(t, appendArgs(paths.base, "info"))
 	assertError(t, infoResult, "rewrite_config_invalid")
-	result := runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", "https://example.com/one", "--progress=false"))
 	assertError(t, result, "rewrite_config_invalid")
 }
@@ -818,7 +831,7 @@ func TestRewriteConfigCanBlockAllHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "geo@1",
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"--source", "https://files.example.com/one",
 		"--progress=false"))
 	if result.status != ExitFailure {
@@ -833,7 +846,7 @@ func TestMissingRewriteConfigOverrideIsAnError(t *testing.T) {
 	t.Setenv("DAC_REWRITE_CONFIG", filepath.Join(t.TempDir(), "absent"))
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "geo@1",
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1",
 		"--source", "https://example.com/one",
 		"--progress=false"))
 	if code := result.value["error"].(map[string]any)["code"]; code != "rewrite_config_missing" {
@@ -858,7 +871,7 @@ func TestCredentialHelperSuppliesRequestHeaders(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL,
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL,
 		"--credential-helper", helper, "--progress=false"))
 	assertSuccess(t, result, "add")
 	if got := seen.Load(); got != "Bearer helper-token" {
@@ -878,7 +891,7 @@ func TestFailingCredentialHelperFailsTheCommand(t *testing.T) {
 	}
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL,
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL,
 		"--credential-helper", helper, "--progress=false"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
@@ -894,7 +907,7 @@ func TestAddReportsTheResolvedDigest(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	human := run(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false"))
+	human := run(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false"))
 	if human.status != ExitOK {
 		t.Fatalf("unexpected status %d: %q", human.status, human.stderr)
 	}
@@ -918,9 +931,9 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 
-	if err := os.Remove(objectPathFor(t, paths, "geo")); err != nil {
+	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
 	}
 	swapped.Store(true)
@@ -940,7 +953,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 	}
 	// The failure has to name the asset, or a multi-asset pull reports a digest
 	// pair without saying which asset it belongs to.
-	if details["asset"] != "geo" {
+	if details["asset"] != "app/geo@1" {
 		t.Fatalf("the details lost the asset name: %v", details)
 	}
 
@@ -951,7 +964,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 }
 
 // objectPathFor returns the cache path of one locked asset.
-func objectPathFor(t *testing.T, paths projectFlags, name string) string {
+func objectPathFor(t *testing.T, paths projectFlags, name coord.Coordinate) string {
 	t.Helper()
 	lock, err := project.ReadLock(paths.lockPath)
 	if err != nil {
@@ -1012,12 +1025,12 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	// path used to return this object, and every script downstream would have
 	// read the wrong bytes without ever being told.
-	assertError(t, runJSON(t, appendArgs(base, "path", "geo@1")), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "export", "--file", filepath.Join(directory, "bundle.tar"))), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "cache", "verify")), "cache_object_corrupt")
 
@@ -1030,7 +1043,7 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 
 	// pull replaces the object, and the whole project comes back clean.
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--progress=false")), "pull")
-	assertSuccess(t, runJSON(t, appendArgs(base, "path", "geo@1")), "path")
+	assertSuccess(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "path")
 	verified := runJSON(t, appendArgs(base, "cache", "verify"))
 	assertSuccess(t, verified, "cache.verify")
 	if verified.value["data"].(map[string]any)["corruptCount"] != float64(0) {
@@ -1053,7 +1066,7 @@ func TestCacheVerifyRepairRemovesTheDamage(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	repaired := runJSON(t, appendArgs(base, "cache", "verify", "--repair"))
@@ -1101,7 +1114,7 @@ func TestJSONErrorsCarryTheirCause(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
 	assertError(t, result, "network_error")
 	errorValue := result.value["error"].(map[string]any)
 	cause, _ := errorValue["cause"].(string)
@@ -1129,7 +1142,7 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 	if status := run(t, appendArgs(base, "init")).status; status != ExitOK {
 		t.Fatalf("init failed with status %d", status)
 	}
-	result := run(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	result := run(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
 	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
@@ -1156,7 +1169,7 @@ func TestPullUpdateLockWritesAMissingLockFile(t *testing.T) {
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	manifest := project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets:        map[string]project.Asset{"geo": {Version: "1", URL: server.URL}},
+		Assets:        map[coord.Coordinate]project.Asset{coord.MustParse("app/geo@1"): {URL: server.URL}},
 	}
 	data, err := project.Marshal(manifest)
 	if err != nil {
@@ -1168,7 +1181,7 @@ func TestPullUpdateLockWritesAMissingLockFile(t *testing.T) {
 
 	assertError(t, runJSON(t, appendArgs(base, "pull", "--progress=false")), "lock_missing")
 	human := run(t, appendArgs(base, "pull", "--update-lock", "--progress=false"))
-	if human.status != ExitOK || human.stdout != "Pulled 1 asset. Locked geo.\n" {
+	if human.status != ExitOK || human.stdout != "Pulled 1 asset. Locked app/geo@1.\n" {
 		t.Fatalf("unexpected human pull: %#v", human)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
@@ -1190,7 +1203,7 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 		"--cache-dir", filepath.Join(directory, "cache"),
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
 
 	body.Store([]byte("moved bytes"))
@@ -1214,10 +1227,10 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "geo@1", "--source", server.URL, "--pin", "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--pin", "--progress=false")), "add")
 
 	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets["geo"].Integrity != digest.Bytes(content) {
-		t.Fatalf("add --pin did not write the integrity value: %#v", manifest.Assets["geo"])
+	if manifest.Assets[coord.MustParse("app/geo@1")].Integrity != digest.Bytes(content) {
+		t.Fatalf("add --pin did not write the integrity value: %#v", manifest.Assets[coord.MustParse("app/geo@1")])
 	}
 }

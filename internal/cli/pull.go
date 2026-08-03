@@ -15,6 +15,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 	flags := append(runner.networkFlags(true, true),
 		&urfave.BoolFlag{Name: "update-lock", Usage: "Resolve the manifest assets the lock file does not describe and write it."},
 		&urfave.BoolFlag{Name: "refresh-lock", Usage: "Resolve every manifest asset against its origin and write the lock file."},
+		&urfave.BoolFlag{Name: "rebind", Usage: "Accept origins that no longer serve the bytes a locked version names."},
 		&urfave.BoolFlag{Name: "offline", Usage: "Disable network requests."},
 		&urfave.StringFlag{Name: "distdir", Sources: urfave.EnvVars("DAC_DISTDIR"), Usage: "Install locked assets from this directory before requesting them."},
 	)
@@ -34,6 +35,14 @@ func (runner *runner) pullCommand() *urfave.Command {
 			offline := current.Bool("offline")
 			if updateLock && offline {
 				return nil, "", fault.New("invalid_arguments", "Offline mode cannot update the lock file, because it resolves no bytes to lock.")
+			}
+			// Rebinding is a decision about what a version means, and only a
+			// command that writes the lock file can act on it. Accepting the
+			// flag on a pull that cannot write would say DAC had considered
+			// the request when nothing had asked the question.
+			rebind := current.Bool("rebind")
+			if rebind && !updateLock {
+				return nil, "", fault.New("invalid_arguments", "Rebinding a version writes the lock file. Use --rebind with --update-lock or --refresh-lock.")
 			}
 			service, client, err := runner.networkService(current, runner.json)
 			if err != nil {
@@ -55,6 +64,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 				DistDir:     current.String("distdir"),
 				UpdateLock:  updateLock,
 				Refresh:     refresh,
+				AllowRebind: rebind,
 			})
 			return result, pullText(result), err
 		}),

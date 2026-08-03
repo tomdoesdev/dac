@@ -28,11 +28,16 @@ The command writes `bin/dac`.
 
 ```bash
 dac init
-dac add geo-database@2026.08 \
+dac add backend-app/geo-database@2026.08 \
   --source https://example.com/geo/2026.08/database.bin --pin
 dac pull
-geo_database="$(dac path geo-database@2026.08)"
+geo_database="$(dac path backend-app/geo-database@2026.08)"
 ```
+
+An asset is named by a coordinate: `<namespace>/<name>@<version>`. All three
+parts are required, and together they are the whole identity of the asset. A
+namespace lets `backend-app/database` and `frontend-app/database` be two
+different files rather than an argument about who owns the name.
 
 `add` resolves the new asset and updates both project files, creating the lock
 file if the project does not have one yet. Commit `dac.json` and
@@ -45,7 +50,7 @@ the lock file still pins the bytes; the manifest just does not say so.
 DAC returns a path and stops there. Extraction belongs to whatever consumes it:
 
 ```bash
-tar -xzf "$(dac path toolchain@1.4)" -C vendor/toolchain
+tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain
 ```
 
 Use `add --offline` to update only `dac.json`. The command makes no network
@@ -71,8 +76,9 @@ dac pull --update-lock
 
 That resolves the assets the lock file does not describe, writes it, and names
 what it locked. An asset the lock already describes costs no request at all. Use
-`dac pull --refresh-lock` to resolve every asset against its origin instead,
-which is how you pick up bytes that moved behind a stable URL.
+`dac pull --refresh-lock` to resolve every asset against its origin instead. An
+origin that has replaced the bytes a version is locked to stops that pull rather
+than rewriting the lock file: see [What a version means](#what-a-version-means).
 
 To find out whether an origin has moved without changing what your project uses,
 run `dac verify --refresh` on a schedule. It resolves every asset, writes
@@ -85,11 +91,11 @@ downloading it, so a refresh warms the cache on its way past.
 | Command | Result |
 |---|---|
 | `dac init [--force]` | Create matching empty project files. |
-| `dac add <name>@<version> --source <url> [--pin] [--integrity <digest>] [--force] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset. Resolve it unless offline mode is active. |
-| `dac remove <name>@<version>` | Remove one asset without network access. |
-| `dac info [<name>@<version>]` | Show asset, request, lock, and cache information. |
-| `dac pull [--update-lock] [--refresh-lock] [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets, updating the lock file when asked. |
-| `dac path <name>@<version>` | Return a verified cache path. |
+| `dac add <coordinate> --source <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
+| `dac remove <coordinate>` | Remove one asset version without network access. |
+| `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
+| `dac pull [--update-lock] [--refresh-lock] [--rebind] [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets, updating the lock file when asked. |
+| `dac path <coordinate>` | Return a verified cache path. |
 | `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
 | `dac import --file <tar>` | Install objects from a cache bundle into the local cache. |
@@ -98,10 +104,16 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac completion <shell>` | Write a shell completion script. |
 
-DAC accepts one active version for each asset name. The `add`, `remove`, and
-`path` commands require exactly one `name@version` coordinate. The `info`
-command accepts zero or one coordinate. Names and versions must not be empty or
-contain another `@`.
+A project holds as many versions of an asset as it names. The `add`, `remove`,
+and `path` commands require exactly one complete coordinate; a bare name would
+work until somebody added a second version, which is the worst moment for a
+command to start guessing. `info` is the exception, because answering what a
+project has is its job: it accepts nothing, one coordinate, or one
+`<namespace>/<name>` whose versions it should list.
+
+A namespace and a name are lowercase letters, digits, and `.`, `_`, or `-`. A
+version also takes uppercase and `+`, because it is copied from whatever the
+publisher calls a release. Every part starts and ends alphanumeric.
 
 `info` does not use the network. It reports manifest and request information
 when the lock is missing or stale. Lock and cache information is unavailable in
@@ -109,6 +121,45 @@ that state.
 
 Use `dac --help`, `dac <command> --help`, and `dac --version` for CLI
 help. DAC has no command aliases.
+
+### What a version means
+
+A version is part of an asset's identity, not a field describing it. Two rules
+follow from that, and between them they are the whole of what DAC knows about
+versions:
+
+**A locked coordinate always names the same bytes.** Once the lock file binds
+`backend-app/database@1.0.0` to a digest, nothing rewrites that digest. An
+origin that replaced what it serves behind a stable URL and a manifest edited to
+point one version somewhere else both fail with `version_rebind`, which reports
+the digest the lock holds and the digest that arrived. The way forward is a new
+version. `--rebind` is for the project that genuinely tracks a rolling source
+and has decided to accept the change; it writes the lock file, so it only works
+alongside `--update-lock` or `--refresh-lock`.
+
+**Two versions of one asset never name the same bytes.** Adding
+`backend-app/database@2.0.0` with the source `backend-app/database@1.0.0`
+already had resolves to bytes
+that already have a version, and fails with `version_collision`. Editing the
+version in place fails the same way: the old coordinate leaves the manifest, so
+the two never appear together, but the previous lock file still remembers what
+it named.
+
+Neither rule reads anything but the project's own two files. DAC does not order
+versions, compare them, parse them, or ask an origin what exists — deciding
+which version to use is a package manager's job, and this is only about the
+version you already wrote down meaning what it says.
+
+Two versions of one asset served from one URL is not refused. Only one set of
+bytes is at a URL, so a cold cache can restore only one of them, and `add`
+reports that rather than deciding it for you.
+
+Version 6 made a coordinate `<namespace>/<name>@<version>` and moved it into the
+key of both project files, which is what lets a project hold several versions of
+an asset. Manifest and lock version 2 have no `version` field: it would be a
+second place to say what the key already says, and the place the two could
+disagree. There is no migration. A version 1 project file is rejected with a
+message naming the shape the new one takes.
 
 Version 5 removed `dac lock`. Resolving an asset stores its bytes in the cache,
 so the command that resolved everything and the command that installed
@@ -127,13 +178,15 @@ read the project files. `cache gc` collects the whole shared cache.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "assets": {
-    "geo-database": {
-      "version": "2026.08",
-      "url": "https://example.com/database.bin",
+    "backend-app/geo-database@2026.08": {
+      "url": "https://example.com/geo/2026.08/database.bin",
       "integrity": "sha256:optional-publisher-digest",
       "allowInsecureHttp": false
+    },
+    "backend-app/geo-database@2026.09": {
+      "url": "https://example.com/geo/2026.09/database.bin"
     }
   }
 }
@@ -143,12 +196,11 @@ read the project files. `cache gc` collects the whole shared cache.
 
 ```json
 {
-  "lockVersion": 1,
+  "lockVersion": 2,
   "manifestDigest": "sha256:...",
   "assets": {
-    "geo-database": {
-      "version": "2026.08",
-      "url": "https://example.com/database.bin",
+    "backend-app/geo-database@2026.08": {
+      "url": "https://example.com/geo/2026.08/database.bin",
       "digest": "sha256:...",
       "size": 123
     }
@@ -289,31 +341,37 @@ detailed block for each selected asset.
 Use `--json` or `-j` to write one versioned JSON document to standard output:
 
 ```json
-{"outputVersion":2,"ok":true,"command":"path","data":{}}
+{"outputVersion":3,"ok":true,"command":"path","data":{}}
 ```
 
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
-object holding the counts. A coordinate filters the array to one item. A missing
+object holding the counts. A coordinate filters the array to one item, and a
+`<namespace>/<name>` filters it to that asset's versions. A missing
 or stale lock sets `cacheStatus` to `unavailable` and omits digest, size, and
 path data; a damaged object sets it to `corrupt`.
 
 JSON errors use the same stream and framing:
 
 ```json
-{"outputVersion":2,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"geo","status":404,"url":"https://example.com/db"}}}
+{"outputVersion":3,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
 ```
 
 `code` and `message` are stable enough to branch on, which is exactly why
 neither says anything specific about a failure. `cause` carries the part an
 operator acts on, and `details` repeats the useful parts of it as data: `url`
 and `status` for a request failure, expected and actual digests for a content
-failure.
+failure, the locked and resolved digests for a `version_rebind`, and the two
+versions and the object they share for a `version_collision`.
 
 Human errors, help, and progress go to standard error. JSON mode does not write
 human summaries or error messages. The `pull` command also disables progress in
 JSON mode.
 
-Output version `2` moved the `info` counters into `summary` and dropped
+Output version `3` gave every asset a `coordinate` and a `namespace` alongside
+its `name` and `version`, dropped `replaced` from an `add` result because adding
+a version no longer retires one, and added `siblings`, `sharedSources`, and
+`remaining` so that a command changing one version says what happened to the
+others. Output version `2` moved the `info` counters into `summary` and dropped
 `allowedCount`, and added `cause` to every error.
 
 Exit status `0` means success. Status `1` means that the command failed.
@@ -334,6 +392,10 @@ DAC stores each object and a small sidecar describing it at:
 <cache>/blobs/sha256/<digest>
 <cache>/blobs/sha256/<digest>.meta
 ```
+
+The cache is keyed by digest and nothing else, so several versions of an asset
+sit in it side by side with no arrangement needed, and two assets that resolved
+to the same bytes cost one object between them.
 
 A download first enters a temporary file. DAC hashes and checks all bytes
 before one atomic rename installs the object. Each digest has a Unix process
@@ -413,8 +475,12 @@ dac import --file ./cache.tar      # on an isolated machine
 
 The format uses two ideas from the OCI image layout. The tar root contains an
 `index.json` file. Object bytes use `blobs/sha256/<hex>` paths. The simpler DAC
-index lists each asset name, version, source URL, file path, digest, and size
+index lists each asset coordinate, source URL, file path, digest, and size
 directly.
+
+The index names each asset by its whole coordinate. Two assets that resolved to
+one object share one blob, which is what makes a bundle for a project that
+vendors the same file under two namespaces no larger than one that does not.
 
 `export` hashes each object while it writes the tar. `import` checks the index,
 entry type, path, size, and digest. It rejects an invalid bundle before it
@@ -430,8 +496,15 @@ cache, resumes no partial download, and records no signature or provenance. It
 has no registry and no plugin language. Extraction and installation belong to
 whatever consumes the path that `dac path` returns.
 
+DAC does not order or compare versions. It has no idea whether `10` follows `9`,
+or whether either is a number, and it never chooses a version for you: there are
+no ranges, no constraints, no `latest`, and no dependencies between assets.
+Choosing versions is what a package manager does. DAC only guarantees that the
+version you wrote down is the one you get.
+
+A namespace is a grouping label and nothing else. Nothing owns one, nothing
+registers one, and two projects using the same namespace is not a conflict.
+
 DAC does not track upstream releases. `dac verify --refresh` reports that an
 origin changed what it serves at a URL you already have; nothing tells you that
-version `2026.09` exists. Bumping a version stays a manual edit, and because DAC keeps
-one version of each asset name, `dac add --force` at a new version retires the
-old coordinate and says so.
+version `2026.09` exists. Bumping a version stays a manual edit.

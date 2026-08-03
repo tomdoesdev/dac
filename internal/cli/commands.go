@@ -12,6 +12,7 @@ import (
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/bytesize"
+	"github.com/tom/dac/internal/coord"
 )
 
 func (runner *runner) initCommand() *urfave.Command {
@@ -32,28 +33,34 @@ func (runner *runner) initCommand() *urfave.Command {
 func (runner *runner) removeCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "remove",
-		Usage:     "Remove one asset and update the lock file.",
-		ArgsUsage: "<name>@<version>",
+		Usage:     "Remove one asset version and update the lock file.",
+		ArgsUsage: "<namespace>/<name>@<version>",
 		Action: runner.run("remove", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			name, version, err := coordinate(current)
+			name, err := coordinate(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := runner.projectService(current).Remove(name, version)
+			result, err := runner.projectService(current).Remove(name)
 			if err != nil {
 				return nil, "", err
 			}
-			return result, removeText(name, version, result), nil
+			return result, removeText(name, result), nil
 		}),
 	}
 }
 
-// removeText summarizes one removal. A removal makes no request, so it can
-// leave the lock file describing less than the manifest does, and the summary
-// says which assets rather than letting the next command be the one to mention
-// it.
-func removeText(name, version string, result application.RemoveResult) string {
-	text := fmt.Sprintf("Removed %s@%s.", name, version)
+// removeText summarizes one removal. It says which versions of the asset
+// survived, because a removal now takes one version rather than the asset, and
+// an operator who meant to retire the whole thing should find that out here.
+//
+// A removal makes no request, so it can leave the lock file describing less
+// than the manifest does, and the summary says which assets rather than letting
+// the next command be the one to mention it.
+func removeText(name coord.Coordinate, result application.RemoveResult) string {
+	text := fmt.Sprintf("Removed %s.", name)
+	if len(result.Remaining) > 0 {
+		text += fmt.Sprintf(" %s still has %s.", name.Group(), strings.Join(result.Remaining, ", "))
+	}
 	if len(result.Unlocked) > 0 {
 		text += fmt.Sprintf(" The lock file does not describe %s. Run dac pull --update-lock.", strings.Join(result.Unlocked, ", "))
 	}
@@ -64,9 +71,9 @@ func (runner *runner) pathCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "path",
 		Usage:     "Get one verified object path.",
-		ArgsUsage: "<name>@<version>",
+		ArgsUsage: "<namespace>/<name>@<version>",
 		Action: runner.run("path", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			name, version, err := coordinate(current)
+			name, err := coordinate(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -74,7 +81,7 @@ func (runner *runner) pathCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Path(name, version)
+			result, err := service.Path(name)
 			return result, result.Path, err
 		}),
 	}

@@ -39,12 +39,13 @@ func (service *Service) Export(ctx context.Context, bundlePath string) (ExportRe
 		return ExportResult{}, fault.Wrap("export_write_failed", "DAC could not resolve the bundle path.", err)
 	}
 	items := make([]exportItem, 0, len(manifest.Assets))
-	for _, name := range manifest.Names() {
+	for _, coordinate := range manifest.Coordinates() {
 		if err := ctx.Err(); err != nil {
 			return ExportResult{}, networkError(err)
 		}
-		locked := lock.Assets[name]
-		view, err := service.assetView(name, manifest.Assets[name], locked, "exported")
+		name := coordinate.String()
+		locked := lock.Assets[coordinate]
+		view, err := service.assetView(coordinate, manifest.Assets[coordinate], locked, "exported")
 		if err != nil {
 			return ExportResult{}, withAsset(err, name)
 		}
@@ -64,12 +65,11 @@ func (service *Service) Export(ctx context.Context, bundlePath string) (ExportRe
 		}
 		items = append(items, exportItem{
 			metadata: BundleItem{
-				Name:      name,
-				Version:   locked.Version,
-				SourceURL: locked.URL,
-				File:      file,
-				Digest:    locked.Digest,
-				Size:      locked.Size,
+				Coordinate: name,
+				SourceURL:  locked.URL,
+				File:       file,
+				Digest:     locked.Digest,
+				Size:       locked.Size,
 			},
 			asset: view,
 		})

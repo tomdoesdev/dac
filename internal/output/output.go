@@ -11,8 +11,11 @@ import (
 
 // Version is the output contract version. It became 2 when info moved its
 // counters under a summary object and dropped the allowed count, and when every
-// error gained a cause field.
-const Version = 2
+// error gained a cause field. It became 3 when assets grew a namespace and a
+// whole coordinate, add stopped reporting a retired coordinate because adding a
+// version no longer retires one, and remove started reporting the versions it
+// left behind.
+const Version = 3
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`

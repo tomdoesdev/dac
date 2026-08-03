@@ -2,25 +2,28 @@ package application
 
 import (
 	"fmt"
-	"strings"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
 )
 
 const (
-	bundleSchemaVersion = 1
+	bundleSchemaVersion = 2
 	bundleIndexPath     = "index.json"
 	maximumIndexSize    = 16 << 20
 )
 
 // BundleItem maps one project asset to one object in a cache bundle.
+//
+// It names the asset by its whole coordinate rather than by parts. The parts
+// exist for a consumer reading a command result; an index DAC writes and reads
+// back has no use for three fields that could contradict each other.
 type BundleItem struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	SourceURL string `json:"sourceUrl"`
-	File      string `json:"file"`
-	Digest    string `json:"digest"`
-	Size      int64  `json:"size"`
+	Coordinate string `json:"coordinate"`
+	SourceURL  string `json:"sourceUrl"`
+	File       string `json:"file"`
+	Digest     string `json:"digest"`
+	Size       int64  `json:"size"`
 }
 
 // bundleIndex is the root document in a DAC cache bundle.
@@ -49,14 +52,12 @@ func validateBundleIndex(index bundleIndex) (map[string]Object, error) {
 	if index.Items == nil {
 		return nil, fmt.Errorf("bundle items must be an array")
 	}
-	coordinates := make(map[string]struct{}, len(index.Items))
+	coordinates := make(map[coord.Coordinate]struct{}, len(index.Items))
 	objects := make(map[string]Object, len(index.Items))
 	for position, item := range index.Items {
-		if item.Name == "" || strings.Contains(item.Name, "@") {
-			return nil, fmt.Errorf("bundle item %d has an invalid name", position)
-		}
-		if item.Version == "" || strings.Contains(item.Version, "@") {
-			return nil, fmt.Errorf("bundle item %d has an invalid version", position)
+		coordinate, err := coord.Parse(item.Coordinate)
+		if err != nil {
+			return nil, fmt.Errorf("bundle item %d: %w", position, err)
 		}
 		if item.SourceURL == "" {
 			return nil, fmt.Errorf("bundle item %d has no source URL", position)
@@ -71,7 +72,6 @@ func validateBundleIndex(index bundleIndex) (map[string]Object, error) {
 		if item.File != expectedFile {
 			return nil, fmt.Errorf("bundle item %d has file %q, not %q", position, item.File, expectedFile)
 		}
-		coordinate := item.Name + "@" + item.Version
 		if _, exists := coordinates[coordinate]; exists {
 			return nil, fmt.Errorf("bundle has duplicate item %q", coordinate)
 		}

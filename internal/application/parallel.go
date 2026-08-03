@@ -2,19 +2,21 @@ package application
 
 import (
 	"context"
+	"fmt"
 
 	"golang.org/x/sync/errgroup"
 )
 
-// parallel runs one operation for each asset name, at most limit at a time, and
-// returns the results in name order. The first failure cancels the rest.
+// parallel runs one operation for each asset coordinate, at most limit at a
+// time, and returns the results in coordinate order. The first failure cancels
+// the rest.
 //
 // An operation whose context is already cancelled belongs to that first
 // failure, not to a problem of its own. Callers check ctx.Err() before they
 // report anything, because errgroup cancels with the first error as the
 // context cause: an asset cut short mid-transfer would otherwise surface a
 // message describing a completely different asset's failure.
-func parallel[T any](ctx context.Context, limit int, names []string, operation func(context.Context, string) (T, error)) ([]T, error) {
+func parallel[K fmt.Stringer, T any](ctx context.Context, limit int, names []K, operation func(context.Context, K) (T, error)) ([]T, error) {
 	group, runCtx := errgroup.WithContext(ctx)
 	group.SetLimit(max(limit, 1))
 	results := make([]T, len(names))
@@ -28,7 +30,7 @@ func parallel[T any](ctx context.Context, limit int, names []string, operation f
 			}
 			value, err := operation(runCtx, name)
 			if err != nil {
-				return withAsset(err, name)
+				return withAsset(err, name.String())
 			}
 			results[index] = value
 			return nil

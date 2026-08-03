@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 )
@@ -39,9 +40,15 @@ func (service *Service) Init(force bool) (InitResult, error) {
 
 // RemoveResult reports the asset removed from a project.
 type RemoveResult struct {
+	Coordinate string `json:"coordinate"`
+	Namespace  string `json:"namespace"`
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	AssetCount int    `json:"assetCount"`
+	// Remaining names the versions of this asset the project still has. A
+	// removal used to take the whole asset with it, and now it takes one
+	// version, so the command has to say which of the two it did.
+	Remaining []string `json:"remaining"`
 	// Unlocked names the assets the lock file no longer describes once this
 	// removal has written it. A removal resolves nothing, so a manifest a hand
 	// edit already left stale stays stale, and this is how the command says so
@@ -56,7 +63,7 @@ type RemoveResult struct {
 // works on a project whose lock file is missing or stale. What it will not do
 // is resolve the rest to make them agree, because that would put a network
 // request behind a command documented not to make one.
-func (service *Service) Remove(name, version string) (RemoveResult, error) {
+func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 	manifest, err := service.readManifest()
 	if err != nil {
 		return RemoveResult{}, err
@@ -65,20 +72,19 @@ func (service *Service) Remove(name, version string) (RemoveResult, error) {
 	if err != nil {
 		return RemoveResult{}, err
 	}
-	asset, exists := manifest.Assets[name]
-	if !exists || asset.Version != version {
-		return RemoveResult{}, fault.New("asset_unknown", "The project does not have this asset coordinate.")
+	if _, exists := manifest.Assets[name]; !exists {
+		return RemoveResult{}, unknownCoordinate(name, manifest.Assets)
 	}
 	updated := manifest.Clone()
 	delete(updated.Assets, name)
 	// Building from the manifest rather than deleting from the lock also drops
 	// entries for assets the manifest no longer names at all.
-	assets := make(map[string]project.LockAsset, len(updated.Assets))
+	assets := make(map[coord.Coordinate]project.LockAsset, len(updated.Assets))
 	unlocked := make([]string, 0, len(updated.Assets))
-	for _, other := range updated.Names() {
+	for _, other := range updated.Coordinates() {
 		locked, found := lock.Assets[other]
 		if !project.Agrees(updated.Assets[other], locked, found) {
-			unlocked = append(unlocked, other)
+			unlocked = append(unlocked, other.String())
 			continue
 		}
 		assets[other] = locked
@@ -90,27 +96,37 @@ func (service *Service) Remove(name, version string) (RemoveResult, error) {
 	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, updatedLock); err != nil {
 		return RemoveResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
 	}
-	return RemoveResult{Name: name, Version: version, AssetCount: len(updated.Assets), Unlocked: unlocked}, nil
+	return RemoveResult{
+		Coordinate: name.String(),
+		Namespace:  name.Namespace,
+		Name:       name.Name,
+		Version:    name.Version,
+		AssetCount: len(updated.Assets),
+		Remaining:  coord.Versions(coord.InGroup(updated.Assets, name.Group())),
+		Unlocked:   unlocked,
+	}, nil
 }
 
 // PathResult reports one verified object path.
 type PathResult struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Digest  string `json:"digest"`
-	Size    int64  `json:"size"`
-	Path    string `json:"path"`
+	Coordinate string `json:"coordinate"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+	Version    string `json:"version"`
+	Digest     string `json:"digest"`
+	Size       int64  `json:"size"`
+	Path       string `json:"path"`
 }
 
 // Path returns one verified object path.
-func (service *Service) Path(name, version string) (PathResult, error) {
+func (service *Service) Path(name coord.Coordinate) (PathResult, error) {
 	_, lock, err := service.readProject()
 	if err != nil {
 		return PathResult{}, err
 	}
 	asset, exists := lock.Assets[name]
-	if !exists || asset.Version != version {
-		return PathResult{}, fault.New("asset_unknown", "The project does not have this asset coordinate.")
+	if !exists {
+		return PathResult{}, unknownCoordinate(name, lock.Assets)
 	}
 	valid, err := service.cached(Object{Digest: asset.Digest, Size: asset.Size})
 	if err != nil {
@@ -123,7 +139,15 @@ func (service *Service) Path(name, version string) (PathResult, error) {
 	if err != nil {
 		return PathResult{}, err
 	}
-	return PathResult{Name: name, Version: version, Digest: asset.Digest, Size: asset.Size, Path: path}, nil
+	return PathResult{
+		Coordinate: name.String(),
+		Namespace:  name.Namespace,
+		Name:       name.Name,
+		Version:    name.Version,
+		Digest:     asset.Digest,
+		Size:       asset.Size,
+		Path:       path,
+	}, nil
 }
 
 // GCOptions controls one cache collection.
@@ -226,7 +250,7 @@ func (service *Service) verifyTargets(ctx context.Context, all bool) ([]string, 
 		return nil, err
 	}
 	digests := make([]string, 0, len(lock.Assets))
-	for _, name := range manifest.Names() {
+	for _, name := range manifest.Coordinates() {
 		digests = append(digests, lock.Assets[name].Digest)
 	}
 	return digests, nil

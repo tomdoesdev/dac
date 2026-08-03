@@ -20,12 +20,18 @@ import (
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/cache"
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 	"github.com/tom/dac/internal/projecttest"
 	"github.com/tom/dac/internal/rewrite"
 )
+
+// at builds a test coordinate from its name and version. Every fixture shares
+// one namespace, because these tests are about everything except which
+// namespace an asset is in; the tests that are about that spell it out.
+func at(text string) coord.Coordinate { return coord.MustParse("test/" + text) }
 
 var (
 	_ application.ObjectStore = (*fakeStore)(nil)
@@ -224,12 +230,13 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 	service := application.New(manifestPath, lockPath, store, fetcher, reporter)
 
 	added, err := service.Add(context.Background(), application.AddOptions{
-		Name: "geo", Version: "1", URL: "https://example.com/one", MaxSize: 100,
+		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added.Name != "geo" || added.Version != "1" || !added.Cached {
+	if added.Coordinate != "test/geo@1" || added.Namespace != "test" || added.Name != "geo" ||
+		added.Version != "1" || !added.Cached {
 		t.Fatalf("unexpected add result: %#v", added)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
@@ -240,16 +247,16 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 	beforeManifest := projecttest.MustRead(t, manifestPath)
 	beforeLock := projecttest.MustRead(t, lockPath)
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "geo", Version: "2", URL: "https://example.com/two", MaxSize: 100,
+		Coordinate: at("geo@1"), URL: "https://example.com/two", MaxSize: 100,
 	}); fault.As(err).Code != "asset_exists" {
 		t.Fatalf("expected asset_exists, got %v", err)
 	}
 	assertFilesEqual(t, manifestPath, lockPath, beforeManifest, beforeLock)
 
-	if _, err := service.Remove("geo", "2"); fault.As(err).Code != "asset_unknown" {
+	if _, err := service.Remove(at("geo@2")); fault.As(err).Code != "asset_unknown" {
 		t.Fatalf("expected asset_unknown, got %v", err)
 	}
-	if _, err := service.Remove("geo", "1"); err != nil {
+	if _, err := service.Remove(at("geo@1")); err != nil {
 		t.Fatal(err)
 	}
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
@@ -275,7 +282,7 @@ func TestInfoCombinesProjectRequestAndCacheState(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Info(application.InfoOptions{Name: "asset", Version: "1", Rewriter: config})
+	result, err := service.Info(application.InfoOptions{Selection: application.ExactSelection(at("asset@1")), Rewriter: config})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,32 +296,76 @@ func TestInfoCombinesProjectRequestAndCacheState(t *testing.T) {
 		asset.Digest != digest.Bytes(content) || asset.Size == nil || *asset.Size != int64(len(content)) || asset.Path == "" {
 		t.Fatalf("unexpected info asset: %#v", asset)
 	}
-	if _, err := service.Info(application.InfoOptions{Name: "asset", Version: "2", Rewriter: config}); fault.As(err).Code != "asset_unknown" {
-		t.Fatalf("expected asset_unknown, got %v", err)
+	_, err = service.Info(application.InfoOptions{Selection: application.ExactSelection(at("asset@2")), Rewriter: config})
+	unknown := fault.As(err)
+	if unknown.Code != "asset_unknown" {
+		t.Fatalf("expected asset_unknown, got %v", unknown)
+	}
+	// The versions the project does have are the useful half of the answer: a
+	// coordinate one character off and a name nobody ever added are the same
+	// error otherwise.
+	if versions, _ := unknown.Details["versions"].([]string); len(versions) != 1 || versions[0] != "1" {
+		t.Fatalf("asset_unknown did not name the versions the project has: %#v", unknown.Details)
 	}
 }
 
-func TestAddForceReplacesOneVersion(t *testing.T) {
+// A version is part of an asset's identity, so a second version is a second
+// entry. It needs no --force, because nothing that referred to the first
+// coordinate stops working.
+func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	store := newFakeStore()
-	fetcher := staticFetcher([]byte("content"))
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "geo", Version: "1", URL: "https://example.com/one", MaxSize: 100,
+		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "geo", Version: "2", URL: "https://example.com/two", Force: true, MaxSize: 100,
-	}); err != nil {
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("geo@2"), URL: "https://example.com/two", MaxSize: 100,
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(result.Siblings) != 1 || result.Siblings[0] != "1" {
+		t.Fatalf("add did not report the version already there: %#v", result.Siblings)
 	}
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets["geo"].Version != "2" || lock.Assets["geo"].Version != "2" {
-		t.Fatalf("force did not replace the version: %#v %#v", manifest.Assets["geo"], lock.Assets["geo"])
+	if len(manifest.Assets) != 2 || len(lock.Assets) != 2 {
+		t.Fatalf("the project does not hold both versions: %#v %#v", manifest.Assets, lock.Assets)
 	}
-	if len(manifest.Assets) != 1 || len(lock.Assets) != 1 {
-		t.Fatal("force created more than one active version")
+	if manifest.Assets[at("geo@1")].URL != "https://example.com/one" ||
+		manifest.Assets[at("geo@2")].URL != "https://example.com/two" {
+		t.Fatalf("the versions do not have their own sources: %#v", manifest.Assets)
+	}
+}
+
+// Force is now only about one coordinate: it replaces the source of a version
+// the manifest already has, and leaves every other version alone.
+func TestAddForceReplacesOneVersionSource(t *testing.T) {
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
+	for _, options := range []application.AddOptions{
+		{Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100},
+		{Coordinate: at("geo@2"), URL: "https://example.com/two", MaxSize: 100},
+	} {
+		if _, err := service.Add(context.Background(), options); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A moved source that serves the same bytes is not a rebind, so replacing
+	// one version's URL needs nothing beyond --force.
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("geo@2"), URL: "https://mirror.example.com/two", Force: true, MaxSize: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	if len(manifest.Assets) != 2 {
+		t.Fatalf("force changed the number of versions: %#v", manifest.Assets)
+	}
+	if manifest.Assets[at("geo@1")].URL != "https://example.com/one" ||
+		manifest.Assets[at("geo@2")].URL != "https://mirror.example.com/two" {
+		t.Fatalf("force replaced the wrong version: %#v", manifest.Assets)
 	}
 }
 
@@ -323,7 +374,7 @@ func TestAddResolvesOnlyTheChangedAsset(t *testing.T) {
 	fetcher := staticFetcher([]byte("content"))
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "alpha", Version: "1", URL: "https://example.com/alpha", MaxSize: 100,
+		Coordinate: at("alpha@1"), URL: "https://example.com/alpha", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +383,7 @@ func TestAddResolvesOnlyTheChangedAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "beta", Version: "1", URL: "https://example.com/beta", MaxSize: 100,
+		Coordinate: at("beta@1"), URL: "https://example.com/beta", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +394,7 @@ func TestAddResolvesOnlyTheChangedAsset(t *testing.T) {
 	if fetcher.count() != 2 {
 		t.Fatalf("two adds made %d requests", fetcher.count())
 	}
-	if firstLock.Assets["alpha"] != secondLock.Assets["alpha"] {
+	if firstLock.Assets[at("alpha@1")] != secondLock.Assets[at("alpha@1")] {
 		t.Fatal("adding beta changed alpha's lock entry")
 	}
 	if fetcher.requests[1].URL != "https://example.com/beta" {
@@ -361,7 +412,7 @@ func TestFailedAddDoesNotChangeProjectFiles(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "geo", Version: "1", URL: "https://example.com/one", MaxSize: 100,
+		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
 	}); err == nil {
 		t.Fatal("expected add to fail")
 	}
@@ -414,19 +465,18 @@ func TestPullRunsConcurrentlyAndSortsResults(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	manifest := project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"zeta":  {Version: "1", URL: "https://example.com/zeta"},
-			"alpha": {Version: "1", URL: "https://example.com/alpha"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("zeta@1"):  {URL: "https://example.com/zeta"},
+			at("alpha@1"): {URL: "https://example.com/alpha"},
 		},
 	}
-	lockAssets := make(map[string]project.LockAsset, len(manifest.Assets))
+	lockAssets := make(map[coord.Coordinate]project.LockAsset, len(manifest.Assets))
 	for name, asset := range manifest.Assets {
-		content := []byte(name)
+		content := []byte(name.Name)
 		lockAssets[name] = project.LockAsset{
-			Version: asset.Version,
-			URL:     asset.URL,
-			Digest:  digest.Bytes(content),
-			Size:    int64(len(content)),
+			URL:    asset.URL,
+			Digest: digest.Bytes(content),
+			Size:   int64(len(content)),
 		}
 	}
 	lock, err := project.NewLock(manifest, lockAssets)
@@ -483,9 +533,9 @@ func TestUpdateLockRunsConcurrentlyAndSortsResults(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	manifest := project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"zeta":  {Version: "1", URL: "https://example.com/zeta"},
-			"alpha": {Version: "1", URL: "https://example.com/alpha"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("zeta@1"):  {URL: "https://example.com/zeta"},
+			at("alpha@1"): {URL: "https://example.com/alpha"},
 		},
 	}
 	writeManifest(t, manifestPath, manifest)
@@ -539,8 +589,8 @@ func TestUpdateLockUsesPublisherIntegrityFromCache(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: value},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset", Integrity: value},
 		},
 	})
 	store := newFakeStore()
@@ -566,9 +616,9 @@ func TestRefreshLockUsesStoredETagForRevalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asset := lock.Assets["asset"]
+	asset := lock.Assets[at("asset@1")]
 	asset.ETag = "\"old\""
-	lock.Assets["asset"] = asset
+	lock.Assets[at("asset@1")] = asset
 	if err := project.Write(lockPath, lock); err != nil {
 		t.Fatal(err)
 	}
@@ -598,8 +648,8 @@ func TestRefreshLockUsesStoredETagForRevalidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Assets["asset"].ETag != "\"new\"" {
-		t.Fatalf("updated ETag is %q", updated.Assets["asset"].ETag)
+	if updated.Assets[at("asset@1")].ETag != "\"new\"" {
+		t.Fatalf("updated ETag is %q", updated.Assets[at("asset@1")].ETag)
 	}
 }
 
@@ -610,7 +660,7 @@ func TestNetworkTimeoutHasStableCode(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "asset", Version: "1", URL: "https://example.com/asset",
+		Coordinate: at("asset@1"), URL: "https://example.com/asset",
 	}); fault.As(err).Code != "timeout" {
 		t.Fatalf("expected timeout, got %v", err)
 	}
@@ -621,14 +671,14 @@ func TestPathChecksVersionAndCachePresence(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	service := application.New(manifestPath, lockPath, store, nil, nil)
-	if _, err := service.Path("asset", "2"); fault.As(err).Code != "asset_unknown" {
+	if _, err := service.Path(at("asset@2")); fault.As(err).Code != "asset_unknown" {
 		t.Fatalf("expected asset_unknown, got %v", err)
 	}
-	if _, err := service.Path("asset", "1"); fault.As(err).Code != "cache_object_invalid" {
+	if _, err := service.Path(at("asset@1")); fault.As(err).Code != "cache_object_invalid" {
 		t.Fatalf("expected cache_object_invalid, got %v", err)
 	}
 	store.objects[digest.Bytes(content)] = bytes.Clone(content)
-	if _, err := service.Path("asset", "1"); err != nil {
+	if _, err := service.Path(at("asset@1")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -639,8 +689,8 @@ func TestUpdateLockHonorsCancellation(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	})
 	fetcher := &fakeFetcher{fetch: func(ctx context.Context, _ application.FetchRequest) (*application.FetchResponse, error) {
@@ -672,6 +722,35 @@ func staticFetcher(content []byte) *fakeFetcher {
 	}}
 }
 
+// sequenceFetcher serves a different body to each request, which is one URL
+// whose bytes change: the rolling source a version bump is the honest answer
+// to. It repeats the last body once the sequence runs out.
+func sequenceFetcher(bodies ...[]byte) *fakeFetcher {
+	var served int
+	var mutex sync.Mutex
+	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		content := bodies[min(served, len(bodies)-1)]
+		served++
+		return response(content), nil
+	}}
+}
+
+// pathFetcher serves the last element of each URL path as its content.
+//
+// A test about several versions of one asset needs distinct bytes per version,
+// because a fetcher answering everything with one body makes every version
+// collide, which is a different rule from the one under test. Keying on the
+// path rather than the whole URL also lets two hosts serve one file, which is
+// what a mirror is.
+func pathFetcher() *fakeFetcher {
+	return &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+		elements := strings.Split(request.URL, "/")
+		return response([]byte(elements[len(elements)-1])), nil
+	}}
+}
+
 func response(content []byte) *application.FetchResponse {
 	return &application.FetchResponse{Length: int64(len(content)), Body: io.NopCloser(bytes.NewReader(content))}
 }
@@ -695,16 +774,15 @@ func lockedProject(t *testing.T, content []byte) (string, string) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	manifest := project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	}
-	lock, err := project.NewLock(manifest, map[string]project.LockAsset{
-		"asset": {
-			Version: "1",
-			URL:     "https://example.com/asset",
-			Digest:  digest.Bytes(content),
-			Size:    int64(len(content)),
+	lock, err := project.NewLock(manifest, map[coord.Coordinate]project.LockAsset{
+		at("asset@1"): {
+			URL:    "https://example.com/asset",
+			Digest: digest.Bytes(content),
+			Size:   int64(len(content)),
 		},
 	})
 	if err != nil {
@@ -884,12 +962,11 @@ func TestExportWritesAnIndexedCacheBundle(t *testing.T) {
 	var index struct {
 		SchemaVersion int `json:"schemaVersion"`
 		Items         []struct {
-			Name      string `json:"name"`
-			Version   string `json:"version"`
-			SourceURL string `json:"sourceUrl"`
-			File      string `json:"file"`
-			Digest    string `json:"digest"`
-			Size      int64  `json:"size"`
+			Coordinate string `json:"coordinate"`
+			SourceURL  string `json:"sourceUrl"`
+			File       string `json:"file"`
+			Digest     string `json:"digest"`
+			Size       int64  `json:"size"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(reader).Decode(&index); err != nil {
@@ -897,11 +974,11 @@ func TestExportWritesAnIndexedCacheBundle(t *testing.T) {
 	}
 	value := digest.Bytes(content)
 	expectedFile := "blobs/sha256/" + strings.TrimPrefix(value, digest.Prefix)
-	if index.SchemaVersion != 1 || len(index.Items) != 1 {
+	if index.SchemaVersion != 2 || len(index.Items) != 1 {
 		t.Fatalf("unexpected index: %#v", index)
 	}
 	item := index.Items[0]
-	if item.Name != "asset" || item.Version != "1" || item.SourceURL != "https://example.com/asset" ||
+	if item.Coordinate != "test/asset@1" || item.SourceURL != "https://example.com/asset" ||
 		item.File != expectedFile || item.Digest != value || item.Size != int64(len(content)) {
 		t.Fatalf("unexpected bundle item: %#v", item)
 	}
@@ -984,8 +1061,8 @@ func TestUpdateLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
 		},
 	})
 	store := newFakeStore()
@@ -1005,8 +1082,8 @@ func TestRefreshLockContactsTheOriginAnyway(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
 		},
 	})
 	store := newFakeStore()
@@ -1051,8 +1128,8 @@ func TestUpdateLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
 		},
 	})
 	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
@@ -1069,8 +1146,8 @@ func TestUpdateLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Assets["asset"].ETag != "" {
-		t.Fatalf("pinned asset recorded ETag %q", locked.Assets["asset"].ETag)
+	if locked.Assets[at("asset@1")].ETag != "" {
+		t.Fatalf("pinned asset recorded ETag %q", locked.Assets[at("asset@1")].ETag)
 	}
 }
 
@@ -1081,17 +1158,17 @@ func TestUpdateLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
 		},
 	})
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	asset := lock.Assets["asset"]
+	asset := lock.Assets[at("asset@1")]
 	asset.ETag = "\"stale\""
-	lock.Assets["asset"] = asset
+	lock.Assets[at("asset@1")] = asset
 	if err := project.Write(lockPath, lock); err != nil {
 		t.Fatal(err)
 	}
@@ -1110,8 +1187,8 @@ func TestUpdateLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Assets["asset"].ETag != "" {
-		t.Fatalf("cached lock kept ETag %q", updated.Assets["asset"].ETag)
+	if updated.Assets[at("asset@1")].ETag != "" {
+		t.Fatalf("cached lock kept ETag %q", updated.Assets[at("asset@1")].ETag)
 	}
 }
 
@@ -1125,12 +1202,12 @@ func TestAddNormalizesAnSRIIntegrityValue(t *testing.T) {
 	sum := sha256.Sum256(content)
 	sri := digest.SRIPrefix + base64.StdEncoding.EncodeToString(sum[:])
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Name: "asset", Version: "1", URL: "https://example.com/asset", Integrity: sri, MaxSize: 100,
+		Coordinate: at("asset@1"), URL: "https://example.com/asset", Integrity: sri, MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
-	if got := manifest.Assets["asset"].Integrity; got != digest.Bytes(content) {
+	if got := manifest.Assets[at("asset@1")].Integrity; got != digest.Bytes(content) {
 		t.Fatalf("manifest kept %q, want the canonical form %q", got, digest.Bytes(content))
 	}
 }
@@ -1168,7 +1245,7 @@ func TestPathRefusesACorruptObject(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	_, err := service.Path("asset", "1")
+	_, err := service.Path(at("asset@1"))
 	if code := fault.As(err).Code; code != "cache_object_corrupt" {
 		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
 	}
@@ -1292,7 +1369,7 @@ func TestVerifyRefreshReportsDriftWithoutWriting(t *testing.T) {
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
 	}
-	if assets, _ := value.Details["assets"].([]string); len(assets) != 1 || assets[0] != "asset" {
+	if assets, _ := value.Details["assets"].([]string); len(assets) != 1 || assets[0] != "test/asset@1" {
 		t.Fatalf("drift did not name the asset: %#v", value.Details)
 	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
@@ -1339,8 +1416,8 @@ func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "2", URL: "https://example.com/asset"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@2"): {URL: "https://example.com/asset"},
 		},
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
@@ -1384,8 +1461,8 @@ func TestUpdateLockCreatesAMissingLockFile(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
@@ -1394,7 +1471,7 @@ func TestUpdateLockCreatesAMissingLockFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Locked) != 1 || result.Locked[0] != "asset" {
+	if len(result.Locked) != 1 || result.Locked[0] != "test/asset@1" {
 		t.Fatalf("pull did not report the asset it locked: %#v", result.Locked)
 	}
 	// The reconcile stored these bytes, so crediting the cache for them would
@@ -1412,8 +1489,8 @@ func TestPullRefusesAStaleLockWithoutUpdateLock(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/moved"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/moved"},
 		},
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
@@ -1430,11 +1507,11 @@ func TestAddCreatesAMissingLockFile(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
-	writeManifest(t, manifestPath, project.Manifest{SchemaVersion: project.ManifestVersion, Assets: map[string]project.Asset{}})
+	writeManifest(t, manifestPath, project.Manifest{SchemaVersion: project.ManifestVersion, Assets: map[coord.Coordinate]project.Asset{}})
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
 	result, err := service.Add(context.Background(), application.AddOptions{
-		Name: "asset", Version: "1", URL: "https://example.com/asset", MaxSize: 100,
+		Coordinate: at("asset@1"), URL: "https://example.com/asset", MaxSize: 100,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1453,24 +1530,25 @@ func TestAddSettlesAHandEditedManifest(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "2", URL: "https://example.com/asset"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/moved"},
 		},
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
 	result, err := service.Add(context.Background(), application.AddOptions{
-		Name: "other", Version: "1", URL: "https://example.com/other", MaxSize: 100,
+		Coordinate: at("other@1"), URL: "https://example.com/other", MaxSize: 100,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Locked) != 1 || result.Locked[0] != "asset" {
+	if len(result.Locked) != 1 || result.Locked[0] != "test/asset@1" {
 		t.Fatalf("add did not report the asset it settled: %#v", result.Locked)
 	}
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets["asset"].Version != "2" || lock.Assets["asset"].Version != "2" {
-		t.Fatalf("add did not settle the edited asset: %#v %#v", manifest.Assets["asset"], lock.Assets["asset"])
+	if manifest.Assets[at("asset@1")].URL != "https://example.com/moved" ||
+		lock.Assets[at("asset@1")].URL != "https://example.com/moved" {
+		t.Fatalf("add did not settle the edited asset: %#v %#v", manifest.Assets[at("asset@1")], lock.Assets[at("asset@1")])
 	}
 }
 
@@ -1481,26 +1559,26 @@ func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
-		Assets: map[string]project.Asset{
-			"asset": {Version: "1", URL: "https://example.com/asset"},
-			"other": {Version: "1", URL: "https://example.com/other"},
-			"gone":  {Version: "1", URL: "https://example.com/gone"},
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/asset"},
+			at("other@1"): {URL: "https://example.com/other"},
+			at("gone@1"):  {URL: "https://example.com/gone"},
 		},
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	result, err := service.Remove("gone", "1")
+	result, err := service.Remove(at("gone@1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Unlocked) != 1 || result.Unlocked[0] != "other" {
+	if len(result.Unlocked) != 1 || result.Unlocked[0] != "test/other@1" {
 		t.Fatalf("remove did not name the unlocked asset: %#v", result.Unlocked)
 	}
 	manifest, err := project.ReadManifest(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := manifest.Assets["gone"]; exists {
+	if _, exists := manifest.Assets[at("gone@1")]; exists {
 		t.Fatal("remove left the asset in the manifest")
 	}
 }
@@ -1516,7 +1594,7 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 	}
 
 	result, err := service.Add(context.Background(), application.AddOptions{
-		Name: "asset", Version: "1", URL: "https://example.com/asset", Pin: true, MaxSize: 1 << 20,
+		Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true, MaxSize: 1 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1526,13 +1604,13 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 		t.Fatalf("add did not pin the asset: %#v", result)
 	}
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets["asset"].Integrity != value {
-		t.Fatalf("the manifest was not pinned: %#v", manifest.Assets["asset"])
+	if manifest.Assets[at("asset@1")].Integrity != value {
+		t.Fatalf("the manifest was not pinned: %#v", manifest.Assets[at("asset@1")])
 	}
 	// A pinned asset never sends a conditional request, so it must not carry an
 	// ETag that the next lock would only have to strip back out.
-	if lock.Assets["asset"].ETag != "" {
-		t.Fatalf("a pinned lock entry kept an ETag: %#v", lock.Assets["asset"])
+	if lock.Assets[at("asset@1")].ETag != "" {
+		t.Fatalf("a pinned lock entry kept an ETag: %#v", lock.Assets[at("asset@1")])
 	}
 }
 
@@ -1540,8 +1618,8 @@ func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 	for name, options := range map[string]application.AddOptions{
-		"integrity": {Name: "other", Version: "1", URL: "https://example.com/other", Pin: true, Integrity: digest.Bytes([]byte("x"))},
-		"offline":   {Name: "other", Version: "1", URL: "https://example.com/other", Pin: true, Offline: true},
+		"integrity": {Coordinate: at("other@1"), URL: "https://example.com/other", Pin: true, Integrity: digest.Bytes([]byte("x"))},
+		"offline":   {Coordinate: at("other@1"), URL: "https://example.com/other", Pin: true, Offline: true},
 	} {
 		if _, err := service.Add(context.Background(), options); fault.As(err).Code != "invalid_arguments" {
 			t.Fatalf("%s: expected invalid_arguments, got %v", name, err)
@@ -1549,18 +1627,214 @@ func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
 	}
 }
 
-func TestAddForceReportsTheRetiredCoordinate(t *testing.T) {
+// The mistake this whole scheme exists to catch: a new version pointed at the
+// source the old one already had. Both versions resolve to one object, so one
+// of the two is a label somebody invented for bytes that already had a version.
+func TestAddRefusesTwoVersionsOfTheSameBytes(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
+	before := projecttest.MustRead(t, manifestPath)
+	beforeLock := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
-		Name: "asset", Version: "2", URL: "https://example.com/asset", Force: true, MaxSize: 1 << 20,
+	_, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@2"), URL: "https://example.com/asset", MaxSize: 1 << 20,
 	})
+	value := fault.As(err)
+	if value.Code != "version_collision" {
+		t.Fatalf("expected version_collision, got %q (%v)", value.Code, err)
+	}
+	if value.Details["asset"] != "test/asset" {
+		t.Fatalf("the collision did not name the asset: %#v", value.Details)
+	}
+	if versions, _ := value.Details["versions"].([]string); len(versions) != 2 ||
+		versions[0] != "1" || versions[1] != "2" {
+		t.Fatalf("the collision did not name both versions: %#v", value.Details)
+	}
+	assertFilesEqual(t, manifestPath, lockPath, before, beforeLock)
+}
+
+// The same mistake made by editing the version in place. The old coordinate
+// leaves the manifest, so the two never appear together and nothing compares
+// them, and the previous lock file is the only thing that still remembers.
+func TestAddRefusesAVersionThatNamesRetiredBytes(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@2"): {URL: "https://example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	_, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("other@1"), URL: "https://example.com/other", MaxSize: 1 << 20,
+	})
+	if code := fault.As(err).Code; code != "version_collision" {
+		t.Fatalf("expected version_collision, got %q (%v)", code, err)
+	}
+}
+
+// Rebinding is the way through when the operator has decided the version does
+// mean these bytes now.
+func TestAddRebindAcceptsRetiredBytes(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@2"): {URL: "https://example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("other@1"), URL: "https://example.com/other",
+		AllowRebind: true, MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	if _, exists := manifest.Assets[at("asset@2")]; !exists {
+		t.Fatalf("the rebind did not settle the edited asset: %#v", manifest.Assets)
+	}
+}
+
+// The rule that gives a version its meaning: once the lock binds a coordinate
+// to bytes, nothing rewrites the digest under it. An origin that replaced what
+// it serves behind a stable URL is the case this exists for, and a refresh is
+// where DAC used to accept it silently.
+func TestRefreshLockRefusesToRebindALockedVersion(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	before := projecttest.MustRead(t, lockPath)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
+
+	_, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 1 << 20, UpdateLock: true, Refresh: true,
+	})
+	value := fault.As(err)
+	if value.Code != "version_rebind" {
+		t.Fatalf("expected version_rebind, got %q (%v)", value.Code, err)
+	}
+	if value.Details["asset"] != "test/asset@1" {
+		t.Fatalf("the rebind did not name the asset: %#v", value.Details)
+	}
+	if value.Details["lockedDigest"] != digest.Bytes([]byte("asset bytes")) ||
+		value.Details["resolvedDigest"] != digest.Bytes([]byte("moved bytes")) {
+		t.Fatalf("the rebind did not report both digests: %#v", value.Details)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("the refused rebind still wrote the lock file")
+	}
+}
+
+// A manifest edited to point one version somewhere else is the same claim from
+// the other direction, so it fails the same way.
+func TestUpdateLockRefusesToRebindThroughAManifestEdit(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/elsewhere"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("other bytes")), nil)
+
+	_, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 1 << 20, UpdateLock: true,
+	})
+	if code := fault.As(err).Code; code != "version_rebind" {
+		t.Fatalf("expected version_rebind, got %q (%v)", code, err)
+	}
+}
+
+// A source that moved but still serves the same bytes is not a rebind. Nothing
+// about what the version names has changed, so nothing needs deciding.
+func TestUpdateLockAcceptsAMovedSourceServingTheSameBytes(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://mirror.example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 1 << 20, UpdateLock: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Replaced != "asset@1" {
-		t.Fatalf("add did not report the coordinate it retired: %#v", result)
+	if lock.Assets[at("asset@1")].URL != "https://mirror.example.com/asset" {
+		t.Fatalf("the lock did not follow the source: %#v", lock.Assets[at("asset@1")])
+	}
+}
+
+// Rebinding stays available for the project that tracks a rolling source and
+// has decided to accept what it now serves.
+func TestRebindWritesTheNewBytes(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	moved := []byte("moved bytes")
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(moved), nil)
+
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 1 << 20, UpdateLock: true, Refresh: true, AllowRebind: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Assets[at("asset@1")].Digest != digest.Bytes(moved) {
+		t.Fatalf("the rebind did not write the new digest: %#v", lock.Assets[at("asset@1")])
+	}
+}
+
+// Verify reports drift as its result, so the rebind rule must not raise a
+// different error in front of the answer this command exists to give.
+func TestVerifyRefreshStillReportsDriftRatherThanRebind(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
+
+	_, err := service.Verify(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 1 << 20, Refresh: true})
+	if code := fault.As(err).Code; code != "lock_drift" {
+		t.Fatalf("expected lock_drift, got %q (%v)", code, err)
+	}
+}
+
+// Two versions of one asset served from one URL is fragile rather than wrong:
+// only one set of bytes is at that URL, so a cold cache can restore only one of
+// them. The add says so and continues.
+func TestAddReportsASharedSourceURL(t *testing.T) {
+	manifestPath, lockPath := emptyProject(t)
+	// A genuinely rolling source: one URL whose bytes change between the two
+	// adds. That is the only way two versions can share a URL without also
+	// naming the same object, which is the rule that would answer first.
+	service := application.New(manifestPath, lockPath, newFakeStore(),
+		sequenceFetcher([]byte("first bytes"), []byte("later bytes")), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("geo@1"), URL: "https://example.com/rolling", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("geo@2"), URL: "https://example.com/rolling", MaxSize: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("a shared source URL is fragile, not an error: %v", err)
+	}
+	if len(result.SharedSources) != 1 || result.SharedSources[0] != "1" {
+		t.Fatalf("add did not report the shared source: %#v", result.SharedSources)
+	}
+	if len(result.Siblings) != 1 || result.Siblings[0] != "1" {
+		t.Fatalf("add did not report the sibling version: %#v", result.Siblings)
 	}
 }

@@ -16,9 +16,9 @@ func (runner *runner) infoCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "info",
 		Usage:     "Show project asset and request information.",
-		ArgsUsage: "[<name>@<version>]",
+		ArgsUsage: "[<namespace>/<name>[@<version>]]",
 		Action: runner.run("info", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			name, version, err := optionalCoordinate(current)
+			filter, err := selection(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -30,7 +30,7 @@ func (runner *runner) infoCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Info(application.InfoOptions{Name: name, Version: version, Rewriter: config})
+			result, err := service.Info(application.InfoOptions{Selection: filter, Rewriter: config})
 			return result, infoText(result), err
 		}),
 	}
@@ -47,8 +47,8 @@ func infoText(result application.InfoResult) string {
 			text.WriteByte('\n')
 		}
 		_, _ = fmt.Fprintf(&text,
-			"%s@%s\nsource: %s\nrequest: %s\npolicy: %s\nlock: %s\ncache: %s\n",
-			asset.Name, asset.Version, asset.SourceURL, asset.RequestURL,
+			"%s\nsource: %s\nrequest: %s\npolicy: %s\nlock: %s\ncache: %s\n",
+			asset.Coordinate, asset.SourceURL, asset.RequestURL,
 			asset.RequestStatus, result.Summary.LockStatus, asset.CacheStatus)
 		if asset.Integrity != "" {
 			_, _ = fmt.Fprintf(&text, "integrity: %s\n", asset.Integrity)

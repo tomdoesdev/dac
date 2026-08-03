@@ -40,14 +40,20 @@ func (service *Service) Verify(ctx context.Context, options NetworkOptions) (Ver
 	}
 	defer service.Reporter.Wait()
 	result.Refreshed = true
+	// Verify is the command whose whole result is what the origins now serve,
+	// so it resolves with the rebind rule suspended. Leaving it on would have a
+	// refresh fail with version_rebind at the first drifted asset, which is a
+	// second name for the answer this command exists to report, delivered
+	// before it could finish collecting it.
+	options.AllowRebind = true
 	reconciled, err := service.reconcile(ctx, manifest, lock, options)
 	if err != nil {
 		return VerifyResult{}, err
 	}
 	drifted := make([]string, 0, len(manifest.Assets))
-	for _, name := range manifest.Names() {
+	for _, name := range manifest.Coordinates() {
 		if driftedFrom(lock.Assets[name], reconciled.assets[name]) {
-			drifted = append(drifted, name)
+			drifted = append(drifted, name.String())
 		}
 	}
 	if len(drifted) > 0 {

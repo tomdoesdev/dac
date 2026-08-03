@@ -8,29 +8,33 @@ import (
 	"maps"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/jsonfile"
 	"github.com/tom/dac/internal/urlpolicy"
 )
 
 const (
-	ManifestVersion = 1
-	LockVersion     = 1
+	ManifestVersion = 2
+	LockVersion     = 2
 	fileMode        = 0o644
 )
 
 // Manifest defines the assets for one project.
+//
+// Both files key their assets by coordinate, so the version is part of the key
+// rather than a field of the value. A project holds as many versions of an
+// asset as it names, and nothing can change what a version means by editing the
+// entry in place: a different version is a different key.
 type Manifest struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	Assets        map[string]Asset `json:"assets"`
+	SchemaVersion int                        `json:"schemaVersion"`
+	Assets        map[coord.Coordinate]Asset `json:"assets"`
 }
 
-// Asset defines one named and versioned source.
+// Asset defines one source.
 type Asset struct {
-	Version           string `json:"version"`
 	URL               string `json:"url"`
 	Integrity         string `json:"integrity,omitempty"`
 	AllowInsecureHTTP bool   `json:"allowInsecureHttp,omitempty"`
@@ -38,25 +42,43 @@ type Asset struct {
 
 // Lock records the exact bytes for a manifest.
 type Lock struct {
-	LockVersion    int                  `json:"lockVersion"`
-	ManifestDigest string               `json:"manifestDigest"`
-	Assets         map[string]LockAsset `json:"assets"`
+	LockVersion    int                            `json:"lockVersion"`
+	ManifestDigest string                         `json:"manifestDigest"`
+	Assets         map[coord.Coordinate]LockAsset `json:"assets"`
 }
 
 // LockAsset records one resolved asset.
 type LockAsset struct {
-	Version string `json:"version"`
-	URL     string `json:"url"`
-	Digest  string `json:"digest"`
-	Size    int64  `json:"size"`
-	ETag    string `json:"etag,omitempty"`
+	URL    string `json:"url"`
+	Digest string `json:"digest"`
+	Size   int64  `json:"size"`
+	ETag   string `json:"etag,omitempty"`
+}
+
+// VersionCollisionError reports two versions of one asset that name the same
+// bytes.
+//
+// This is the failure that made versions meaningless: an asset added again at a
+// new version with its old source still attached resolves to the bytes the old
+// version already had, and the project ends up with two names for one thing and
+// no way to tell which one anybody meant. A lock file never holds one, because
+// Validate refuses it, so no command has to decide what to do about it.
+type VersionCollisionError struct {
+	Group    coord.Group
+	Versions []string
+	Digest   string
+}
+
+func (value *VersionCollisionError) Error() string {
+	return fmt.Sprintf("asset %s versions %s name the same bytes (%s)",
+		value.Group, strings.Join(value.Versions, " and "), value.Digest)
 }
 
 // Empty returns matching empty project files.
 func Empty() (Manifest, Lock) {
-	manifest := Manifest{SchemaVersion: ManifestVersion, Assets: map[string]Asset{}}
+	manifest := Manifest{SchemaVersion: ManifestVersion, Assets: map[coord.Coordinate]Asset{}}
 	manifestDigest, _ := manifest.Digest()
-	return manifest, Lock{LockVersion: LockVersion, ManifestDigest: manifestDigest, Assets: map[string]LockAsset{}}
+	return manifest, Lock{LockVersion: LockVersion, ManifestDigest: manifestDigest, Assets: map[coord.Coordinate]LockAsset{}}
 }
 
 // ReadManifest reads, normalizes, and validates a manifest.
@@ -116,17 +138,18 @@ func ReadLockIfPresent(path string) (Lock, bool, error) {
 // Validate checks the manifest schema and each asset.
 func (manifest Manifest) Validate() error {
 	if manifest.SchemaVersion != ManifestVersion {
-		return fmt.Errorf("unsupported manifest schema version %d", manifest.SchemaVersion)
+		return fmt.Errorf("unsupported manifest schema version %d: version %d keys each asset by <namespace>/<name>@<version> and carries no version field",
+			manifest.SchemaVersion, ManifestVersion)
 	}
 	if manifest.Assets == nil {
 		return errors.New("manifest assets must be an object")
 	}
 	for name, asset := range manifest.Assets {
-		if name == "" || strings.Contains(name, "@") {
-			return fmt.Errorf("asset name %q must be nonempty and contain no @", name)
-		}
-		if asset.Version == "" || strings.Contains(asset.Version, "@") {
-			return fmt.Errorf("asset %q version must be nonempty and contain no @", name)
+		// A manifest read from a file has already parsed every key. One built in
+		// memory has not, so this is what stops a command from writing a
+		// coordinate that DAC would refuse to read back.
+		if err := name.Validate(); err != nil {
+			return fmt.Errorf("manifest asset: %w", err)
 		}
 		parsed, err := url.ParseRequestURI(asset.URL)
 		if err != nil || !parsed.IsAbs() || parsed.Host == "" {
@@ -144,10 +167,12 @@ func (manifest Manifest) Validate() error {
 	return nil
 }
 
-// Validate checks the lock schema and each locked asset.
+// Validate checks the lock schema, each locked asset, and that no two versions
+// of one asset name the same bytes.
 func (lock Lock) Validate() error {
 	if lock.LockVersion != LockVersion {
-		return fmt.Errorf("unsupported lock version %d", lock.LockVersion)
+		return fmt.Errorf("unsupported lock version %d: version %d keys each asset by <namespace>/<name>@<version> and carries no version field",
+			lock.LockVersion, LockVersion)
 	}
 	if _, err := digest.Hex(lock.ManifestDigest); err != nil {
 		return fmt.Errorf("invalid manifest digest: %w", err)
@@ -156,7 +181,10 @@ func (lock Lock) Validate() error {
 		return errors.New("lock assets must be an object")
 	}
 	for name, asset := range lock.Assets {
-		if name == "" || asset.Version == "" || asset.URL == "" {
+		if err := name.Validate(); err != nil {
+			return fmt.Errorf("lock asset: %w", err)
+		}
+		if asset.URL == "" {
 			return fmt.Errorf("lock asset %q is incomplete", name)
 		}
 		if _, err := digest.Hex(asset.Digest); err != nil {
@@ -166,7 +194,37 @@ func (lock Lock) Validate() error {
 			return fmt.Errorf("lock asset %q has a negative size", name)
 		}
 	}
+	return CheckVersions(lock.Assets)
+}
+
+// CheckVersions reports two versions of one asset that resolved to the same
+// bytes.
+//
+// Two coordinates naming one object is fine when they are different assets: a
+// namespace exists so that two projects can vendor the same file, and the cache
+// stores it once either way. Two versions of the same asset is the case that
+// cannot be true, because one of the two versions is then a label somebody
+// invented for bytes that already had one.
+func CheckVersions(assets map[coord.Coordinate]LockAsset) error {
+	seen := make(map[groupDigest]coord.Coordinate, len(assets))
+	for _, name := range coord.Sorted(assets) {
+		key := groupDigest{group: name.Group(), digest: assets[name].Digest}
+		previous, exists := seen[key]
+		if exists {
+			return &VersionCollisionError{
+				Group:    name.Group(),
+				Versions: []string{previous.Version, name.Version},
+				Digest:   key.digest,
+			}
+		}
+		seen[key] = name
+	}
 	return nil
+}
+
+type groupDigest struct {
+	group  coord.Group
+	digest string
 }
 
 // Digest returns the digest of the normalized manifest.
@@ -178,9 +236,9 @@ func (manifest Manifest) Digest() (string, error) {
 	return digest.Bytes(data), nil
 }
 
-// Names returns sorted asset names.
-func (manifest Manifest) Names() []string {
-	return slices.Sorted(maps.Keys(manifest.Assets))
+// Coordinates returns the manifest assets in a stable order.
+func (manifest Manifest) Coordinates() []coord.Coordinate {
+	return coord.Sorted(manifest.Assets)
 }
 
 // Clone returns a manifest whose asset map can be changed independently.
@@ -201,11 +259,14 @@ func Agrees(asset Asset, locked LockAsset, exists bool) bool {
 // disagreement returns why a lock entry no longer describes a manifest asset,
 // or an empty string when it still does. CheckLock reports the reason, so a
 // stale lock says which part of the asset moved.
+//
+// The version is not compared here because it cannot differ: both entries are
+// found by the same coordinate, and the coordinate carries it.
 func disagreement(asset Asset, locked LockAsset, exists bool) string {
 	switch {
 	case !exists:
 		return "is not locked"
-	case locked.URL != asset.URL || locked.Version != asset.Version:
+	case locked.URL != asset.URL:
 		return "does not match"
 	case asset.Integrity != "" && locked.Digest != asset.Integrity:
 		return "does not match its integrity"
@@ -223,7 +284,7 @@ func CheckLock(manifest Manifest, lock Lock) error {
 		return errors.New("lock manifest digest does not match")
 	}
 	if len(manifest.Assets) != len(lock.Assets) {
-		return errors.New("lock asset names do not match")
+		return errors.New("lock asset coordinates do not match")
 	}
 	for name, asset := range manifest.Assets {
 		locked, exists := lock.Assets[name]
@@ -235,7 +296,7 @@ func CheckLock(manifest Manifest, lock Lock) error {
 }
 
 // NewLock builds a lock from resolved assets.
-func NewLock(manifest Manifest, assets map[string]LockAsset) (Lock, error) {
+func NewLock(manifest Manifest, assets map[coord.Coordinate]LockAsset) (Lock, error) {
 	manifestDigest, err := manifest.Digest()
 	if err != nil {
 		return Lock{}, err

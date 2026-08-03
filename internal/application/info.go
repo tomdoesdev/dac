@@ -1,6 +1,7 @@
 package application
 
 import (
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 	"github.com/tom/dac/internal/rewrite"
@@ -20,13 +21,54 @@ const (
 
 // InfoOptions selects the assets and rewrite config for one inspection.
 type InfoOptions struct {
-	Name     string
-	Version  string
-	Rewriter *rewrite.Config
+	// Selection narrows the assets to one coordinate or one asset's versions.
+	// A zero Selection covers the whole project.
+	Selection Selection
+	Rewriter  *rewrite.Config
+}
+
+// Selection is the asset filter one inspection applies.
+//
+// A project can hold several versions of an asset now, so "which versions of
+// this do I have" is a question with an answer, and info is the command that
+// has it. The two narrower forms are the coordinate every other command takes
+// and the namespace/name it belongs to.
+//
+// Its fields are unexported and reached only through the three constructors, so
+// there is no way to build one that means nothing in particular. Its zero value
+// is the whole project, which is the reading that fails safe: a filter nobody
+// set should show everything rather than silently match one thing.
+type Selection struct {
+	kind       selectionKind
+	coordinate coord.Coordinate
+	group      coord.Group
+}
+
+type selectionKind int
+
+const (
+	selectEvery selectionKind = iota
+	selectExact
+	selectGroup
+)
+
+// EverySelection selects the whole project.
+func EverySelection() Selection { return Selection{kind: selectEvery} }
+
+// ExactSelection selects one coordinate.
+func ExactSelection(name coord.Coordinate) Selection {
+	return Selection{kind: selectExact, coordinate: name}
+}
+
+// GroupSelection selects every version of one asset.
+func GroupSelection(group coord.Group) Selection {
+	return Selection{kind: selectGroup, group: group}
 }
 
 // InfoAsset combines manifest, request, lock, and cache information.
 type InfoAsset struct {
+	Coordinate    string `json:"coordinate"`
+	Namespace     string `json:"namespace"`
 	Name          string `json:"name"`
 	Version       string `json:"version"`
 	SourceURL     string `json:"sourceUrl"`
@@ -64,7 +106,7 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	if err != nil {
 		return InfoResult{}, err
 	}
-	names, err := selectedNames(manifest, options.Name, options.Version)
+	names, err := selected(manifest, options.Selection)
 	if err != nil {
 		return InfoResult{}, err
 	}
@@ -95,16 +137,27 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	return result, nil
 }
 
-// selectedNames returns all sorted names or one exact active coordinate.
-func selectedNames(manifest project.Manifest, name, version string) ([]string, error) {
-	if name == "" && version == "" {
-		return manifest.Names(), nil
+// selected returns the coordinates one filter covers, in a stable order.
+func selected(manifest project.Manifest, selection Selection) ([]coord.Coordinate, error) {
+	switch selection.kind {
+	case selectExact:
+		if _, exists := manifest.Assets[selection.coordinate]; !exists {
+			return nil, unknownCoordinate(selection.coordinate, manifest.Assets)
+		}
+		return []coord.Coordinate{selection.coordinate}, nil
+	case selectGroup:
+		names := coord.InGroup(manifest.Assets, selection.group)
+		if len(names) == 0 {
+			return nil, &fault.Error{
+				Code:    "asset_unknown",
+				Message: "The project does not have this asset.",
+				Details: map[string]any{"asset": selection.group.String()},
+			}
+		}
+		return names, nil
+	default:
+		return manifest.Coordinates(), nil
 	}
-	asset, exists := manifest.Assets[name]
-	if !exists || asset.Version != version {
-		return nil, fault.New("asset_unknown", "The project does not have this asset coordinate.")
-	}
-	return []string{name}, nil
 }
 
 // infoLock classifies a readable lock. A stale lock does not cause a command error.
@@ -123,18 +176,20 @@ func (service *Service) infoLock(manifest project.Manifest) (project.Lock, strin
 }
 
 // infoAsset combines one manifest asset with its request and cache states.
-func (service *Service) infoAsset(name string, source project.Asset, lock project.Lock, lockStatus string, config *rewrite.Config) (InfoAsset, error) {
+func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string, config *rewrite.Config) (InfoAsset, error) {
 	decision, err := config.Evaluate(source.URL)
 	if err != nil {
-		return InfoAsset{}, withAsset(fault.Wrap("rewrite_failed", "DAC could not apply the rewrite config.", err), name)
+		return InfoAsset{}, withAsset(fault.Wrap("rewrite_failed", "DAC could not apply the rewrite config.", err), name.String())
 	}
 	requestStatus := requestAllowed
 	if decision.Blocked {
 		requestStatus = requestBlocked
 	}
 	result := InfoAsset{
-		Name:          name,
-		Version:       source.Version,
+		Coordinate:    name.String(),
+		Namespace:     name.Namespace,
+		Name:          name.Name,
+		Version:       name.Version,
 		SourceURL:     source.URL,
 		RequestURL:    decision.URL,
 		RequestStatus: requestStatus,
@@ -147,7 +202,7 @@ func (service *Service) infoAsset(name string, source project.Asset, lock projec
 	}
 	view, err := service.assetView(name, source, lock.Assets[name], "")
 	if err != nil {
-		return InfoAsset{}, withAsset(err, name)
+		return InfoAsset{}, withAsset(err, name.String())
 	}
 	result.Digest = view.Digest
 	result.Size = &view.Size

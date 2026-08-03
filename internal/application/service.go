@@ -12,7 +12,7 @@ import (
 	"github.com/tom/dac/internal/project"
 )
 
-const Version = "5.0.0"
+const Version = "6.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -168,6 +168,14 @@ type NetworkOptions struct {
 	// backs pull --refresh-lock, which writes what it finds, and verify
 	// --refresh, which reports it.
 	Refresh bool
+	// AllowRebind permits a locked coordinate to end up naming different bytes.
+	// Without it a version means one thing forever, which is the whole reason
+	// to write a version down.
+	//
+	// Two commands set it. One is pull --rebind, where an operator has decided
+	// to accept the change. The other is verify, which reports drift as its
+	// result and must not have a different error raised in front of that.
+	AllowRebind bool
 }
 
 func (service *Service) readManifest() (project.Manifest, error) {
@@ -191,7 +199,7 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac pull --update-lock.")
 	}
 	if err != nil {
-		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
+		return project.Manifest{}, project.Lock{}, lockFault("lock_invalid", "The lock file is invalid.", err)
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --update-lock.", err)

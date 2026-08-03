@@ -3,13 +3,14 @@ package application
 import (
 	"context"
 
+	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 )
 
-func (service *Service) resolve(ctx context.Context, name string, source project.Asset, old project.LockAsset, options NetworkOptions) (project.LockAsset, string, error) {
+func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options NetworkOptions) (project.LockAsset, string, error) {
+	name := coordinate.String()
 	oldMatches := old.URL == source.URL && (source.Integrity == "" || old.Digest == source.Integrity)
-	old.Version = source.Version
 	// Only an asset the manifest leaves unpinned is ever revalidated. A
 	// publisher digest already settles which bytes are correct, so a pinned
 	// asset is answered from the cache or downloaded outright, and it neither
@@ -28,7 +29,7 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 		if err == nil && found {
 			service.Reporter.Start(name, object.Size)
 			service.Reporter.Done(name, "cached")
-			return project.LockAsset{Version: source.Version, URL: source.URL, Digest: object.Digest, Size: object.Size}, "cached", nil
+			return project.LockAsset{URL: source.URL, Digest: object.Digest, Size: object.Size}, "cached", nil
 		}
 	}
 	// Refresh does not suppress the hint. An origin that answers 304 to the
@@ -74,11 +75,10 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 		etag = response.ETag
 	}
 	return project.LockAsset{
-		Version: source.Version,
-		URL:     source.URL,
-		Digest:  object.Digest,
-		Size:    object.Size,
-		ETag:    etag,
+		URL:    source.URL,
+		Digest: object.Digest,
+		Size:   object.Size,
+		ETag:   etag,
 	}, "resolved", nil
 }
 
