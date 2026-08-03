@@ -217,6 +217,14 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		// leave the file as they found it.
 		appendArgs(base, "pull", "--update-lock", "--offline"),
 		appendArgs(base, "pull", "--refresh-lock", "--offline"),
+		// Every spelling of a size limit that is not a positive count. Each of
+		// these used to leave the guard against a runaway stream switched off
+		// without saying so, and the first two are what a shell writes for a
+		// variable nobody set.
+		appendArgs(base, "pull", "--max-size", "0"),
+		appendArgs(base, "pull", "--max-size", ""),
+		appendArgs(base, "pull", "--max-size", "99999999TiB"),
+		appendArgs(base, "pull", "--max-size", "NaNB"),
 		// The lock command is gone rather than hidden or aliased.
 		appendArgs(base, "lock"),
 	} {
@@ -1212,6 +1220,73 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	assertError(t, result, "lock_drift")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("--refresh rewrote the lock file")
+	}
+}
+
+// TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound checks the guard from
+// both ends. It has to stop a response nothing else bounds, and the only way to
+// switch it off has to be a word an operator typed on purpose.
+func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
+	content := bytes.Repeat([]byte("asset"), 1024)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertError(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
+		"--source", server.URL, "--max-size", "1KiB", "--progress=false")), "asset_too_large")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
+		"--source", server.URL, "--max-size", noSizeLimit, "--progress=false")), "add")
+}
+
+// TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check
+// was least able to report on. A pinned asset used to be resolved against its
+// publisher digest even here, so a moved origin failed the download with
+// content_mismatch before anything compared it to the lock -- and lock_drift,
+// the code a scheduled job branches on, never appeared for the assets somebody
+// cared enough about to pin. Pull keeps enforcing the pin, because pull writes.
+func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
+	var body atomic.Value
+	body.Store([]byte("first bytes"))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(body.Load().([]byte))
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	base := []string{
+		"--manifest", filepath.Join(directory, "dac.json"),
+		"--lock", lockPath,
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
+		"--source", server.URL, "--pin", "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
+
+	body.Store([]byte("moved bytes"))
+	before := projecttest.MustRead(t, lockPath)
+	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false"))
+	assertError(t, result, "lock_drift")
+	if !bytes.Contains([]byte(result.stdout), []byte(`"app/geo@1"`)) {
+		t.Fatalf("lock_drift did not name the drifted asset: %s", result.stdout)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("--refresh rewrote the lock file")
+	}
+	// The same origin against the same pin, from the command that writes: a pin
+	// is a rule there, and bytes that fail it must not reach the lock file.
+	assertError(t, runJSON(t, appendArgs(base, "pull", "--refresh-lock", "--progress=false")), "content_mismatch")
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("a failed --refresh-lock rewrote the lock file")
 	}
 }
 

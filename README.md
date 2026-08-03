@@ -261,7 +261,9 @@ It requests identity encoding and checks redirects with the same URL policy.
 
 `--max-size` bounds a response whose size DAC does not know ahead of time, so it
 exists to stop a runaway stream rather than to express a policy about asset
-sizes. Raise it for a project with genuinely larger assets.
+sizes. Raise it for a project with genuinely larger assets. `--max-size none`
+removes the bound, and nothing else does: an empty value, a zero, and a count
+too large for DAC to hold are all rejected rather than read as no limit.
 
 `--download-parts` sets how many requests one download may be split across. See
 [Split downloads](#split-downloads). It is a budget for the whole command rather
@@ -321,6 +323,12 @@ A helper has 30 seconds to answer. A failing helper fails the command. DAC never
 writes helper output to a log or an error message. DAC clears credentials on
 each redirect and asks again for the new host, so one host's credentials never
 reach another.
+
+DAC asks a helper once per URL per transfer, and keeps that answer for the range
+requests a split download is made of rather than starting the helper again for
+each one. If an origin then answers `401` or `403`, DAC forgets what it was
+holding, asks once more, and retries the request; a second rejection fails the
+command.
 
 ## Rewrite config
 

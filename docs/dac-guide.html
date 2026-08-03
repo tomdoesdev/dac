@@ -584,6 +584,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <code>--timeout</code> is an <em>inactivity</em> timeout, not a total deadline — a transfer that keeps making
     progress keeps running. <code>--max-size</code> bounds only a response whose size DAC does not know ahead of
     time, so it exists to stop a runaway stream rather than to express a policy about asset sizes.
+    <code>--max-size none</code> removes the bound, and nothing else does: an empty value, a zero, and a count
+    too large for DAC to hold are all rejected rather than read as no limit.
   </p>
 </section>
 
@@ -890,7 +892,10 @@ dac pull</code></pre></div>
 
     <p>
       DAC clears credentials on each redirect and asks again for the new host, so one host's credentials never
-      reach another — including a redirect to a signed CDN URL that needs no credentials at all. The full
+      reach another — including a redirect to a signed CDN URL that needs no credentials at all. Within one
+      transfer a helper is asked once per URL, so the range requests a split download is made of do not start
+      it again for every 8 MiB; if an origin then answers <code>401</code> or <code>403</code>, DAC forgets what
+      it was holding, asks once more, and retries. The full
       protocol, selection rules, and limits are in the
       <a href="dac-architecture.html#credentials">architecture document</a>.
     </p>

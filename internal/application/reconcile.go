@@ -110,7 +110,7 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 	// because both compare one asset against another and neither can be decided
 	// while the other resolutions are still in flight.
 	if err := project.CheckVersions(result.assets); err != nil {
-		return reconciliation{}, collisionFault(err)
+		return reconciliation{}, versionFault(err)
 	}
 	if !options.AllowRebind {
 		if err := checkRetired(result.assets, old); err != nil {

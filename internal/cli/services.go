@@ -122,17 +122,33 @@ func (runner *runner) networkFlags(withConcurrency, withMaxSize bool) []urfave.F
 		// express a policy about asset sizes. The old 32GiB default never fired
 		// in practice, which made it a knob that generated questions instead of
 		// protection. A project with genuinely larger assets raises it.
-		flags = append(flags, &urfave.StringFlag{Name: "max-size", Value: "2GiB", Sources: urfave.EnvVars("DAC_MAX_SIZE"), Usage: "Set the maximum unknown download size."})
+		flags = append(flags, &urfave.StringFlag{Name: "max-size", Value: "2GiB", Sources: urfave.EnvVars("DAC_MAX_SIZE"), Usage: "Bound a download whose size the lock file does not already give, or none for no bound."})
 	}
 	return flags
 }
 
+// noSizeLimit is the only value that turns the size limit off.
+//
+// An empty value and a zero used to do it too, and neither said so. Both are
+// what a shell produces from a variable nobody set, so the guard against a
+// runaway stream could end up disabled by a deployment script that thought it
+// was leaving the default in place. Switching it off is a decision, so it needs
+// a word.
+const noSizeLimit = "none"
+
 func maximumSize(current *urfave.Command) (int64, error) {
-	value, err := parseSize(current.String("max-size"))
+	value := strings.TrimSpace(current.String("max-size"))
+	if strings.EqualFold(value, noSizeLimit) {
+		return 0, nil
+	}
+	size, err := bytesize.Parse(value)
 	if err != nil {
 		return 0, fault.Wrap("invalid_arguments", "The maximum size is invalid.", err)
 	}
-	return value, nil
+	if size <= 0 {
+		return 0, fault.New("invalid_arguments", "The maximum size must be positive. Use --max-size none to download without a limit.")
+	}
+	return size, nil
 }
 
 func concurrency(current *urfave.Command) (int, error) {
@@ -141,13 +157,6 @@ func concurrency(current *urfave.Command) (int, error) {
 		return 0, fault.New("invalid_arguments", "The concurrency must be at least 1.")
 	}
 	return value, nil
-}
-
-func parseSize(value string) (int64, error) {
-	if strings.TrimSpace(value) == "" {
-		return 0, nil
-	}
-	return bytesize.Parse(value)
 }
 
 func isTerminal(writer io.Writer) bool {
