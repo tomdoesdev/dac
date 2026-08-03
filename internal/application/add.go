@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"maps"
 
 	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
@@ -32,6 +31,10 @@ type AddResult struct {
 	// invalidates every reference to the old one: saying so is the difference
 	// between an edit and a surprise.
 	Replaced string `json:"replaced,omitempty"`
+	// Locked names the other assets this add had to resolve, which is every
+	// asset a hand edit left the lock file no longer describing. An add is
+	// allowed to settle them, but not to settle them silently.
+	Locked []string `json:"locked"`
 }
 
 // Add writes one asset to the manifest and resolves it unless offline mode is active.
@@ -43,16 +46,22 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	if options.Pin && options.Offline {
 		return AddResult{}, fault.New("invalid_arguments", "Offline mode cannot pin an asset, because it resolves no bytes to pin to.")
 	}
-	var manifest project.Manifest
-	var lock project.Lock
-	var err error
-	if options.Offline {
-		manifest, err = service.readManifest()
-	} else {
-		manifest, lock, err = service.readProject()
-	}
+	manifest, err := service.readManifest()
 	if err != nil {
 		return AddResult{}, err
+	}
+	// An add reads whatever lock file is there and settles the difference
+	// itself, so adding an asset to a project that has never been locked works
+	// the same as adding one to a project that has. The manifest is the file it
+	// will not create: that is the declaration that a project exists here, and
+	// inventing one would turn a mistyped --manifest path into a new project
+	// instead of an error.
+	var lock project.Lock
+	if !options.Offline {
+		lock, err = service.readLockIfPresent()
+		if err != nil {
+			return AddResult{}, err
+		}
 	}
 	replaced := ""
 	if previous, exists := manifest.Assets[options.Name]; exists {
@@ -86,14 +95,18 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the manifest file.", err)
 		}
 		view := Asset{Name: options.Name, Version: asset.Version, URL: asset.URL, Integrity: asset.Integrity, Status: "unlocked"}
-		return AddResult{Asset: view, Replaced: replaced}, nil
+		return AddResult{Asset: view, Replaced: replaced, Locked: []string{}}, nil
 	}
 
-	resolved, status, err := service.resolve(ctx, options.Name, asset, lock.Assets[options.Name], NetworkOptions{MaxSize: options.MaxSize})
+	// Reconciling the updated manifest resolves the new asset, which no lock
+	// file can describe yet, and any asset a hand edit left behind, in one pass.
+	// Adding one asset to a project whose manifest someone edited would
+	// otherwise write a lock file that every later command rejects as stale.
+	reconciled, err := service.reconcile(ctx, updated, lock, NetworkOptions{MaxSize: options.MaxSize})
 	if err != nil {
-		service.Reporter.Fail(options.Name, err)
-		return AddResult{}, withAsset(err, options.Name)
+		return AddResult{}, err
 	}
+	resolved := reconciled.assets[options.Name]
 	if options.Pin {
 		// Pinning after resolution is what makes it useful: the digest comes
 		// from the bytes this command actually received, which is the value an
@@ -101,22 +114,34 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 		asset.Integrity = resolved.Digest
 		updated.Assets[options.Name] = asset
 		// A pinned asset neither sends nor records an ETag, so drop the one this
-		// resolution collected. Leaving it would make the next lock rewrite the
+		// resolution collected. Leaving it would make the next pull rewrite the
 		// file for no reason and report drift that never happened.
 		resolved.ETag = ""
+		reconciled.assets[options.Name] = resolved
 	}
-	assets := maps.Clone(lock.Assets)
-	assets[options.Name] = resolved
-	newLock, err := project.NewLock(updated, assets)
-	if err != nil {
-		return AddResult{}, fault.Wrap("lock_invalid", "DAC created an invalid lock file.", err)
-	}
-	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, newLock); err != nil {
-		return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
-	}
-	view, err := service.assetView(options.Name, asset, resolved, status)
+	updatedLock, err := newLock(updated, reconciled.assets)
 	if err != nil {
 		return AddResult{}, err
 	}
-	return AddResult{Asset: view, Replaced: replaced}, nil
+	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, updatedLock); err != nil {
+		return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
+	}
+	view, err := service.assetView(options.Name, asset, resolved, reconciled.resolved[options.Name])
+	if err != nil {
+		return AddResult{}, err
+	}
+	locked := reconciled.names(updated.Names())
+	return AddResult{Asset: view, Replaced: replaced, Locked: others(locked, options.Name)}, nil
+}
+
+// others drops the named asset from a list, leaving the assets a command
+// settled on the way to the one it was asked about.
+func others(names []string, name string) []string {
+	rest := make([]string, 0, len(names))
+	for _, value := range names {
+		if value != name {
+			rest = append(rest, value)
+		}
+	}
+	return rest
 }

@@ -6,9 +6,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	urfave "github.com/urfave/cli/v3"
 
+	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/bytesize"
 )
 
@@ -27,20 +29,6 @@ func (runner *runner) initCommand() *urfave.Command {
 	}
 }
 
-func (runner *runner) verifyCommand() *urfave.Command {
-	return &urfave.Command{
-		Name:  "verify",
-		Usage: "Check that the project files agree.",
-		Action: runner.run("verify", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
-			result, err := runner.projectService(current).Verify()
-			return result, "Project files are valid.", err
-		}),
-	}
-}
-
 func (runner *runner) removeCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "remove",
@@ -52,9 +40,24 @@ func (runner *runner) removeCommand() *urfave.Command {
 				return nil, "", err
 			}
 			result, err := runner.projectService(current).Remove(name, version)
-			return result, fmt.Sprintf("Removed %s@%s.", name, version), err
+			if err != nil {
+				return nil, "", err
+			}
+			return result, removeText(name, version, result), nil
 		}),
 	}
+}
+
+// removeText summarizes one removal. A removal makes no request, so it can
+// leave the lock file describing less than the manifest does, and the summary
+// says which assets rather than letting the next command be the one to mention
+// it.
+func removeText(name, version string, result application.RemoveResult) string {
+	text := fmt.Sprintf("Removed %s@%s.", name, version)
+	if len(result.Unlocked) > 0 {
+		text += fmt.Sprintf(" The lock file does not describe %s. Run dac pull --update-lock.", strings.Join(result.Unlocked, ", "))
+	}
+	return text
 }
 
 func (runner *runner) pathCommand() *urfave.Command {
@@ -80,9 +83,9 @@ func (runner *runner) pathCommand() *urfave.Command {
 func (runner *runner) exportCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "export",
-		Usage: "Copy locked objects into a distribution directory.",
+		Usage: "Write locked objects to a cache bundle.",
 		Flags: []urfave.Flag{
-			&urfave.StringFlag{Name: "dir", Required: true, Usage: "Write objects to this directory."},
+			&urfave.StringFlag{Name: "file", Required: true, Usage: "Write the tar bundle to this file."},
 		},
 		Action: runner.run("export", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			if err := noArguments(current); err != nil {
@@ -92,11 +95,36 @@ func (runner *runner) exportCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Export(ctx, current.String("dir"))
+			result, err := service.Export(ctx, current.String("file"))
 			if err != nil {
 				return nil, "", err
 			}
 			return result, fmt.Sprintf("Exported %s (%s).", plural(result.AssetCount, "asset"), bytesize.Format(result.ByteCount)), nil
+		}),
+	}
+}
+
+// importCommand builds the local cache bundle import command.
+func (runner *runner) importCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "import",
+		Usage: "Install objects from a cache bundle.",
+		Flags: []urfave.Flag{
+			&urfave.StringFlag{Name: "file", Required: true, Usage: "Read the tar bundle from this file."},
+		},
+		Action: runner.run("import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			if err := noArguments(current); err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.Import(ctx, current.String("file"))
+			if err != nil {
+				return nil, "", err
+			}
+			return result, fmt.Sprintf("Imported %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
 		}),
 	}
 }

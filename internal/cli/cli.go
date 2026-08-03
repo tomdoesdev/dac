@@ -75,11 +75,11 @@ func (runner *runner) app() *urfave.Command {
 		runner.addCommand(),
 		runner.removeCommand(),
 		runner.infoCommand(),
-		runner.lockCommand(),
 		runner.pullCommand(),
 		runner.pathCommand(),
 		runner.verifyCommand(),
 		runner.exportCommand(),
+		runner.importCommand(),
 		runner.cacheCommand(),
 	}
 	_ = app.Walk(func(current *urfave.Command) error {

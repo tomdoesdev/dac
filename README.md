@@ -34,8 +34,9 @@ dac pull
 geo_database="$(dac path geo-database@2026.08)"
 ```
 
-`add` resolves the new asset and updates both project files. Commit
-`dac.json` and `dac-lock.json`. A failed resolution changes neither file.
+`add` resolves the new asset and updates both project files, creating the lock
+file if the project does not have one yet. Commit `dac.json` and
+`dac-lock.json`. A failed resolution changes neither file.
 
 `--pin` records the digest the asset resolved to as its `integrity` value, so
 every later command holds the publisher to the bytes this `add` saw. Without it
@@ -48,22 +49,36 @@ tar -xzf "$(dac path toolchain@1.4)" -C vendor/toolchain
 ```
 
 Use `add --offline` to update only `dac.json`. The command makes no network
-request and does not change `dac-lock.json`. Run `dac lock` later to update it.
+request and does not change `dac-lock.json`. Run `dac pull --update-lock` later
+to update it.
 
 In CI or a deployment job, run:
 
 ```bash
-dac verify
 dac pull
 ```
 
-`verify` checks the project files without network or cache access. `pull`
+A plain `pull` refuses a lock file that does not describe the manifest, so it
+reproduces the project as committed rather than as the manifest now reads. It
 uses a matching cache object without a network request.
 
-To find out whether an origin has moved without changing what your project
-uses, run `dac lock --check` on a schedule. It resolves every asset exactly as
-`dac lock` does, writes nothing, and exits `1` with the code `lock_drift` and
-the drifted asset names when the origins no longer serve the locked bytes.
+Editing `dac.json` by hand is the other way in. Nothing resolves it until you
+ask:
+
+```bash
+dac pull --update-lock
+```
+
+That resolves the assets the lock file does not describe, writes it, and names
+what it locked. An asset the lock already describes costs no request at all. Use
+`dac pull --refresh-lock` to resolve every asset against its origin instead,
+which is how you pick up bytes that moved behind a stable URL.
+
+To find out whether an origin has moved without changing what your project uses,
+run `dac verify --refresh` on a schedule. It resolves every asset, writes
+nothing, and exits `1` with the code `lock_drift` and the drifted asset names
+when the origins no longer serve the locked bytes. Resolving an asset means
+downloading it, so a refresh warms the cache on its way past.
 
 ## Commands
 
@@ -73,11 +88,11 @@ the drifted asset names when the origins no longer serve the locked bytes.
 | `dac add <name>@<version> --source <url> [--pin] [--integrity <digest>] [--force] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset. Resolve it unless offline mode is active. |
 | `dac remove <name>@<version>` | Remove one asset without network access. |
 | `dac info [<name>@<version>]` | Show asset, request, lock, and cache information. |
-| `dac lock [--refresh] [--check] [--no-rewrite]` | Resolve all manifest assets and write a new lock file. |
-| `dac pull [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets. |
+| `dac pull [--update-lock] [--refresh-lock] [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets, updating the lock file when asked. |
 | `dac path <name>@<version>` | Return a verified cache path. |
-| `dac verify` | Check that the manifest and lock file agree. |
-| `dac export --dir <dir>` | Copy locked objects into a distribution directory. |
+| `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
+| `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
+| `dac import --file <tar>` | Install objects from a cache bundle into the local cache. |
 | `dac cache verify [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
 | `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
 | `dac cache dir` | Print the resolved cache directory. |
@@ -95,8 +110,16 @@ that state.
 Use `dac --help`, `dac <command> --help`, and `dac --version` for CLI
 help. DAC has no command aliases.
 
-`export` and `cache gc` do not use the network. `cache gc` does not read the
-project files: it collects the whole cache, which several projects share.
+Version 5 removed `dac lock`. Resolving an asset stores its bytes in the cache,
+so the command that resolved everything and the command that installed
+everything were the same command under two names. `dac lock` is now
+`dac pull --update-lock`, `dac lock --refresh` is `dac pull --refresh-lock`, and
+`dac lock --check` is `dac verify --refresh`. Nothing writes the lock file
+without being asked: `add` and `remove` maintain it because they are already
+changing the project, and `pull` only when a lock flag says so.
+
+`export`, `import`, and `cache gc` do not use the network. `import` does not
+read the project files. `cache gc` collects the whole shared cache.
 
 ## Project files
 
@@ -139,16 +162,16 @@ either the canonical `sha256:<hex>` form or the Subresource Integrity
 HTTPS. It permits HTTP for loopback hosts. Use `--allow-insecure-http` on
 `add` to permit another HTTP source.
 
-An asset with an `integrity` value that the cache already holds lets `dac lock`
+An asset with an `integrity` value that the cache already holds lets an update
 finish without a request, which also means it never confirms that the URL still
-serves those bytes. Use `dac lock --refresh` to check every asset against its
-origin.
+serves those bytes. Use `dac pull --refresh-lock` to check every asset against
+its origin.
 
 An asset the manifest leaves unpinned records an `etag` when the origin sends
-one. A `dac lock` replays it as an `If-None-Match` hint and skips the download
-on a `304`, including under `--refresh`: an origin that answers `304` has
-confirmed the asset just as well as one that sends the bytes again. A pinned
-asset neither sends nor records an ETag, so its lock entry omits the field.
+one. A refresh replays it as an `If-None-Match` hint and skips the download on a
+`304`: an origin that answers `304` has confirmed the asset just as well as one
+that sends the bytes again. A pinned asset neither sends nor records an ETag, so
+its lock entry omits the field.
 
 DAC rejects unknown JSON fields, duplicate keys, unsupported schema versions,
 and stale lock files. It writes project files with atomic renames.
@@ -168,14 +191,17 @@ Request and policy options appear only on commands that use them:
 
 | Option | Environment | Default | Commands |
 |---|---|---|---|
-| `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `lock`, `pull` |
-| `--retries` | `DAC_RETRIES` | `2` | `add`, `lock`, `pull` |
-| `--concurrency` | `DAC_CONCURRENCY` | `4` | `lock`, `pull` |
-| `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `lock` |
-| `--progress` | | `true` | `add`, `lock`, `pull` |
-| `--no-rewrite` | | `false` | `add`, `lock`, `pull` |
-| `--credential-helper` | `DAC_CREDENTIAL_HELPER` | | `add`, `lock`, `pull` |
+| `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `pull`, `verify` |
+| `--retries` | `DAC_RETRIES` | `2` | `add`, `pull`, `verify` |
+| `--concurrency` | `DAC_CONCURRENCY` | `4` | `pull`, `verify` |
+| `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `pull`, `verify` |
+| `--progress` | | `true` | `add`, `pull`, `verify` |
+| `--no-rewrite` | | `false` | `add`, `pull`, `verify` |
+| `--credential-helper` | `DAC_CREDENTIAL_HELPER` | | `add`, `pull`, `verify` |
 | `--distdir` | `DAC_DISTDIR` | | `pull` |
+
+The `verify` options apply only to `--refresh`. A plain `verify` reads the two
+project files and stops.
 
 `--timeout` is an inactivity timeout. DAC retries transient network failures.
 It requests identity encoding and checks redirects with the same URL policy.
@@ -230,8 +256,8 @@ allow mirror.internal
 
 Save the config as `dac-rewrite.cfg` beside the manifest. DAC loads this file
 automatically when it exists. `DAC_REWRITE_CONFIG` can specify a different
-file, and that file must exist. Use `--no-rewrite` with `add`, `lock`, or `pull`
-to disable the complete config.
+file, and that file must exist. Use `--no-rewrite` with `add`, `pull`, or
+`verify --refresh` to disable the complete config.
 
 Run `dac info` to show each source URL, request URL, and host policy result. Add
 an asset coordinate to show only that asset.
@@ -251,7 +277,7 @@ bare `allow_insecure_http` directive to permit plain HTTP for rewritten URLs.
 
 A rewrite cannot change what DAC accepts: `pull` still checks the locked digest,
 so a mirror that serves the wrong bytes fails exactly as a corrupted transfer
-does. A `lock` of an asset with no `integrity` value has no expected digest yet,
+does. Resolving an asset with no `integrity` value has no expected digest yet,
 so a rewrite config is trusted input in the same way a manifest URL is.
 
 ## Output contract
@@ -313,8 +339,8 @@ A download first enters a temporary file. DAC hashes and checks all bytes
 before one atomic rename installs the object. Each digest has a Unix process
 lock. Concurrent DAC processes cannot install the same object at the same time.
 
-`lock` can use a publisher digest or a cached object before it makes a request.
-It uses a stored ETag as a lock-time request hint, and only for an asset with no
+An update can use a publisher digest or a cached object before it makes a
+request. It uses a stored ETag as a request hint, and only for an asset with no
 `integrity` value. A publisher digest already settles which bytes are correct,
 so a pinned asset is answered from the cache or downloaded outright, and its
 lock entry carries no `etag`.
@@ -374,24 +400,28 @@ behind by an interrupted download, and sidecars whose object is gone. Use
 Collection never removes a digest lock file. Unlinking a lock that another
 process holds would let a later process take the same lock through a new inode.
 
-### Distribution directories
+### Cache bundles
 
-`dac export --dir <dir>` copies every locked object into a directory, named by
-its digest. `dac pull --distdir <dir>` installs from such a directory before it
-makes any request, which gives `--offline` a cold cache to start from on an
-isolated machine.
+`dac export --file <tar>` writes every locked object to one tar bundle. `dac
+import --file <tar>` validates the bundle and installs its objects in the local
+cache. This supports a cold cache on an isolated machine.
 
 ```bash
-dac export --dir ./bundle          # on a machine with network access
-dac pull --offline --distdir ./bundle
+dac export --file ./cache.tar      # on a machine with network access
+dac import --file ./cache.tar      # on an isolated machine
 ```
 
-`export` hashes each object as it copies, so a bundle never leaves a machine
-carrying bytes that do not match the name they are filed under.
+The format uses two ideas from the OCI image layout. The tar root contains an
+`index.json` file. Object bytes use `blobs/sha256/<hex>` paths. The simpler DAC
+index lists each asset name, version, source URL, file path, digest, and size
+directly.
 
-A distribution directory holds objects named by digest, which is what `export`
-writes and the only naming a consumer can check. A file named for a digest is a
-claim DAC checks, and a mismatch fails the pull.
+`export` hashes each object while it writes the tar. `import` checks the index,
+entry type, path, size, and digest. It rejects an invalid bundle before it
+installs the applicable object.
+
+`dac pull --distdir <dir>` still accepts an unpacked distribution directory.
+Each file in that directory must use its SHA-256 hexadecimal digest as its name.
 
 ## Non-goals
 
@@ -400,8 +430,8 @@ cache, resumes no partial download, and records no signature or provenance. It
 has no registry and no plugin language. Extraction and installation belong to
 whatever consumes the path that `dac path` returns.
 
-DAC does not track upstream releases. `dac lock --check` reports that an origin
-changed what it serves at a URL you already have; nothing tells you that version
-`2026.09` exists. Bumping a version stays a manual edit, and because DAC keeps
+DAC does not track upstream releases. `dac verify --refresh` reports that an
+origin changed what it serves at a URL you already have; nothing tells you that
+version `2026.09` exists. Bumping a version stays a manual edit, and because DAC keeps
 one version of each asset name, `dac add --force` at a new version retires the
 old coordinate and says so.

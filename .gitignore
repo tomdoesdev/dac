@@ -11,3 +11,5 @@
 /dac-rewrite.cfg
 /dacserve.json
 .agents/skills/.DS_Store
+
+.DS_Store

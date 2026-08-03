@@ -6,7 +6,6 @@ package application
 import (
 	"context"
 	"errors"
-	"maps"
 	"os"
 	"time"
 
@@ -38,31 +37,31 @@ func (service *Service) Init(force bool) (InitResult, error) {
 	return InitResult{ManifestPath: service.ManifestPath, LockPath: service.LockPath}, nil
 }
 
-// VerifyResult reports matching project files.
-type VerifyResult struct {
-	ManifestDigest string `json:"manifestDigest"`
-	AssetCount     int    `json:"assetCount"`
-}
-
-// Verify checks the project files without network or cache access.
-func (service *Service) Verify() (VerifyResult, error) {
-	manifest, lock, err := service.readProject()
-	if err != nil {
-		return VerifyResult{}, err
-	}
-	return VerifyResult{ManifestDigest: lock.ManifestDigest, AssetCount: len(manifest.Assets)}, nil
-}
-
 // RemoveResult reports the asset removed from a project.
 type RemoveResult struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	AssetCount int    `json:"assetCount"`
+	// Unlocked names the assets the lock file no longer describes once this
+	// removal has written it. A removal resolves nothing, so a manifest a hand
+	// edit already left stale stays stale, and this is how the command says so
+	// instead of implying it settled a project it did not.
+	Unlocked []string `json:"unlocked"`
 }
 
 // Remove deletes one exact coordinate without a network request.
+//
+// It rebuilds the lock file rather than requiring a current one: dropping an
+// asset is the one project change that needs nothing from an origin, so it
+// works on a project whose lock file is missing or stale. What it will not do
+// is resolve the rest to make them agree, because that would put a network
+// request behind a command documented not to make one.
 func (service *Service) Remove(name, version string) (RemoveResult, error) {
-	manifest, lock, err := service.readProject()
+	manifest, err := service.readManifest()
+	if err != nil {
+		return RemoveResult{}, err
+	}
+	lock, err := service.readLockIfPresent()
 	if err != nil {
 		return RemoveResult{}, err
 	}
@@ -72,16 +71,26 @@ func (service *Service) Remove(name, version string) (RemoveResult, error) {
 	}
 	updated := manifest.Clone()
 	delete(updated.Assets, name)
-	assets := maps.Clone(lock.Assets)
-	delete(assets, name)
-	newLock, err := project.NewLock(updated, assets)
-	if err != nil {
-		return RemoveResult{}, fault.Wrap("lock_invalid", "DAC created an invalid lock file.", err)
+	// Building from the manifest rather than deleting from the lock also drops
+	// entries for assets the manifest no longer names at all.
+	assets := make(map[string]project.LockAsset, len(updated.Assets))
+	unlocked := make([]string, 0, len(updated.Assets))
+	for _, other := range updated.Names() {
+		locked, found := lock.Assets[other]
+		if !project.Agrees(updated.Assets[other], locked, found) {
+			unlocked = append(unlocked, other)
+			continue
+		}
+		assets[other] = locked
 	}
-	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, newLock); err != nil {
+	updatedLock, err := newLock(updated, assets)
+	if err != nil {
+		return RemoveResult{}, err
+	}
+	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, updatedLock); err != nil {
 		return RemoveResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
 	}
-	return RemoveResult{Name: name, Version: version, AssetCount: len(updated.Assets)}, nil
+	return RemoveResult{Name: name, Version: version, AssetCount: len(updated.Assets), Unlocked: unlocked}, nil
 }
 
 // PathResult reports one verified object path.

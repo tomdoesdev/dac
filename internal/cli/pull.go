@@ -3,14 +3,18 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tom/dac/internal/application"
+	"github.com/tom/dac/internal/fault"
 )
 
 func (runner *runner) pullCommand() *urfave.Command {
-	flags := append(runner.networkFlags(true, false),
+	flags := append(runner.networkFlags(true, true),
+		&urfave.BoolFlag{Name: "update-lock", Usage: "Resolve the manifest assets the lock file does not describe and write it."},
+		&urfave.BoolFlag{Name: "refresh-lock", Usage: "Resolve every manifest asset against its origin and write the lock file."},
 		&urfave.BoolFlag{Name: "offline", Usage: "Disable network requests."},
 		&urfave.StringFlag{Name: "distdir", Sources: urfave.EnvVars("DAC_DISTDIR"), Usage: "Install locked assets from this directory before requesting them."},
 	)
@@ -22,6 +26,15 @@ func (runner *runner) pullCommand() *urfave.Command {
 			if err := noArguments(current); err != nil {
 				return nil, "", err
 			}
+			// A refresh is an update that declines the shortcuts, so it implies
+			// one. Resolving every origin without writing what it finds is the
+			// drift check, which is dac verify --refresh.
+			refresh := current.Bool("refresh-lock")
+			updateLock := current.Bool("update-lock") || refresh
+			offline := current.Bool("offline")
+			if updateLock && offline {
+				return nil, "", fault.New("invalid_arguments", "Offline mode cannot update the lock file, because it resolves no bytes to lock.")
+			}
 			service, client, err := runner.networkService(current, runner.json)
 			if err != nil {
 				return nil, "", err
@@ -31,12 +44,30 @@ func (runner *runner) pullCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
+			maxSize, err := maximumSize(current)
+			if err != nil {
+				return nil, "", err
+			}
 			result, err := service.Pull(ctx, application.NetworkOptions{
 				Concurrency: concurrency,
-				Offline:     current.Bool("offline"),
+				MaxSize:     maxSize,
+				Offline:     offline,
 				DistDir:     current.String("distdir"),
+				UpdateLock:  updateLock,
+				Refresh:     refresh,
 			})
-			return result, fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset")), err
+			return result, pullText(result), err
 		}),
 	}
+}
+
+// pullText summarizes one pull. It reports lock work separately from install
+// work and names the assets, because an operator who asked for --update-lock is
+// about to review that file's diff and wants to know what to expect in it.
+func pullText(result application.PullResult) string {
+	text := fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset"))
+	if len(result.Locked) > 0 {
+		text += fmt.Sprintf(" Locked %s.", strings.Join(result.Locked, ", "))
+	}
+	return text
 }

@@ -188,6 +188,31 @@ func (manifest Manifest) Clone() Manifest {
 	return Manifest{SchemaVersion: manifest.SchemaVersion, Assets: maps.Clone(manifest.Assets)}
 }
 
+// Agrees reports whether a lock entry still describes a manifest asset.
+//
+// It is the per-asset half of CheckLock, exported because a command deciding
+// which assets it has to resolve and a command checking the whole project ask
+// the same question. Two answers to it would mean a lock that one command
+// rewrites and another rejects.
+func Agrees(asset Asset, locked LockAsset, exists bool) bool {
+	return disagreement(asset, locked, exists) == ""
+}
+
+// disagreement returns why a lock entry no longer describes a manifest asset,
+// or an empty string when it still does. CheckLock reports the reason, so a
+// stale lock says which part of the asset moved.
+func disagreement(asset Asset, locked LockAsset, exists bool) string {
+	switch {
+	case !exists:
+		return "is not locked"
+	case locked.URL != asset.URL || locked.Version != asset.Version:
+		return "does not match"
+	case asset.Integrity != "" && locked.Digest != asset.Integrity:
+		return "does not match its integrity"
+	}
+	return ""
+}
+
 // CheckLock checks that a lock agrees with a manifest.
 func CheckLock(manifest Manifest, lock Lock) error {
 	manifestDigest, err := manifest.Digest()
@@ -202,11 +227,8 @@ func CheckLock(manifest Manifest, lock Lock) error {
 	}
 	for name, asset := range manifest.Assets {
 		locked, exists := lock.Assets[name]
-		if !exists || locked.URL != asset.URL || locked.Version != asset.Version {
-			return fmt.Errorf("lock asset %q does not match", name)
-		}
-		if asset.Integrity != "" && locked.Digest != asset.Integrity {
-			return fmt.Errorf("lock asset %q does not match its integrity", name)
+		if reason := disagreement(asset, locked, exists); reason != "" {
+			return fmt.Errorf("lock asset %q %s", name, reason)
 		}
 	}
 	return nil

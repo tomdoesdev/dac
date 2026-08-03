@@ -12,7 +12,7 @@ import (
 	"github.com/tom/dac/internal/project"
 )
 
-const Version = "4.0.0"
+const Version = "5.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -159,12 +159,15 @@ type NetworkOptions struct {
 	// DistDir holds pre-downloaded objects that pull installs instead of
 	// making a request. It is the cold-cache path for an isolated network.
 	DistDir string
-	// Refresh makes lock contact the origin for every asset instead of
-	// trusting a publisher digest that the cache already satisfies.
+	// UpdateLock lets pull resolve the manifest assets its lock file does not
+	// describe and write the result. Without it a pull refuses a lock that
+	// disagrees with the manifest instead of settling the difference itself.
+	UpdateLock bool
+	// Refresh contacts the origin for every asset instead of trusting an entry
+	// the lock already describes or a publisher digest the cache satisfies. It
+	// backs pull --refresh-lock, which writes what it finds, and verify
+	// --refresh, which reports it.
 	Refresh bool
-	// Check makes lock report drift rather than write it. It resolves exactly
-	// as an ordinary lock does and leaves the project files alone.
-	Check bool
 }
 
 func (service *Service) readManifest() (project.Manifest, error) {
@@ -185,13 +188,13 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	}
 	lock, err := project.ReadLock(service.LockPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac lock.")
+		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac pull --update-lock.")
 	}
 	if err != nil {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
-		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac lock.", err)
+		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --update-lock.", err)
 	}
 	return manifest, lock, nil
 }

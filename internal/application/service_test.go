@@ -1,10 +1,12 @@
 package application_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -475,7 +477,7 @@ func TestPullRunsConcurrentlyAndSortsResults(t *testing.T) {
 	}
 }
 
-func TestLockRunsConcurrentlyAndSortsResults(t *testing.T) {
+func TestUpdateLockRunsConcurrentlyAndSortsResults(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
@@ -516,7 +518,7 @@ func TestLockRunsConcurrentlyAndSortsResults(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	result, err := service.Lock(ctx, application.NetworkOptions{Concurrency: 2, MaxSize: 1000})
+	result, err := service.Pull(ctx, application.NetworkOptions{Concurrency: 2, MaxSize: 1000, UpdateLock: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +531,7 @@ func TestLockRunsConcurrentlyAndSortsResults(t *testing.T) {
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
-func TestLockUsesPublisherIntegrityFromCache(t *testing.T) {
+func TestUpdateLockUsesPublisherIntegrityFromCache(t *testing.T) {
 	content := []byte("publisher content")
 	value := digest.Bytes(content)
 	directory := t.TempDir()
@@ -548,7 +550,7 @@ func TestLockUsesPublisherIntegrityFromCache(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, UpdateLock: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +559,7 @@ func TestLockUsesPublisherIntegrityFromCache(t *testing.T) {
 	}
 }
 
-func TestLockUsesStoredETagForRevalidation(t *testing.T) {
+func TestRefreshLockUsesStoredETagForRevalidation(t *testing.T) {
 	content := []byte("cached")
 	manifestPath, lockPath := lockedProject(t, content)
 	lock, err := project.ReadLock(lockPath)
@@ -585,7 +587,7 @@ func TestLockUsesStoredETagForRevalidation(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, UpdateLock: true, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +633,7 @@ func TestPathChecksVersionAndCachePresence(t *testing.T) {
 	}
 }
 
-func TestLockHonorsCancellation(t *testing.T) {
+func TestUpdateLockHonorsCancellation(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
@@ -648,14 +650,14 @@ func TestLockHonorsCancellation(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := service.Lock(ctx, application.NetworkOptions{Concurrency: 1}); fault.As(err).Code != "cancelled" {
+	if _, err := service.Pull(ctx, application.NetworkOptions{Concurrency: 1, UpdateLock: true}); fault.As(err).Code != "cancelled" {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
 }
 
 func TestVerifyNeedsNoCacheOrFetcher(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	result, err := application.New(manifestPath, lockPath, nil, nil, nil).Verify()
+	result, err := application.New(manifestPath, lockPath, nil, nil, nil).Verify(context.Background(), application.NetworkOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -854,37 +856,130 @@ func TestPullIgnoresAnEmptyDistributionDirectory(t *testing.T) {
 	}
 }
 
-func TestExportWritesObjectsNamedByDigest(t *testing.T) {
+func TestExportWritesAnIndexedCacheBundle(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	store := cache.New(t.TempDir())
 	warmStore(t, store, content)
 	service := application.New(manifestPath, lockPath, store, nil, nil)
 
-	directory := filepath.Join(t.TempDir(), "bundle")
-	result, err := service.Export(context.Background(), directory)
+	bundle := filepath.Join(t.TempDir(), "cache.tar")
+	result, err := service.Export(context.Background(), bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.AssetCount != 1 || result.ByteCount != int64(len(content)) {
+	if result.Bundle != bundle || result.AssetCount != 1 || result.ByteCount != int64(len(content)) {
 		t.Fatalf("unexpected export result: %#v", result)
 	}
-	path := filepath.Join(directory, strings.TrimPrefix(digest.Bytes(content), digest.Prefix))
-	if data := projecttest.MustRead(t, path); !bytes.Equal(data, content) {
+	file, err := os.Open(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	reader := tar.NewReader(file)
+	header, err := reader.Next()
+	if err != nil || header.Name != "index.json" {
+		t.Fatalf("unexpected index header: %#v %v", header, err)
+	}
+	var index struct {
+		SchemaVersion int `json:"schemaVersion"`
+		Items         []struct {
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+			SourceURL string `json:"sourceUrl"`
+			File      string `json:"file"`
+			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(reader).Decode(&index); err != nil {
+		t.Fatal(err)
+	}
+	value := digest.Bytes(content)
+	expectedFile := "blobs/sha256/" + strings.TrimPrefix(value, digest.Prefix)
+	if index.SchemaVersion != 1 || len(index.Items) != 1 {
+		t.Fatalf("unexpected index: %#v", index)
+	}
+	item := index.Items[0]
+	if item.Name != "asset" || item.Version != "1" || item.SourceURL != "https://example.com/asset" ||
+		item.File != expectedFile || item.Digest != value || item.Size != int64(len(content)) {
+		t.Fatalf("unexpected bundle item: %#v", item)
+	}
+	header, err = reader.Next()
+	if err != nil || header.Name != expectedFile {
+		t.Fatalf("unexpected blob header: %#v %v", header, err)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, content) {
 		t.Fatalf("exported %q, want %q", data, content)
+	}
+	if _, err := reader.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected final tar entry: %v", err)
+	}
+}
+
+func TestImportInstallsAnExportedCacheBundle(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	exportStore := cache.New(t.TempDir())
+	warmStore(t, exportStore, content)
+	bundle := filepath.Join(t.TempDir(), "cache.tar")
+	if _, err := application.New(manifestPath, lockPath, exportStore, nil, nil).Export(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	importStore := cache.New(t.TempDir())
+	result, err := application.New("", "", importStore, nil, nil).Import(context.Background(), bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bundle != bundle || result.ItemCount != 1 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
+		t.Fatalf("unexpected import result: %#v", result)
+	}
+	object, found, err := importStore.Stat(digest.Bytes(content))
+	if err != nil || !found || object.Size != int64(len(content)) {
+		t.Fatalf("the import did not install the object: %#v %t %v", object, found, err)
+	}
+}
+
+func TestImportRejectsBlobContentThatDoesNotMatchTheIndex(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	exportStore := cache.New(t.TempDir())
+	warmStore(t, exportStore, content)
+	bundle := filepath.Join(t.TempDir(), "cache.tar")
+	if _, err := application.New(manifestPath, lockPath, exportStore, nil, nil).Export(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	data := projecttest.MustRead(t, bundle)
+	position := bytes.Index(data, content)
+	if position < 0 {
+		t.Fatal("the bundle does not contain the object")
+	}
+	copy(data[position:position+len(content)], []byte("other bytes"))
+	if err := os.WriteFile(bundle, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), bundle)
+	if fault.As(err).Code != "bundle_invalid" {
+		t.Fatalf("expected bundle_invalid, got %v", err)
 	}
 }
 
 func TestExportRequiresACompleteCache(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, cache.New(t.TempDir()), nil, nil)
-	_, err := service.Export(context.Background(), filepath.Join(t.TempDir(), "bundle"))
+	_, err := service.Export(context.Background(), filepath.Join(t.TempDir(), "bundle.tar"))
 	if fault.As(err).Code != "cache_object_invalid" {
 		t.Fatalf("expected cache_object_invalid, got %v", err)
 	}
 }
 
-func TestLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
+func TestUpdateLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -896,7 +991,7 @@ func TestLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
 	store := newFakeStore()
 	warm(t, store, content)
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100})
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100, UpdateLock: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -905,7 +1000,7 @@ func TestLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
 	}
 }
 
-func TestLockRefreshContactsTheOriginAnyway(t *testing.T) {
+func TestRefreshLockContactsTheOriginAnyway(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -918,8 +1013,8 @@ func TestLockRefreshContactsTheOriginAnyway(t *testing.T) {
 	warm(t, store, content)
 	fetcher := staticFetcher(content)
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	result, err := service.Lock(context.Background(), application.NetworkOptions{
-		Concurrency: 1, MaxSize: 100, Refresh: true,
+	result, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 100, UpdateLock: true, Refresh: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -932,15 +1027,15 @@ func TestLockRefreshContactsTheOriginAnyway(t *testing.T) {
 	}
 }
 
-func TestLockRefreshSendsNoConditionalRequest(t *testing.T) {
+func TestRefreshLockSendsNoConditionalRequest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	warm(t, store, content)
 	fetcher := staticFetcher(content)
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	if _, err := service.Lock(context.Background(), application.NetworkOptions{
-		Concurrency: 1, MaxSize: 100, Refresh: true,
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{
+		Concurrency: 1, MaxSize: 100, UpdateLock: true, Refresh: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +1046,7 @@ func TestLockRefreshSendsNoConditionalRequest(t *testing.T) {
 
 // A pinned asset is settled by its publisher digest, so it never revalidates.
 // Recording an ETag for one would store a hint that no later lock could send.
-func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
+func TestUpdateLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -967,7 +1062,7 @@ func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100}); err != nil {
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100, UpdateLock: true}); err != nil {
 		t.Fatal(err)
 	}
 	locked, err := project.ReadLock(lockPath)
@@ -981,7 +1076,7 @@ func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 
 // An ETag written for a pinned asset by an older DAC is dropped rather than
 // carried forward, so a repeat lock does not keep rewriting the same field.
-func TestLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
+func TestUpdateLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -1004,7 +1099,7 @@ func TestLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	warm(t, store, content)
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, UpdateLock: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,13 +1281,13 @@ func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
 	}
 }
 
-func TestLockCheckReportsDriftWithoutWriting(t *testing.T) {
+func TestVerifyRefreshReportsDriftWithoutWriting(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	before := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
 
-	_, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, Check: true})
+	_, err := service.Verify(context.Background(), application.NetworkOptions{Concurrency: 1, Refresh: true})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
@@ -1201,21 +1296,212 @@ func TestLockCheckReportsDriftWithoutWriting(t *testing.T) {
 		t.Fatalf("drift did not name the asset: %#v", value.Details)
 	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--check wrote the lock file")
+		t.Fatal("--refresh wrote the lock file")
 	}
 }
 
-func TestLockCheckSucceedsWhenTheLockIsCurrent(t *testing.T) {
+func TestVerifyRefreshSucceedsWhenTheOriginsAgree(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, Check: true})
+	result, err := service.Verify(context.Background(), application.NetworkOptions{Concurrency: 1, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Changed || len(result.Drifted) != 0 {
-		t.Fatalf("unexpected check result: %#v", result)
+	if !result.Refreshed || result.AssetCount != 1 {
+		t.Fatalf("unexpected refresh result: %#v", result)
+	}
+}
+
+// An ETag is a cache hint a server may rotate over identical bytes. Reporting
+// that as drift would page somebody for a header.
+func TestVerifyRefreshIgnoresARotatedETag(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		served := response(content)
+		served.ETag = "\"rotated\""
+		return served, nil
+	}}
+	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+
+	if _, err := service.Verify(context.Background(), application.NetworkOptions{Concurrency: 1, Refresh: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A manifest edited without locking it is a different failure from an origin
+// that moved, and it has a different fix. Verify reports it as the first even
+// when it is about to reach the origins.
+func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "2", URL: "https://example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+
+	_, err := service.Verify(context.Background(), application.NetworkOptions{Concurrency: 1, Refresh: true})
+	if fault.As(err).Code != "lock_stale" {
+		t.Fatalf("expected lock_stale, got %v", err)
+	}
+}
+
+// The property that lets pull carry the lock command's job without carrying its
+// cost. Resolving an asset the lock already describes would mean a conditional
+// request for every unpinned asset on every pull, which is what made lock a
+// command you thought twice about running.
+func TestUpdateLockLeavesAgreeingAssetsAlone(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	before := projecttest.MustRead(t, lockPath)
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, UpdateLock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Locked) != 0 {
+		t.Fatalf("pull relocked an asset the lock already described: %#v", result.Locked)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("pull rewrote a lock file that had nothing to change")
+	}
+}
+
+// A project whose lock file has never been written is the state a first pull
+// exists to leave behind, not an error to report.
+func TestUpdateLockCreatesAMissingLockFile(t *testing.T) {
+	content := []byte("asset bytes")
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "1", URL: "https://example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100, UpdateLock: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Locked) != 1 || result.Locked[0] != "asset" {
+		t.Fatalf("pull did not report the asset it locked: %#v", result.Locked)
+	}
+	// The reconcile stored these bytes, so crediting the cache for them would
+	// describe a transfer this command had just made as one it avoided.
+	if result.Assets[0].Status != "downloaded" {
+		t.Fatalf("unexpected status %q", result.Assets[0].Status)
+	}
+	projecttest.Check(t, manifestPath, lockPath)
+}
+
+// Without --update-lock a pull reproduces the project as committed. This is the
+// guarantee a deployment job runs on, so a manifest that has moved on stops it.
+func TestPullRefusesAStaleLockWithoutUpdateLock(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "1", URL: "https://example.com/moved"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+
+	if _, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1}); fault.As(err).Code != "lock_stale" {
+		t.Fatalf("expected lock_stale, got %v", err)
+	}
+}
+
+// Adding an asset to a project that has never been locked writes both files,
+// which is what removed the lock command from the path a new project takes.
+func TestAddCreatesAMissingLockFile(t *testing.T) {
+	content := []byte("asset bytes")
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	writeManifest(t, manifestPath, project.Manifest{SchemaVersion: project.ManifestVersion, Assets: map[string]project.Asset{}})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Name: "asset", Version: "1", URL: "https://example.com/asset", MaxSize: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Locked) != 0 {
+		t.Fatalf("add reported locking assets it did not touch: %#v", result.Locked)
+	}
+	projecttest.Check(t, manifestPath, lockPath)
+}
+
+// An add onto a hand-edited manifest settles the whole project rather than
+// writing a lock file that every later command rejects. It says which assets
+// that cost, because the operator is about to read the diff.
+func TestAddSettlesAHandEditedManifest(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "2", URL: "https://example.com/asset"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Name: "other", Version: "1", URL: "https://example.com/other", MaxSize: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Locked) != 1 || result.Locked[0] != "asset" {
+		t.Fatalf("add did not report the asset it settled: %#v", result.Locked)
+	}
+	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
+	if manifest.Assets["asset"].Version != "2" || lock.Assets["asset"].Version != "2" {
+		t.Fatalf("add did not settle the edited asset: %#v %#v", manifest.Assets["asset"], lock.Assets["asset"])
+	}
+}
+
+// Removal makes no request, so it settles only what it can offline and names
+// what it could not rather than implying the project now agrees.
+func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "1", URL: "https://example.com/asset"},
+			"other": {Version: "1", URL: "https://example.com/other"},
+			"gone":  {Version: "1", URL: "https://example.com/gone"},
+		},
+	})
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+
+	result, err := service.Remove("gone", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Unlocked) != 1 || result.Unlocked[0] != "other" {
+		t.Fatalf("remove did not name the unlocked asset: %#v", result.Unlocked)
+	}
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := manifest.Assets["gone"]; exists {
+		t.Fatal("remove left the asset in the manifest")
 	}
 }
 

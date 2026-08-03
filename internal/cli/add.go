@@ -69,6 +69,11 @@ func (runner *runner) addCommand() *urfave.Command {
 // the manifest when they want to pin an asset by hand, and it names any
 // coordinate the addition retired, because DAC keeps one version of each asset
 // name and a silent replacement breaks every reference to the old one.
+//
+// It also names the assets the addition locked on the way past. Adding one
+// asset to a project whose manifest someone hand edited settles the rest too,
+// and an operator reviewing the lock file diff should read about that here
+// rather than infer it from the diff.
 func addText(name, version string, result application.AddResult) string {
 	var text strings.Builder
 	if result.Replaced != "" {
@@ -83,5 +88,8 @@ func addText(name, version string, result application.AddResult) string {
 		text.WriteString(", pinned")
 	}
 	text.WriteByte('.')
+	if len(result.Locked) > 0 {
+		_, _ = fmt.Fprintf(&text, " Locked %s.", strings.Join(result.Locked, ", "))
+	}
 	return text.String()
 }
