@@ -168,6 +168,27 @@ func TestHeadersStopsAHelperThatHangs(t *testing.T) {
 	}
 }
 
+// TestHeadersStopsAHelperWhoseChildHangs is the case that made the timeout a
+// suggestion. A helper is usually a script, and a script that starts another
+// program gives it the same output pipes. Killing the script leaves the child
+// holding the write end, and the read that collects the helper's answer waits
+// for whoever still holds it. Backgrounding the child takes the parent out of
+// the picture entirely, so nothing but the pipe is left to wait on.
+func TestHeadersStopsAHelperWhoseChildHangs(t *testing.T) {
+	helper := script(t, "sleep 30 &\nexit 0\n")
+	resolver, err := credential.New([]string{helper}, 100*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := resolver.Headers(context.Background(), "https://files.example.com/one"); err == nil {
+		t.Fatal("a helper whose child holds the pipes did not produce an error")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the helper outlived its bound: waited %s", elapsed)
+	}
+}
+
 func TestEmptyHeadersReportNoCredentials(t *testing.T) {
 	helper := script(t, `printf '{"headers":{}}'`+"\n")
 	resolver, err := credential.New([]string{helper}, time.Minute)

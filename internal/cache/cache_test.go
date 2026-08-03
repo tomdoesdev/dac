@@ -477,6 +477,38 @@ func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
 	}
 }
 
+// TestGCDoesNotCountCollectedSidecarsAsOrphans pins the difference between the
+// two ways a sidecar loses its object. Collection removes the pair, and the
+// sweep that follows reads a directory listing taken before it did, so a
+// collected object's sidecar looks exactly like one that was already alone.
+// Counting it reported damage outside DAC for every object DAC itself removed.
+func TestGCDoesNotCountCollectedSidecarsAsOrphans(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
+
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ObjectCount != 1 {
+		t.Fatalf("collection removed %d objects, want 1", result.ObjectCount)
+	}
+	if result.SidecarCount != 0 {
+		t.Fatalf("collecting one object reported %d orphaned sidecars, want 0", result.SidecarCount)
+	}
+	path, err := store.Path(object.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(metaPath(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the collected object's sidecar survived: %v", err)
+	}
+}
+
 func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

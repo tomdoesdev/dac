@@ -42,6 +42,34 @@ func TestDecodeStrictRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+// TestDecodeStrictRejectsDeeplyNestedInput covers the one malformed document
+// that could not be reported. The duplicate-key scan walks the value with one
+// frame per level, and a run of open brackets long enough to exhaust the
+// goroutine stack ends the process with a fatal error that no caller can turn
+// into a failed command. A cache bundle's index is the input that arrives from
+// somewhere else, and its size cap leaves room for millions of levels.
+func TestDecodeStrictRejectsDeeplyNestedInput(t *testing.T) {
+	depth := maxDepth + 1
+	data := []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
+	var value any
+	err := DecodeStrict(data, &value)
+	if err == nil {
+		t.Fatal("a deeply nested document was accepted")
+	}
+	if !strings.Contains(err.Error(), "levels deep") {
+		t.Fatalf("error %q does not name the depth limit", err)
+	}
+}
+
+// TestDecodeStrictAcceptsOrdinaryNesting keeps the bound clear of any document
+// DAC actually writes. Project files and bundle indexes nest three deep.
+func TestDecodeStrictAcceptsOrdinaryNesting(t *testing.T) {
+	var value document
+	if err := DecodeStrict([]byte(`{"name":"a","inner":{"x":{"y":[1,2]}}}`), &value); err != nil {
+		t.Fatalf("an ordinary document was rejected: %v", err)
+	}
+}
+
 func TestDecodeStrictAcceptsValidInput(t *testing.T) {
 	var value document
 	if err := DecodeStrict([]byte(`{"name":"a","count":2,"inner":{"x":1,"y":[1,2,{"z":3}]}}`), &value); err != nil {
