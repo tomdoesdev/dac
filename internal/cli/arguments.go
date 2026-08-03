@@ -12,29 +12,56 @@ import (
 
 // coordinate reads the one complete coordinate a command acts on.
 //
-// Every command that changes or reads one asset takes the whole coordinate,
-// including the version. A project can hold several versions of an asset, and a
-// command that accepted a bare name would work until the day somebody added the
-// second version, which is the worst moment for it to start guessing.
+// A command that writes takes the whole coordinate, including the version. A
+// project can hold several versions of an asset, and a command that changed one
+// it picked for itself would do the wrong thing on the day somebody added the
+// second version, which is the worst moment for it to start guessing. Reading
+// commands take the shorter form through asset below, where the guess can be
+// refused instead.
 func coordinate(current *urfave.Command) (coord.Coordinate, error) {
 	values := current.Args().Slice()
 	if len(values) != 1 {
 		return coord.Coordinate{}, fault.New("invalid_arguments", "Specify one asset coordinate as <namespace>/<name>@<version>.")
 	}
-	value, err := coord.Parse(values[0])
+	return parseCoordinate(values[0])
+}
+
+// coordinateAndSource reads the coordinate and the source URL that add takes.
+//
+// The URL is an argument rather than a flag because it is not optional and it
+// is not a setting: an add is "this coordinate comes from here", and both
+// halves of that are the thing being said. A required flag is a flag in name
+// only, and writing it out on every add bought nothing.
+func coordinateAndSource(current *urfave.Command) (coord.Coordinate, string, error) {
+	values := current.Args().Slice()
+	if len(values) != 2 {
+		return coord.Coordinate{}, "", fault.New("invalid_arguments",
+			"Specify the asset coordinate and its source URL as <namespace>/<name>@<version> <url>.")
+	}
+	name, err := parseCoordinate(values[0])
+	if err != nil {
+		return coord.Coordinate{}, "", err
+	}
+	source := strings.TrimSpace(values[1])
+	if source == "" {
+		return coord.Coordinate{}, "", fault.New("invalid_arguments", "The source URL is empty.")
+	}
+	return name, source, nil
+}
+
+func parseCoordinate(value string) (coord.Coordinate, error) {
+	name, err := coord.Parse(value)
 	if err != nil {
 		return coord.Coordinate{}, fault.Wrap("invalid_arguments", "The asset coordinate is invalid.", err)
 	}
-	return value, nil
+	return name, nil
 }
 
 // selection reads the filter info applies: nothing, one coordinate, or one
 // asset whose versions it should list.
 //
-// Info is the one command that takes the shorter form, because it is the one
-// command whose job is to answer what a project has. Reading an asset is
-// unambiguous, and asking which versions exist is a question with a list for an
-// answer rather than a guess.
+// Info is the command whose job is to answer what a project has, so leaving the
+// version off is a question with a list for an answer.
 func selection(current *urfave.Command) (application.Selection, error) {
 	values := current.Args().Slice()
 	switch {
@@ -43,14 +70,32 @@ func selection(current *urfave.Command) (application.Selection, error) {
 	case len(values) > 1:
 		return application.Selection{}, fault.New("invalid_arguments", "Specify at most one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 	}
-	if strings.Contains(values[0], "@") {
-		value, err := coord.Parse(values[0])
-		if err != nil {
-			return application.Selection{}, fault.Wrap("invalid_arguments", "The asset coordinate is invalid.", err)
-		}
-		return application.ExactSelection(value), nil
+	return parseAsset(values[0])
+}
+
+// asset reads the one asset a command acts on, with or without its version.
+//
+// Leaving the version off asks DAC to work out which one was meant, and it will
+// only do that when the project leaves nothing to work out. See onlyAsset in
+// the application package for what happens when it does not.
+func asset(current *urfave.Command) (application.Selection, error) {
+	values := current.Args().Slice()
+	if len(values) != 1 {
+		return application.Selection{}, fault.New("invalid_arguments", "Specify one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 	}
-	group, err := coord.ParseGroup(values[0])
+	return parseAsset(values[0])
+}
+
+// parseAsset reads one asset argument in either of the two spellings.
+func parseAsset(value string) (application.Selection, error) {
+	if strings.Contains(value, "@") {
+		name, err := parseCoordinate(value)
+		if err != nil {
+			return application.Selection{}, err
+		}
+		return application.ExactSelection(name), nil
+	}
+	group, err := coord.ParseGroup(value)
 	if err != nil {
 		return application.Selection{}, fault.Wrap("invalid_arguments", "The asset is invalid.", err)
 	}

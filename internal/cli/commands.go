@@ -69,11 +69,14 @@ func removeText(name coord.Coordinate, result application.RemoveResult) string {
 
 func (runner *runner) pathCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:      "path",
-		Usage:     "Get one verified object path.",
-		ArgsUsage: "<namespace>/<name>@<version>",
+		Name:  "path",
+		Usage: "Get one verified object path.",
+		// The version can be left off when the project carries one, which is
+		// what makes this usable inside a shell substitution without repeating
+		// a version that is already in the manifest.
+		ArgsUsage: "<namespace>/<name>[@<version>]",
 		Action: runner.run("path", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			name, err := coordinate(current)
+			choice, err := asset(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -81,7 +84,7 @@ func (runner *runner) pathCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Path(name)
+			result, err := service.Path(choice)
 			return result, result.Path, err
 		}),
 	}

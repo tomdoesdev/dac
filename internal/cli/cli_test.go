@@ -53,7 +53,7 @@ func TestCommandLifecycle(t *testing.T) {
 	assertSuccess(t, result, "init")
 	projecttest.Check(t, manifestPath, lockPath)
 
-	result = runJSON(t, appendArgs(base, "add", "app/geo@2026.08", "--source", server.URL, "--progress=false"))
+	result = runJSON(t, appendArgs(base, "add", "app/geo@2026.08", server.URL, "--progress=false"))
 	assertSuccess(t, result, "add")
 	if strings.Contains(result.stdout, "Added") || strings.Contains(result.stdout, "start ") {
 		t.Fatalf("human output reached stdout: %q", result.stdout)
@@ -213,10 +213,18 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
 	for _, args := range [][]string{
-		appendArgs(base, "add", "app/bad@@1", "--source", "https://example.com/asset"),
+		appendArgs(base, "add", "app/bad@@1", "https://example.com/asset"),
+		// The source is an argument rather than a flag, so an add that names no
+		// source is an add with the wrong number of arguments.
 		appendArgs(base, "add", "app/asset@1"),
-		appendArgs(base, "add", "app/asset@1", "--source", "https://example.com/asset", "--timeout", "0"),
-		appendArgs(base, "add", "app/asset@1", "--source", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
+		appendArgs(base, "add"),
+		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "https://example.com/other"),
+		appendArgs(base, "add", "app/asset@1", "  "),
+		// A version is not optional where a command writes: an add that picked
+		// one for itself would rewrite whichever version it guessed.
+		appendArgs(base, "add", "app/asset", "https://example.com/asset"),
+		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--timeout", "0"),
+		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
 		appendArgs(base, "info", "asset"),
 		appendArgs(base, "info", "app/asset@1", "app/other@1"),
 		appendArgs(base, "list"),
@@ -302,7 +310,7 @@ func TestOfflineAddWritesOnlyManifest(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	result := runJSON(t, appendArgs(base, "add", "app/asset@1", "--source", server.URL, "--offline"))
+	result := runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--offline"))
 	assertSuccess(t, result, "add")
 	manifest, err := project.ReadManifest(manifestPath)
 	if err != nil {
@@ -348,7 +356,7 @@ func TestNetworkFlagsReadEnvironmentSources(t *testing.T) {
 	t.Setenv("DAC_CONCURRENCY", "1")
 	t.Setenv("DAC_MAX_SIZE", "1MiB")
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--update-lock", "--progress=false")), "pull")
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
@@ -484,6 +492,65 @@ func newProject(t *testing.T) projectFlags {
 	return flags
 }
 
+// TestPathAcceptsAnAssetWithoutItsVersion covers the shorter form and the one
+// case it must refuse. A project that carries one version of a thing has
+// nothing to choose between, and repeating a version the manifest already holds
+// is noise inside a shell substitution. A project that carries two does have
+// something to choose between, and DAC does not order versions -- it has no
+// idea whether "17" follows "11" -- so there is no latest to fall back on and
+// picking either one would be inventing an answer.
+func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(writer, "bytes for "+request.URL.Path)
+	}))
+	defer server.Close()
+
+	paths := newProject(t)
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@11",
+		server.URL+"/jdk11.tar.gz", "--progress=false")), "add")
+
+	objectPath := objectPathFor(t, paths, coord.MustParse("java/sdk@11"))
+	bare := run(t, appendArgs(paths.base, "path", "java/sdk"))
+	if bare.status != ExitOK || bare.stdout != objectPath+"\n" {
+		t.Fatalf("path without a version returned %#v", bare)
+	}
+	versioned := run(t, appendArgs(paths.base, "path", "java/sdk@11"))
+	if versioned.stdout != bare.stdout {
+		t.Fatalf("the two spellings disagree: %q and %q", versioned.stdout, bare.stdout)
+	}
+	// The result names the version it resolved to, so a caller that left it off
+	// can still tell which asset answered.
+	result := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
+	assertSuccess(t, result, "path")
+	if data := result.value["data"].(map[string]any); data["coordinate"] != "java/sdk@11" || data["version"] != "11" {
+		t.Fatalf("path did not report the version it resolved: %#v", data)
+	}
+
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@17",
+		server.URL+"/jdk17.tar.gz", "--progress=false")), "add")
+
+	ambiguous := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
+	assertError(t, ambiguous, "asset_ambiguous")
+	details := ambiguous.value["error"].(map[string]any)["details"].(map[string]any)
+	versions := details["versions"].([]any)
+	if details["asset"] != "java/sdk" || len(versions) != 2 || versions[0] != "11" || versions[1] != "17" {
+		t.Fatalf("the refusal did not list the versions to choose from: %#v", details)
+	}
+	// Naming the version is what resolves it, and both are still reachable.
+	for _, version := range []string{"11", "17"} {
+		named := run(t, appendArgs(paths.base, "path", "java/sdk@"+version))
+		if named.status != ExitOK || named.stdout == "" {
+			t.Fatalf("path java/sdk@%s returned %#v", version, named)
+		}
+	}
+	// An asset the project does not have is a different answer from one it has
+	// too many of, and it keeps the code it always had.
+	assertError(t, runJSON(t, appendArgs(paths.base, "path", "java/nope")), "asset_unknown")
+	assertError(t, runJSON(t, appendArgs(paths.base, "path", "not-a-coordinate")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(paths.base, "path")), "invalid_arguments")
+}
+
 func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	content := []byte("collectable asset")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -493,7 +560,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 
 	// A dry run at zero age reports the object without removing it.
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "0d", "--dry-run"))
@@ -553,7 +620,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 
 	bundle := filepath.Join(t.TempDir(), "cache.tar")
 	result := runJSON(t, appendArgs(paths.base, "export", "--file", bundle))
@@ -681,7 +748,7 @@ func TestInfoReportsAStaleLockWithoutCacheData(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", "https://example.com/geo", "--offline")), "add")
+		"https://example.com/geo", "--offline")), "add")
 
 	result := runJSON(t, appendArgs(paths.base, "info"))
 	assertSuccess(t, result, "info")
@@ -728,7 +795,7 @@ func TestRewriteConfigRedirectsRequests(t *testing.T) {
 
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", "https://upstream.invalid/geo/database.bin",
+		"https://upstream.invalid/geo/database.bin",
 		"--progress=false"))
 	assertSuccess(t, result, "add")
 	if mirrored.Load() != 1 {
@@ -762,7 +829,7 @@ func TestRewriteConfigAppliesToLockAndPull(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", "https://upstream.invalid/geo/database.bin", "--offline")), "add")
+		"https://upstream.invalid/geo/database.bin", "--offline")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--update-lock",
 		"--concurrency", "1", "--progress=false")), "pull")
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
@@ -792,7 +859,7 @@ func TestNoRewriteBypassesAllConfigSources(t *testing.T) {
 	t.Setenv("DAC_REWRITE_CONFIG", filepath.Join(t.TempDir(), "absent"))
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", server.URL, "--no-rewrite", "--progress=false")), "add")
+		server.URL, "--no-rewrite", "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--refresh-lock",
 		"--no-rewrite", "--concurrency", "1", "--progress=false")), "pull")
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
@@ -823,7 +890,7 @@ func TestRewriteConfigEnvironmentOverridesTheProjectConfig(t *testing.T) {
 	t.Setenv("DAC_REWRITE_CONFIG", override)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", server.URL, "--progress=false"))
+		server.URL, "--progress=false"))
 	assertSuccess(t, result, "add")
 }
 
@@ -837,7 +904,7 @@ func TestInvalidProjectRewriteConfigIsAnError(t *testing.T) {
 	infoResult := runJSON(t, appendArgs(paths.base, "info"))
 	assertError(t, infoResult, "rewrite_config_invalid")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", "https://example.com/one", "--progress=false"))
+		"https://example.com/one", "--progress=false"))
 	assertError(t, result, "rewrite_config_invalid")
 }
 
@@ -849,7 +916,7 @@ func TestRewriteConfigCanBlockAllHosts(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"--source", "https://files.example.com/one",
+		"https://files.example.com/one",
 		"--progress=false"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
@@ -864,7 +931,7 @@ func TestMissingRewriteConfigOverrideIsAnError(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	result := runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"--source", "https://example.com/one",
+		"https://example.com/one",
 		"--progress=false"))
 	if code := result.value["error"].(map[string]any)["code"]; code != "rewrite_config_missing" {
 		t.Fatalf("unexpected error code %v", code)
@@ -888,7 +955,7 @@ func TestCredentialHelperSuppliesRequestHeaders(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL,
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL,
 		"--credential-helper", helper, "--progress=false"))
 	assertSuccess(t, result, "add")
 	if got := seen.Load(); got != "Bearer helper-token" {
@@ -908,7 +975,7 @@ func TestFailingCredentialHelperFailsTheCommand(t *testing.T) {
 	}
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL,
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL,
 		"--credential-helper", helper, "--progress=false"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
@@ -924,7 +991,7 @@ func TestAddReportsTheResolvedDigest(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	human := run(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false"))
+	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false"))
 	if human.status != ExitOK {
 		t.Fatalf("unexpected status %d: %q", human.status, human.stderr)
 	}
@@ -948,7 +1015,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
@@ -1042,7 +1109,7 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	// path used to return this object, and every script downstream would have
@@ -1083,7 +1150,7 @@ func TestCacheVerifyRepairRemovesTheDamage(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	repaired := runJSON(t, appendArgs(base, "cache", "verify", "--repair"))
@@ -1131,7 +1198,7 @@ func TestJSONErrorsCarryTheirCause(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--retries", "0", "--progress=false"))
 	assertError(t, result, "network_error")
 	errorValue := result.value["error"].(map[string]any)
 	cause, _ := errorValue["cause"].(string)
@@ -1159,7 +1226,7 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 	if status := run(t, appendArgs(base, "init")).status; status != ExitOK {
 		t.Fatalf("init failed with status %d", status)
 	}
-	result := run(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--retries", "0", "--progress=false"))
+	result := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--retries", "0", "--progress=false"))
 	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
@@ -1220,7 +1287,7 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 		"--cache-dir", filepath.Join(directory, "cache"),
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
 
 	body.Store([]byte("moved bytes"))
@@ -1250,9 +1317,9 @@ func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertError(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"--source", server.URL, "--max-size", "1KiB", "--progress=false")), "asset_too_large")
+		server.URL, "--max-size", "1KiB", "--progress=false")), "asset_too_large")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"--source", server.URL, "--max-size", noSizeLimit, "--progress=false")), "add")
+		server.URL, "--max-size", noSizeLimit, "--progress=false")), "add")
 }
 
 // TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check
@@ -1278,7 +1345,7 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"--source", server.URL, "--pin", "--progress=false")), "add")
+		server.URL, "--pin", "--progress=false")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
 
 	body.Store([]byte("moved bytes"))
@@ -1311,7 +1378,7 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", "--source", server.URL, "--pin", "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--progress=false")), "add")
 
 	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
 	if manifest.Assets[coord.MustParse("app/geo@1")].Integrity != digest.Bytes(content) {

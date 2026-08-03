@@ -29,7 +29,7 @@ The command writes `bin/dac`.
 ```bash
 dac init
 dac add backend-app/geo-database@2026.08 \
-  --source https://example.com/geo/2026.08/database.bin --pin
+  https://example.com/geo/2026.08/database.bin --pin
 dac pull
 geo_database="$(dac path backend-app/geo-database@2026.08)"
 ```
@@ -91,11 +91,11 @@ downloading it, so a refresh warms the cache on its way past.
 | Command | Result |
 |---|---|
 | `dac init [--force]` | Create matching empty project files. |
-| `dac add <coordinate> --source <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
+| `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
 | `dac pull [--update-lock] [--refresh-lock] [--rebind] [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets, updating the lock file when asked. |
-| `dac path <coordinate>` | Return a verified cache path. |
+| `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
 | `dac import --file <tar>` | Install objects from a cache bundle into the local cache. |
@@ -104,12 +104,19 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac completion <shell>` | Write a shell completion script. |
 
-A project holds as many versions of an asset as it names. The `add`, `remove`,
-and `path` commands require exactly one complete coordinate; a bare name would
-work until somebody added a second version, which is the worst moment for a
-command to start guessing. `info` is the exception, because answering what a
-project has is its job: it accepts nothing, one coordinate, or one
-`<namespace>/<name>` whose versions it should list.
+A project holds as many versions of an asset as it names, so how much of a
+coordinate a command needs depends on what it does with it.
+
+`add` and `remove` write, and they require the complete coordinate. A command
+that picked a version for itself would work until somebody added a second one,
+and then rewrite or delete whichever it guessed.
+
+`path` and `info` only read, so they also accept a bare `<namespace>/<name>`.
+`path` answers it when the project holds exactly one version of that asset, and
+otherwise refuses with `asset_ambiguous` and the versions to choose from — DAC
+does not order versions, so there is no latest for it to fall back on. `info`
+lists every version, because answering what a project has is its job; it accepts
+nothing, one coordinate, or one `<namespace>/<name>`.
 
 A namespace and a name are lowercase letters, digits, and `.`, `_`, or `-`. A
 version also takes uppercase and `+`, because it is copied from whatever the

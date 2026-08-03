@@ -119,15 +119,21 @@ type PathResult struct {
 }
 
 // Path returns one verified object path.
-func (service *Service) Path(name coord.Coordinate) (PathResult, error) {
+//
+// It takes a selection rather than a coordinate so that the version can be left
+// off, which is the common case at a shell prompt and in a script for a project
+// that carries one version of a thing. It is answered only when the project
+// leaves nothing to choose between; see onlyAsset.
+func (service *Service) Path(selection Selection) (PathResult, error) {
 	_, lock, err := service.readProject()
 	if err != nil {
 		return PathResult{}, err
 	}
-	asset, exists := lock.Assets[name]
-	if !exists {
-		return PathResult{}, unknownCoordinate(name, lock.Assets)
+	name, err := onlyAsset(selection, lock.Assets)
+	if err != nil {
+		return PathResult{}, err
 	}
+	asset := lock.Assets[name]
 	valid, err := service.cached(Object{Digest: asset.Digest, Size: asset.Size})
 	if err != nil {
 		return PathResult{}, err
