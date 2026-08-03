@@ -102,8 +102,7 @@ project files: it collects the whole cache, which several projects share.
       "version": "2026.08",
       "url": "https://example.com/database.bin",
       "digest": "sha256:...",
-      "size": 123,
-      "etag": "\"optional-etag\""
+      "size": 123
     }
   }
 }
@@ -119,6 +118,11 @@ An asset with an `integrity` value that the cache already holds lets `dac lock`
 finish without a request, which also means it never confirms that the URL still
 serves those bytes. Use `dac lock --refresh` to check every asset against its
 origin.
+
+An asset the manifest leaves unpinned records an `etag` when the origin sends
+one. The next `dac lock` replays it as an `If-None-Match` hint and skips the
+download on a `304`. A pinned asset neither sends nor records one, so its lock
+entry omits the field.
 
 DAC rejects unknown JSON fields, duplicate keys, unsupported schema versions,
 and stale lock files. It writes project files with atomic renames.
@@ -271,7 +275,10 @@ lock. Concurrent DAC processes cannot install the same object at the same time.
 `pull` trusts an object when its cache path and size match the lock file. A
 missing object is fetched without an ETag and checked against the locked digest
 and size. `lock` can use a publisher digest or a cached object before it makes
-a request. It uses a stored ETag only as a lock-time request hint.
+a request. It uses a stored ETag only as a lock-time request hint, and only for
+an asset with no `integrity` value. A publisher digest already settles which
+bytes are correct, so a pinned asset is answered from the cache or downloaded
+outright, and its lock entry carries no `etag`.
 
 A content check that fails reports the digest DAC received alongside the one it
 expected, in the human message and in the JSON `details`. The two cases that

@@ -889,6 +889,77 @@ func TestLockRefreshSendsNoConditionalRequest(t *testing.T) {
 	}
 }
 
+// A pinned asset is settled by its publisher digest, so it never revalidates.
+// Recording an ETag for one would store a hint that no later lock could send.
+func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		},
+	})
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		served := response(content)
+		served.ETag = "\"served\""
+		return served, nil
+	}}
+	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+
+	if _, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1, MaxSize: 100}); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked.Assets["asset"].ETag != "" {
+		t.Fatalf("pinned asset recorded ETag %q", locked.Assets["asset"].ETag)
+	}
+}
+
+// An ETag written for a pinned asset by an older DAC is dropped rather than
+// carried forward, so a repeat lock does not keep rewriting the same field.
+func TestLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[string]project.Asset{
+			"asset": {Version: "1", URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
+		},
+	})
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := lock.Assets["asset"]
+	asset.ETag = "\"stale\""
+	lock.Assets["asset"] = asset
+	if err := project.Write(lockPath, lock); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	result, err := service.Lock(context.Background(), application.NetworkOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assets[0].Status != "cached" {
+		t.Fatalf("unexpected status %q", result.Assets[0].Status)
+	}
+	updated, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Assets["asset"].ETag != "" {
+		t.Fatalf("cached lock kept ETag %q", updated.Assets["asset"].ETag)
+	}
+}
+
 func TestAddNormalizesAnSRIIntegrityValue(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)

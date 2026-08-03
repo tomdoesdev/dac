@@ -10,6 +10,11 @@ import (
 func (service *Service) resolve(ctx context.Context, name string, source project.Asset, old project.LockAsset, options NetworkOptions) (project.LockAsset, string, error) {
 	oldMatches := old.URL == source.URL && (source.Integrity == "" || old.Digest == source.Integrity)
 	old.Version = source.Version
+	// Only an asset the manifest leaves unpinned is ever revalidated. A
+	// publisher digest already settles which bytes are correct, so a pinned
+	// asset is answered from the cache or downloaded outright, and it neither
+	// sends nor records an ETag.
+	conditional := source.Integrity == ""
 	// A publisher digest that the cache already satisfies lets lock finish
 	// without a request, which also means it never proves the URL still serves
 	// those bytes. Refresh trades that speed for a check against the origin.
@@ -21,11 +26,7 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 		if found {
 			service.Reporter.Start(name, object.Size)
 			service.Reporter.Done(name, "cached")
-			etag := ""
-			if oldMatches {
-				etag = old.ETag
-			}
-			return project.LockAsset{Version: source.Version, URL: source.URL, Digest: object.Digest, Size: object.Size, ETag: etag}, "cached", nil
+			return project.LockAsset{Version: source.Version, URL: source.URL, Digest: object.Digest, Size: object.Size}, "cached", nil
 		}
 	}
 	oldValid := false
@@ -36,11 +37,11 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 			return project.LockAsset{}, "", err
 		}
 	}
-	etag := ""
-	if oldValid {
-		etag = old.ETag
+	hint := ""
+	if conditional && oldValid {
+		hint = old.ETag
 	}
-	response, err := service.fetch(ctx, source, etag)
+	response, err := service.fetch(ctx, source, hint)
 	if err != nil {
 		return project.LockAsset{}, "", err
 	}
@@ -60,12 +61,16 @@ func (service *Service) resolve(ctx context.Context, name string, source project
 		return project.LockAsset{}, "", contentError(err)
 	}
 	service.Reporter.Done(name, "resolved")
+	etag := ""
+	if conditional {
+		etag = response.ETag
+	}
 	return project.LockAsset{
 		Version: source.Version,
 		URL:     source.URL,
 		Digest:  object.Digest,
 		Size:    object.Size,
-		ETag:    response.ETag,
+		ETag:    etag,
 	}, "resolved", nil
 }
 
