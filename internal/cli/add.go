@@ -14,7 +14,6 @@ import (
 
 func (runner *runner) addCommand() *urfave.Command {
 	flags := append(runner.networkFlags(false, true),
-		&urfave.StringFlag{Name: "source", Required: true, Usage: "Fetch the asset from this URL."},
 		&urfave.StringFlag{Name: "integrity", Usage: "Require this sha256 digest."},
 		&urfave.BoolFlag{Name: "pin", Usage: "Record the resolved digest as the asset integrity value."},
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
@@ -25,10 +24,10 @@ func (runner *runner) addCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "add",
 		Usage:     "Add one asset and update the project files.",
-		ArgsUsage: "<namespace>/<name>@<version>",
+		ArgsUsage: "<namespace>/<name>@<version> <url>",
 		Flags:     flags,
 		Action: runner.run("add", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			name, err := coordinate(current)
+			name, source, err := coordinateAndSource(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -48,7 +47,7 @@ func (runner *runner) addCommand() *urfave.Command {
 			}
 			result, err := service.Add(ctx, application.AddOptions{
 				Coordinate:        name,
-				URL:               current.String("source"),
+				URL:               source,
 				Integrity:         current.String("integrity"),
 				AllowInsecureHTTP: current.Bool("allow-insecure-http"),
 				Force:             current.Bool("force"),

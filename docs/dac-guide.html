@@ -324,7 +324,7 @@ footer.page a{color:var(--muted)}
 
 <div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac init
 dac add backend-app/geo-database@2026.08 \
-  --source https://example.com/geo/2026.08/database.bin --pin
+  https://example.com/geo/2026.08/database.bin --pin
 dac pull
 
 # DAC returns a path. Extraction belongs to whatever consumes it.
@@ -519,11 +519,11 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <thead><tr><th>Command</th><th>Result</th></tr></thead>
     <tbody>
       <tr><td class="mono">dac init [--force]</td><td>Create matching empty project files.</td></tr>
-      <tr><td class="mono">dac add &lt;coordinate&gt; --source &lt;url&gt;</td><td>Add one asset version and resolve it. Flags: <code>--pin</code>, <code>--integrity</code>, <code>--force</code>, <code>--rebind</code>, <code>--allow-insecure-http</code>, <code>--offline</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac add &lt;coordinate&gt; &lt;url&gt;</td><td>Add one asset version and resolve it. Flags: <code>--pin</code>, <code>--integrity</code>, <code>--force</code>, <code>--rebind</code>, <code>--allow-insecure-http</code>, <code>--offline</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac remove &lt;coordinate&gt;</td><td>Remove one asset version without network access.</td></tr>
       <tr><td class="mono">dac info [&lt;ns&gt;/&lt;name&gt;[@&lt;version&gt;]]</td><td>Show asset, request, lock, and cache information. No network.</td></tr>
       <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--update-lock</code>, <code>--refresh-lock</code>, <code>--rebind</code>, <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
-      <tr><td class="mono">dac path &lt;coordinate&gt;</td><td>Print one verified cache path.</td></tr>
+      <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
       <tr><td class="mono">dac export --file &lt;tar&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
       <tr><td class="mono">dac import --file &lt;tar&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
@@ -536,10 +536,17 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
   </div>
 
   <p>
-    <code>add</code>, <code>remove</code>, and <code>path</code> require exactly one complete coordinate; a bare name would
-    work until somebody added a second version, which is the worst moment for a command to start guessing.
-    <code>info</code> is the exception, because answering what a project has is its job: it accepts nothing, one
-    coordinate, or one <code>&lt;namespace&gt;/&lt;name&gt;</code> whose versions it should list.
+    A project holds as many versions of an asset as it names, so how much of a coordinate a command needs
+    depends on what it does with it. <code>add</code> and <code>remove</code> write, and require the complete
+    coordinate: a command that picked a version for itself would work until somebody added a second one, and
+    then rewrite or delete whichever it guessed.
+  </p>
+  <p>
+    <code>path</code> and <code>info</code> only read, so they also accept a bare
+    <code>&lt;namespace&gt;/&lt;name&gt;</code>. <code>path</code> answers it when the project holds exactly one
+    version of that asset, and otherwise refuses with <code>asset_ambiguous</code> and the versions to choose
+    from — DAC does not order versions, so there is no latest for it to fall back on. <code>info</code> lists
+    every version, because answering what a project has is its job.
   </p>
 
   <h3>Which command touches what</h3>
@@ -973,7 +980,7 @@ path: /home/build/.cache/dac/blobs/sha256/9c01741d...</code></pre></div>
 
 <div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># 1. Add the new version alongside the old one. This does not retire anything.
 dac add backend-app/geo-database@2026.09 \
-  --source https://example.com/geo/2026.09/database.bin --pin
+  https://example.com/geo/2026.09/database.bin --pin
 
 # 2. Move consumers over. Both versions resolve, so this can be a normal PR.
 #    dac path backend-app/geo-database@2026.09
@@ -1175,6 +1182,7 @@ dac pull                    # download them again and install good bytes</code><
       <tr><td class="mono">url_not_permitted</td><td>URL policy or the rewrite config refused the host.</td><td>Fix the manifest URL or the rewrite config</td></tr>
       <tr><td class="mono">asset_too_large</td><td>An unknown-size response exceeded <code>--max-size</code>.</td><td>Raise <code>--max-size</code> for genuinely large assets</td></tr>
       <tr><td class="mono">asset_unknown</td><td>The project has no such coordinate. <code>details.versions</code> lists the ones it does have.</td><td>Fix the coordinate</td></tr>
+      <tr><td class="mono">asset_ambiguous</td><td>A command that takes one asset was given a name without a version, and the project holds several. <code>details.versions</code> lists them.</td><td>Name the version</td></tr>
       <tr><td class="mono">invalid_arguments</td><td>Bad flags or arguments. Exits <code>2</code>.</td><td>Fix the command line</td></tr>
     </tbody>
   </table>

@@ -1,6 +1,9 @@
 package application
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/tom/dac/internal/coord"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
@@ -162,6 +165,51 @@ func selected(manifest project.Manifest, selection Selection) ([]coord.Coordinat
 	default:
 		return manifest.Coordinates(), nil
 	}
+}
+
+// onlyAsset resolves a selection to the single asset it names.
+//
+// It is the reading half of selected, for a command whose answer is one asset
+// rather than a list. Leaving the version off is convenient exactly when the
+// project holds one version, and a guess the rest of the time -- so it is
+// answered when there is nothing to guess and refused when there is.
+//
+// DAC could not pick "the latest" even if it wanted to. It does not order
+// versions: a version is whatever the publisher calls a release, and DAC has no
+// idea whether "10" follows "9" or whether either is a number. The refusal is
+// not caution about a hard problem, it is the absence of one to be careful
+// about.
+func onlyAsset[V any](selection Selection, assets map[coord.Coordinate]V) (coord.Coordinate, error) {
+	switch selection.kind {
+	case selectExact:
+		if _, exists := assets[selection.coordinate]; !exists {
+			return coord.Coordinate{}, unknownCoordinate(selection.coordinate, assets)
+		}
+		return selection.coordinate, nil
+	case selectGroup:
+		names := coord.InGroup(assets, selection.group)
+		switch len(names) {
+		case 0:
+			return coord.Coordinate{}, &fault.Error{
+				Code:    "asset_unknown",
+				Message: "The project does not have this asset.",
+				Details: map[string]any{"asset": selection.group.String()},
+			}
+		case 1:
+			return names[0], nil
+		}
+		versions := coord.Versions(names)
+		return coord.Coordinate{}, &fault.Error{
+			Code:    "asset_ambiguous",
+			Message: "The project has more than one version of this asset. Name the version you mean.",
+			Details: map[string]any{"asset": selection.group.String(), "versions": versions},
+			Cause:   fmt.Errorf("%s has %s", selection.group, strings.Join(versions, ", ")),
+		}
+	}
+	// The whole-project selection has no single answer, and no command that
+	// takes one argument can produce it.
+	return coord.Coordinate{}, fault.New("invalid_arguments",
+		"Specify one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 }
 
 // infoLock classifies a readable lock. A stale lock does not cause a command error.
