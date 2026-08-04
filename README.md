@@ -47,6 +47,20 @@ file if the project does not have one yet. Commit `dac.json` and
 every later command holds the publisher to the bytes this `add` saw. Without it
 the lock file still pins the bytes; the manifest just does not say so.
 
+`--name` says what to call the asset, which is what decides the file name
+anything materializing it writes:
+
+```bash
+dac add backend-app/geo-database@2026.08 \
+  https://example.com/download?release=2026.08 --name geo.db
+```
+
+Without it the name comes from the origin — a `Content-Disposition` header, or
+the last element of the URL — which is fine until the origin spells it with a
+build number in it or does not spell one at all. See
+[Project files](#project-files) for where the name is recorded and what happens
+when the origin and the manifest disagree.
+
 DAC returns a path and stops there. Extraction belongs to whatever consumes it:
 
 ```bash
@@ -97,7 +111,7 @@ downloading it, so a refresh warms the cache on its way past.
 | Command | Result |
 |---|---|
 | `dac init [--force]` | Create matching empty project files. |
-| `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
+| `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--name <file>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
 | `dac lock [--refresh] [--rebind] [--concurrency <n>] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
@@ -291,6 +305,7 @@ What it also costs is size, for a project whose assets overlap — see
     "backend-app/geo-database@2026.08": {
       "url": "https://example.com/geo/2026.08/database.bin",
       "integrity": "sha256:optional-publisher-digest",
+      "filename": "geo.db",
       "allowInsecureHttp": false
     },
     "backend-app/geo-database@2026.09": {
@@ -334,21 +349,41 @@ one. A refresh replays it as an `If-None-Match` hint and skips the download on a
 that sends the bytes again. A pinned asset neither sends nor records an ETag, so
 its lock entry omits the field.
 
-The `filename` field records what the origin calls the asset, which a cache path
+The lock's `filename` field records what the asset is called, which a cache path
 cannot carry: that path is a digest, and a digest is the right name for bytes
-and the wrong name for anything that reads an extension. DAC takes the name from
-a `Content-Disposition` header when the origin sends one, and otherwise from the
-last element of the URL the request finished at, so an asset served through a
-redirect is named where it is served rather than where it was asked for. A name
-that is not a single path element — one holding a separator, a control byte, a
-leading `-`, `.`, or `..` — is refused rather than repaired, and the next source
-answers instead. An asset that nothing names omits the field.
+and the wrong name for anything that reads an extension. DAC takes the name the
+manifest declares when it declares one. Failing that it takes what the origin
+calls the asset: a `Content-Disposition` header when the origin sends one, and
+otherwise the last element of the URL the request finished at, so an asset
+served through a redirect is named where it is served rather than where it was
+asked for. A name that is not a single path element — one holding a separator, a
+control byte, a leading `-`, `.`, or `..` — is refused rather than repaired, and
+the next source answers instead. An asset that nothing names omits the field.
 
-The name is advisory. Nothing decides anything by it, and it takes no part in
-the check that asks whether a lock still describes its manifest, so a lock
-written before the field existed is not stale and does not have to re-resolve
-anything. `dac lock` fills in what the URL spells for those
-entries once, without a request.
+The manifest's own `filename` is the optional half of that, written by `dac add
+--name` and editable by hand. It is in the manifest rather than the lock because
+it is a decision rather than an observation: what an origin calls a file is
+something DAC found out, and what your project calls it is something you chose,
+so a rewritten lock must not lose it. A declared name beats every other source,
+including a `Content-Disposition` header and a `304` that would otherwise leave
+a recorded name alone. Editing it and running `dac lock` renames the asset with
+no request, because the bytes did not move. A manifest that declares no name
+behaves exactly as it did before the field existed, and hashes identically, so
+no existing project's lock became stale. The schema version did not move either,
+for the reason the lock's `filename` did not move it: bumping it would reject
+every project file already written, which is a high price for a field that is
+optional. What it costs instead is that a DAC older than the field refuses a
+manifest that declares one, since DAC rejects unknown fields.
+
+An invalid declared name is refused rather than repaired, and unlike a name an
+origin supplies it fails the command that wrote it: `dac add --name ../etc` is
+an error, because a name you typed is an answer DAC either records or refuses.
+
+The name is otherwise advisory. Nothing decides anything by it, and it takes no
+part in the check that asks whether a lock still describes its manifest, so a
+lock written before the field existed is not stale and does not have to
+re-resolve anything. `dac lock` fills in what the URL spells for those entries
+once, without a request.
 
 It belongs to the lock rather than to the cached object because it describes the
 source and not the bytes. Two coordinates that resolve to the same object share
@@ -669,10 +704,11 @@ or stale lock sets `cacheStatus` to `unavailable` and omits digest, size,
 filename, and path data; a damaged object sets it to `corrupt`.
 
 Every asset carries the optional `filename` its lock entry records, which is
-what the origin calls the asset. The cache path names the bytes, so this is the
-half a script needs to put a file somewhere a later tool will recognize. It is
-absent for an asset nothing names, and it was added without a version bump
-because an added optional field breaks no consumer.
+what the asset is called: the name the manifest declares, or what the origin
+calls it when the manifest declares none. The cache path names the bytes, so
+this is the half a script needs to put a file somewhere a later tool will
+recognize. It is absent for an asset nothing names, and it was added without a
+version bump because an added optional field breaks no consumer.
 
 A `pull` result carries `projectCount` alongside `assetCount`, which is how
 many assets the project has rather than how many this pull took. The two differ
@@ -1007,8 +1043,9 @@ everywhere else in DAC. It used to be the second argument, so `dac unpack
 a directory is not a coordinate.
 
 Inside the archive, the layout keys each file on the coordinate it belongs to,
-and the name comes from the lock file's `filename` — falling back to the name
-half of the coordinate for an asset that has none:
+and the name comes from the lock file's `filename` — whatever the manifest
+declared or the origin gave, falling back to the name half of the coordinate for
+an asset that has none:
 
 ```text
 index.json

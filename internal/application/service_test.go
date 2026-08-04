@@ -2150,3 +2150,206 @@ func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
 		t.Fatalf("the backfilled name is %q", name)
 	}
 }
+
+// A name the manifest declares is the project's own answer, so it beats the one
+// the origin supplies -- the case the flag exists for, since an origin that
+// sends a useful Content-Disposition header is the one whose name is hardest to
+// override any other way.
+func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(),
+		namedFetcher(content, "database.bin"), nil)
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
+		Filename: "geo.db", MaxSize: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Filename != "geo.db" {
+		t.Fatalf("add reported the name %q", result.Filename)
+	}
+	if name := lockedFilename(t, lockPath); name != "geo.db" {
+		t.Fatalf("lock recorded %q, want the declared name", name)
+	}
+	// The manifest is where the declaration lives, because it is source intent
+	// rather than something a resolution found. A lock is rewritten from the
+	// manifest, so recording it only there would lose it on the next lock.
+	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	if declared := manifest.Assets[at("asset@1")].Filename; declared != "geo.db" {
+		t.Fatalf("the manifest declares %q", declared)
+	}
+}
+
+// An add that declares no name leaves every naming decision where it was, which
+// is the whole compatibility claim for the flag.
+func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(),
+		namedFetcher(content, "database.bin"), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("lock recorded %q, want the supplied name", name)
+	}
+	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	if declared := manifest.Assets[at("asset@1")].Filename; declared != "" {
+		t.Fatalf("an add that named nothing wrote %q to the manifest", declared)
+	}
+}
+
+// An offline add writes only the manifest, and the declaration is a manifest
+// field, so it is the one part of the asset that is settled with no network.
+func TestOfflineAddRecordsTheDeclaredName(t *testing.T) {
+	manifestPath, lockPath := emptyProject(t)
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+
+	result, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
+		Filename: "geo.db", Offline: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Filename != "geo.db" || result.Status != "unlocked" {
+		t.Fatalf("unexpected offline add result: %#v", result.Asset)
+	}
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared := manifest.Assets[at("asset@1")].Filename; declared != "geo.db" {
+		t.Fatalf("the manifest declares %q", declared)
+	}
+}
+
+// A name that is not one path element is refused rather than repaired, and the
+// add fails: a name somebody typed is a decision, so DAC either records the one
+// asked for or says it will not. That is the opposite of what a supplied name
+// gets, which falls through to the next source without failing anything.
+func TestAddRefusesANameThatIsNotOnePathElement(t *testing.T) {
+	manifestPath, lockPath := emptyProject(t)
+	beforeManifest := projecttest.MustRead(t, manifestPath)
+	beforeLock := projecttest.MustRead(t, lockPath)
+	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+
+	for _, name := range []string{"../../etc/passwd", "geo/db.bin", "..", "-rf", "bad\x00name", strings.Repeat("x", 256)} {
+		_, err := service.Add(context.Background(), application.AddOptions{
+			Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
+			Filename: name, Offline: true,
+		})
+		if fault.As(err).Code != "invalid_arguments" {
+			t.Fatalf("add accepted the name %q: %v", name, err)
+		}
+	}
+	assertFilesEqual(t, manifestPath, lockPath, beforeManifest, beforeLock)
+}
+
+// Renaming an asset is a manifest edit, and a lock settles it without asking
+// any origin anything. A name is not worth a download: the bytes did not move.
+func TestLockAppliesADeclaredNameWithoutARequest(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	store := newFakeStore()
+	service := application.New(manifestPath, lockPath, store, staticFetcher(content), nil)
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "database.bin" {
+		t.Fatalf("lock recorded %q", name)
+	}
+
+	writeManifest(t, manifestPath, project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/geo/database.bin", Filename: "geo.db"},
+		},
+	})
+	renaming := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	if _, err := renaming.Lock(context.Background(), application.NetworkOptions{Concurrency: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "geo.db" {
+		t.Fatalf("lock recorded %q after the manifest declared a name", name)
+	}
+}
+
+// A refresh that ends in a 304 keeps the declared name too. The rule for a
+// recorded name is that the origin's silence does not replace it; the rule for
+// a declared one is that nothing the origin says replaces it.
+func TestNotModifiedKeepsTheDeclaredName(t *testing.T) {
+	content := []byte("cached")
+	manifestPath, lockPath := emptyProject(t)
+	manifest := project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets: map[coord.Coordinate]project.Asset{
+			at("asset@1"): {URL: "https://example.com/geo/database.bin", Filename: "geo.db"},
+		},
+	}
+	lock, err := project.NewLock(manifest, map[coord.Coordinate]project.LockAsset{
+		at("asset@1"): {
+			URL:      "https://example.com/geo/database.bin",
+			Digest:   digest.Bytes(content),
+			Size:     int64(len(content)),
+			ETag:     "\"old\"",
+			Filename: "geo.db",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.WritePair(manifestPath, lockPath, manifest, lock); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeStore()
+	warm(t, store, content)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		return &application.FetchResponse{
+			NotModified: true,
+			ETag:        "\"new\"",
+			Filename:    "database.bin",
+			Body:        io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	}}
+	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+
+	if _, err := service.Lock(context.Background(), application.NetworkOptions{
+		Concurrency: 1, Refresh: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "geo.db" {
+		t.Fatalf("a not-modified response changed the declared name to %q", name)
+	}
+}
+
+// A pinned asset the cache already holds is answered without a request, and
+// that path builds its lock entry from nothing the origin said. The declared
+// name has to reach it too, or an asset would be named by whether its bytes
+// happened to be cached.
+func TestADeclaredNameReachesACachedResolution(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := emptyProject(t)
+	store := newFakeStore()
+	warm(t, store, content)
+	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+
+	if _, err := service.Add(context.Background(), application.AddOptions{
+		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234",
+		Integrity: digest.Bytes(content), Filename: "geo.db", MaxSize: 1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if name := lockedFilename(t, lockPath); name != "geo.db" {
+		t.Fatalf("a cached resolution recorded %q", name)
+	}
+}

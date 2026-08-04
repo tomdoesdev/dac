@@ -39,10 +39,11 @@ type Asset struct {
 	Version    string `json:"version"`
 	URL        string `json:"url"`
 	Integrity  string `json:"integrity,omitempty"`
-	// Filename is what the origin calls this asset. The cache path names the
-	// bytes, which is the wrong name for anything that reads an extension, so
-	// this is the half a script needs to put the file somewhere useful. It is
-	// absent for an asset no lock entry describes yet.
+	// Filename is what this asset is called: the name the manifest declares, or
+	// what the origin calls it when the manifest declares none. The cache path
+	// names the bytes, which is the wrong name for anything that reads an
+	// extension, so this is the half a script needs to put the file somewhere
+	// useful. It is absent for an asset that nothing names yet.
 	Filename string `json:"filename,omitempty"`
 	Digest   string `json:"digest"`
 	Size     int64  `json:"size"`
