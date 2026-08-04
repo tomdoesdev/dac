@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/proclock"
@@ -27,10 +29,16 @@ import (
 // already hashed, and a copy would hash them all over again.
 type Store struct {
 	Root string
+	// Logger traces what the cache answered for each object. A nil logger
+	// traces nothing, so the zero value is a store that says nothing.
+	Logger *slog.Logger
 	// verified maps a digest to the file information of the bytes this process
 	// hashed for it. See trusted in meta.go.
 	verified sync.Map
 }
+
+// trace returns the logger for this store, which discards when nothing set one.
+func (store *Store) trace() *slog.Logger { return debug.Or(store.Logger) }
 
 // ResolveRoot returns an absolute cache root.
 func ResolveRoot(option string) (string, error) {
@@ -74,15 +82,18 @@ func (store *Store) Stat(value string) (application.Object, bool, error) {
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
+		store.trace().Debug("cache miss", "digest", value)
 		return application.Object{}, false, nil
 	}
 	if err != nil {
 		return application.Object{}, false, err
 	}
 	if err := store.check(value, path, info); err != nil {
+		store.trace().Debug("cache object failed its check", "digest", value, "error", err)
 		return application.Object{}, false, err
 	}
 	touch(metaPath(path))
+	store.trace().Debug("cache hit", "digest", value, "size", info.Size())
 	return application.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
@@ -237,6 +248,8 @@ func (store *Store) evict(ctx context.Context, options application.GCOptions, co
 		if !removed {
 			continue
 		}
+		store.trace().Debug("evicted", "digest", candidate.digest, "size", size,
+			"lastUsed", candidate.used, "remaining", total-size, "bound", options.MaxSize)
 		total -= size
 		result.Digests = append(result.Digests, candidate.digest)
 		result.ObjectCount++
@@ -732,6 +745,7 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 		if err := os.Rename(temporaryPath, path); err != nil {
 			return err
 		}
+		store.trace().Debug("installed", "digest", actualDigest, "size", size)
 		return store.record(actualDigest, path)
 	}
 	if !options.Locked {

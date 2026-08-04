@@ -347,9 +347,13 @@ Global options:
 | `--cache-dir` | `DAC_CACHE_DIR` | `cache.dir`, then the XDG cache |
 | `--config` | `DAC_CONFIG` | The XDG config search path |
 | `--json`, `-j` | | `false` |
+| `--debug` | `DAC_DEBUG` | `false` |
 
 `--lock` follows `--manifest` unless it is given. A project is its two files
 together, so `dac --manifest sub/dac.json` reads `sub/dac-lock.json`.
+
+`--debug` writes a trace of what a command actually did. See
+[Seeing what happened](#seeing-what-happened).
 
 Per-command options are decisions about one run:
 
@@ -477,6 +481,54 @@ could only report that the bytes were wrong, and the reason they were wrong is
 worth naming. A piece that fails is retried on its own, under the same
 `transfer.retries` and backoff as a whole request: its bytes have not reached the hash
 yet, so the retry costs one piece rather than the asset.
+
+## Seeing what happened
+
+DAC is pointed at a mirror by a rewrite rule, handed credentials by a program it
+starts, and told to retry and to split downloads across range requests. When any
+of that misbehaves, the only thing on screen is the failure at the end of it.
+
+`--debug`, or `DAC_DEBUG`, writes a trace of the decisions behind it to standard
+error:
+
+```bash
+dac --debug pull
+```
+
+```text
+level=DEBUG msg="rewrote request" from=https://vendor.example.com/db.bin to=https://mirror.internal/vendor/db.bin
+level=DEBUG msg="running credential helper" host=mirror.internal command=/usr/local/bin/dac-cred
+level=DEBUG msg="credential helper answered" host=mirror.internal command=/usr/local/bin/dac-cred headers="[Authorization]"
+level=DEBUG msg=fetching url=https://mirror.internal/vendor/db.bin conditional=false
+level=DEBUG msg="splitting download" url=https://mirror.internal/vendor/db.bin length=20971520 chunks=3 workers=2 precondition=If-Match
+level=DEBUG msg=range url=https://mirror.internal/vendor/db.bin start=8388608 end=16777215 status=206
+level=DEBUG msg=installed digest=sha256:6adfa077... size=20971520
+```
+
+It answers the questions nothing else does: which URL was requested after a
+rewrite, which helper answered for which host, how many retries happened and
+what each one saw, whether an object came from the cache or the origin, and what
+a collection evicted.
+
+A download that arrives over one connection when it should have split says why,
+and every reason is something the origin decided rather than a setting to go and
+correct:
+
+```text
+level=DEBUG msg="streaming one response" url=... reason="origin does not serve byte ranges" length=20971520
+level=DEBUG msg="streaming one response" url=... reason="origin sent no strong validator" length=20971520
+level=DEBUG msg="streaming one response" url=... reason="no parts to spare" length=20971520
+```
+
+Two things a trace never carries. It is not part of the [output
+contract](#output-contract) — it goes to standard error, it is written for a
+person, and its wording is free to change, so nothing should parse it. And it
+never carries what a credential helper returned: the helper's answer is the
+secret itself, and a trace reports which helper ran and which header names it
+set, never a value.
+
+Tracing turns progress bars off. Both write to standard error and the bars
+redraw in place, so the two together produce a display that is neither.
 
 ## Credentials
 
