@@ -75,7 +75,7 @@ func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 		return RemoveResult{}, err
 	}
 	if _, exists := manifest.Assets[name]; !exists {
-		return RemoveResult{}, unknownCoordinate(name, manifest.Assets)
+		return RemoveResult{}, unknownCoordinate(subjectProject, name, manifest.Assets)
 	}
 	updated := manifest.Clone()
 	delete(updated.Assets, name)

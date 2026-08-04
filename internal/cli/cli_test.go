@@ -758,16 +758,17 @@ func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	assertError(t, runJSON(t, []string{"unpack"}), "unpack_destination_occupied")
 	assertSuccess(t, runJSON(t, []string{"unpack", "--force"}), "unpack")
 
-	// Both positionals, named explicitly.
+	// The archive named as the argument, the destination as the option that
+	// takes one.
 	named := filepath.Join(t.TempDir(), "named.dacpack")
 	elsewhere := t.TempDir()
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", named)), "pack")
-	assertSuccess(t, runJSON(t, []string{"unpack", named, elsewhere}), "unpack")
+	assertSuccess(t, runJSON(t, []string{"unpack", named, "--dest", elsewhere}), "unpack")
 	if _, err := os.Stat(filepath.Join(elsewhere, "assets", "app", "geo", "1", "geo.bin")); err != nil {
 		t.Fatalf("the named destination is empty: %v", err)
 	}
-	// Too many arguments is a mistake rather than something to guess at.
-	assertError(t, runJSON(t, []string{"unpack", named, elsewhere, "extra"}), "invalid_arguments")
+	// A pack writes one archive, so a second path is a mistake rather than
+	// something to guess at.
 	assertError(t, runJSON(t, appendArgs(paths.base, "pack", named, "extra")), "invalid_arguments")
 }
 

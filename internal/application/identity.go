@@ -131,25 +131,30 @@ func lockFault(code, message string, err error) error {
 	return fault.Wrap(code, message, err)
 }
 
-// unknownCoordinate reports a coordinate the project does not have.
+// unknownCoordinate reports a coordinate the subject does not have.
 //
-// It lists the versions the project does have for that asset. Now that a
-// project can hold several, "the project does not have this asset coordinate"
-// is the answer to two different mistakes — a name nobody added, and a version
-// that is one character off — and only one of them is worth a second look at
-// the manifest.
-func unknownCoordinate[V any](name coord.Coordinate, assets map[coord.Coordinate]V) error {
+// It lists the versions the subject does have for that asset. Now that a
+// project can hold several, "this asset coordinate is not here" is the answer
+// to two different mistakes — a name nobody added, and a version that is one
+// character off — and only one of them is worth a second look at the manifest.
+//
+// Subject is the noun the refusal names, because the same lookup is made
+// against two different things: the project the caller is standing in, and the
+// index of a dacpack that no project has to be behind at all. Telling somebody
+// unpacking an archive that the project does not have an asset would point them
+// at a file this command never read.
+func unknownCoordinate[V any](subject string, name coord.Coordinate, assets map[coord.Coordinate]V) error {
 	versions := coord.Versions(coord.InGroup(assets, name.Group()))
 	if len(versions) == 0 {
 		return &fault.Error{
 			Code:    "asset_unknown",
-			Message: "The project does not have this asset.",
+			Message: "The " + subject + " does not have this asset.",
 			Details: map[string]any{"asset": name.String()},
 		}
 	}
 	return &fault.Error{
 		Code:    "asset_unknown",
-		Message: "The project does not have this version of the asset.",
+		Message: "The " + subject + " does not have this version of the asset.",
 		Details: map[string]any{"asset": name.String(), "versions": versions},
 		Cause:   fmt.Errorf("%s has %s", name.Group(), strings.Join(versions, ", ")),
 	}

@@ -51,7 +51,7 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 	if err != nil {
 		return PullResult{}, err
 	}
-	names, err := chosen(manifest, options.Assets)
+	names, err := chosen(subjectProject, manifest.Assets, options.Assets)
 	if err != nil {
 		return PullResult{}, err
 	}
@@ -70,35 +70,6 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 		ProjectCount:   len(manifest.Assets),
 		AssetSummary:   collect(assets),
 	}, nil
-}
-
-// chosen returns the coordinates a list of selections covers, in manifest order
-// and without repeats. An empty list covers the whole project.
-//
-// The order is the manifest's rather than the command line's, so that a result
-// reads the same whether or not it was narrowed, and two selections that overlap
-// -- an asset named once whole and once by its group -- fetch it once.
-func chosen(manifest project.Manifest, selections []Selection) ([]coord.Coordinate, error) {
-	if len(selections) == 0 {
-		return manifest.Coordinates(), nil
-	}
-	wanted := make(map[coord.Coordinate]struct{}, len(selections))
-	for _, selection := range selections {
-		names, err := selected(manifest, selection)
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range names {
-			wanted[name] = struct{}{}
-		}
-	}
-	names := make([]coord.Coordinate, 0, len(wanted))
-	for _, name := range manifest.Coordinates() {
-		if _, found := wanted[name]; found {
-			names = append(names, name)
-		}
-	}
-	return names, nil
 }
 
 func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, source project.Asset, locked project.LockAsset, options NetworkOptions) (Asset, error) {

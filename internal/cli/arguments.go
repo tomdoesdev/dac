@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 
 	urfave "github.com/urfave/cli/v3"
@@ -164,6 +165,75 @@ func optionalPaths(current *urfave.Command, most int, usage string) ([]string, e
 		paths = append(paths, trimmed)
 	}
 	return paths, nil
+}
+
+// unpackArguments reads the archive an unpack reads and the assets it was
+// narrowed to.
+//
+// The archive comes first and everything after it names an asset, which is the
+// grammar pull already uses to narrow itself. Both halves are arguments because
+// both are what the command is about -- this archive, these assets -- and the
+// destination is the flag, because it is where the result goes rather than part
+// of what was asked for.
+//
+// The destination used to be the second argument, so an argument in that slot
+// that cannot be an asset is answered with where it went. Telling somebody with
+// `dac unpack build.dacpack /opt/inputs` in a script that "/opt/inputs" is not
+// a coordinate would be true and useless, which is the reasoning movedFlags is
+// written from.
+func unpackArguments(current *urfave.Command) (string, []application.Selection, error) {
+	values := current.Args().Slice()
+	usage := "Specify at most an archive path and the assets to unpack, as [<archive> [<namespace>/<name>[@<version>]...]]."
+	pack := application.DefaultPackFile
+	if len(values) > 0 {
+		trimmed := strings.TrimSpace(values[0])
+		if trimmed == "" {
+			return "", nil, fault.New("invalid_arguments", usage)
+		}
+		pack = trimmed
+		values = values[1:]
+	}
+	assets := make([]application.Selection, 0, len(values))
+	for _, value := range values {
+		selection, err := parseAsset(value)
+		if err != nil {
+			if pathShaped(value) {
+				return "", nil, fault.Wrap("invalid_arguments",
+					"The destination directory is now the --dest option. Arguments after the archive name the assets to unpack.", err)
+			}
+			return "", nil, err
+		}
+		assets = append(assets, selection)
+	}
+	return pack, assets, nil
+}
+
+// pathShaped reports whether an argument that is not an asset looks like a
+// directory somebody meant as a destination.
+//
+// An asset is <namespace>/<name> with an optional @<version>, so it holds
+// exactly one slash and starts with neither a separator nor a dot. Anything
+// else cannot be an asset at all, which is what makes it worth answering with
+// the option that takes a path rather than with the coordinate grammar.
+func pathShaped(value string) bool {
+	switch {
+	case filepath.IsAbs(value), strings.HasPrefix(value, "."), strings.HasPrefix(value, "~"):
+		return true
+	}
+	return strings.Count(value, "/") != 1
+}
+
+// destination reads the directory an unpack writes into.
+//
+// It is trimmed and refused when empty for the reason a path argument is: an
+// empty --dest is a shell variable nobody set, and reading it as the working
+// directory would turn that mistake into a write where the command was run.
+func destination(current *urfave.Command) (string, error) {
+	trimmed := strings.TrimSpace(current.String("dest"))
+	if trimmed == "" {
+		return "", fault.New("invalid_arguments", "The destination directory is empty.")
+	}
+	return trimmed, nil
 }
 
 // requiredPath reads the one positional path a command has no default for.

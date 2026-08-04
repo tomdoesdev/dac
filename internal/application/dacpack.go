@@ -133,10 +133,15 @@ func packFilePath(name coord.Coordinate, file string) (string, error) {
 // filesystem is one DAC computed from data it had already checked, rather than
 // a string out of the archive that a reader has to trace back through the
 // equality test to know is safe.
+//
+// Coordinate is the parsed form of the same claim, kept for the reason the path
+// is: it is what an unpack narrowed to one asset matches against, and matching
+// on the string would ask each reader to trust that the string parsed.
 type packTarget struct {
-	item   PackItem
-	path   string
-	object Object
+	item       PackItem
+	coordinate coord.Coordinate
+	path       string
+	object     Object
 }
 
 // validatePackIndex checks item metadata and returns what belongs at each path.
@@ -189,9 +194,10 @@ func validatePackIndex(index packIndex) (map[string]packTarget, error) {
 			return nil, fmt.Errorf("dacpack has duplicate file %q", derived)
 		}
 		targets[derived] = packTarget{
-			item:   item,
-			path:   derived,
-			object: Object{Digest: item.Digest, Size: item.Size},
+			item:       item,
+			coordinate: coordinate,
+			path:       derived,
+			object:     Object{Digest: item.Digest, Size: item.Size},
 		}
 	}
 	return targets, nil

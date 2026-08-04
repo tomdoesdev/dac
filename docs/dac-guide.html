@@ -527,7 +527,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
       <tr><td class="mono">dac pack [&lt;archive&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
-      <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;directory&gt;]] [--force]</td><td>Write the assets a dacpack carries into a directory. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
+      <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]…]] [--dest &lt;directory&gt;] [--force]</td><td>Write the assets a dacpack carries into a directory, or the ones named. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
       <tr><td class="mono">dac cache list [--all]</td><td>List cached objects with size, last use, and the assets they belong to.</td></tr>
       <tr><td class="mono">dac cache import &lt;dacpack|directory&gt;</td><td>Install objects from a dacpack, or from a directory of digest-named files, into the local cache. Reads no project files.</td></tr>
       <tr><td class="mono">dac cache clear [--dry-run]</td><td>Remove every cache object.</td></tr>
@@ -925,7 +925,8 @@ tar -tf dac.dacpack
 # assets/java/sdk/11/jdk-11.tar.gz
 # assets/java/sdk/17/jdk-17.tar.gz</code></pre></div>
 <div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac unpack                        # writes ./assets/... — no cache, no project files
-dac unpack dac.dacpack /opt/inputs
+dac unpack dac.dacpack --dest /opt/inputs
+dac unpack dac.dacpack java/sdk@11 --dest /opt/inputs   # one asset out of the archive
 
 # Or, for a consumer that has never heard of DAC:
 tar -xf dac.dacpack -C /opt/inputs</code></pre></div>
@@ -933,10 +934,20 @@ tar -xf dac.dacpack -C /opt/inputs</code></pre></div>
       <code>unpack</code> writes files and never touches the cache — that is the whole difference from
       <code>cache import</code>, and it is why the command reads no project files and needs no cache directory. Each
       file lands at the same path under the destination that it has inside the archive, so
-      <code>dac unpack &lt;archive&gt; &lt;dir&gt;</code> and <code>tar -xf &lt;archive&gt; -C &lt;dir&gt;</code>
+      <code>dac unpack &lt;archive&gt; --dest &lt;dir&gt;</code> and <code>tar -xf &lt;archive&gt; -C &lt;dir&gt;</code>
       put the files in the same places. The coordinate supplies the directories, because two versions of one
       asset almost always share a file name and two assets easily can — keyed on the name alone, the second
       file would silently overwrite the first.
+    </p>
+    <p>
+      Arguments after the archive name assets, in the two spellings <code>info</code> and <code>pull</code>
+      already read: a coordinate for one version, a bare <code>namespace/name</code> for every version of an
+      asset. A dacpack carries a whole project and a build step usually wants one file out of it, so the
+      alternative was materializing twenty and deleting nineteen. Narrowing changes what is written and
+      nothing else — the whole archive is still read and still checked, because whether a delivery is sound is
+      not a question a command taking one asset out of it gets to skip. The destination is
+      <code>--dest</code>: it is where the result goes rather than part of what was asked for, and it used to
+      be the second argument, so the old spelling now says where it went.
     </p>
     <p>
       Two costs come with materializing. Two coordinates that resolved to the same bytes are one object in the
