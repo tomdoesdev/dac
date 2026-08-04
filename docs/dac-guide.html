@@ -451,7 +451,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <div class="card"><span class="tag">trust</span><h3>Publisher pinning</h3><p><code>--pin</code> records the resolved digest as <code>integrity</code>. DAC also reads the SRI <code>sha256-&lt;base64&gt;</code> spelling and normalizes it.</p></div>
     <div class="card"><span class="tag">secrets</span><h3>Credential helpers</h3><p>No tokens in the manifest, the lock, or a config file. A helper program answers per request, per host, and is re-asked after every redirect.</p></div>
     <div class="card"><span class="tag">topology</span><h3>Rewrite config</h3><p>Send requests to a mirror without editing a single manifest, and allow/block hosts outright. Canonical URLs stay canonical.</p></div>
-    <div class="card"><span class="tag">isolation</span><h3>Bundles and shares</h3><p><code>export</code>/<code>import</code> move a whole locked cache across an air gap as one tar; <code>dac import &lt;dir&gt;</code> installs the same objects from a mounted share of digest-named files.</p></div>
+    <div class="card"><span class="tag">isolation</span><h3>Packs and shares</h3><p><code>pack</code>/<code>cache import</code> move a whole locked cache across an air gap as one archive; <code>dac cache import &lt;dir&gt;</code> installs the same objects from a mounted share of digest-named files.</p></div>
     <div class="card"><span class="tag">automation</span><h3>Machine output</h3><p><code>--json</code> writes one versioned envelope with a stable error <code>code</code>, a human <code>cause</code>, and structured <code>details</code>.</p></div>
     <div class="card"><span class="tag">maintenance</span><h3>Cache hygiene</h3><p><code>cache gc</code> collects by last use, <code>cache clear</code> empties it, <code>cache scrub --repair</code> hashes objects and removes the ones that no longer match.</p></div>
     <div class="card"><span class="tag">throughput</span><h3>Parallel and safe</h3><p>Assets download concurrently, and concurrent DAC processes coordinate through a per-digest lock, so shared runners cannot corrupt each other.</p></div>
@@ -526,11 +526,10 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--offline</code>, <code>--concurrency</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
-      <tr><td class="mono">dac export &lt;bundle&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
-      <tr><td class="mono">dac import &lt;bundle&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
       <tr><td class="mono">dac pack [&lt;archive&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
       <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;directory&gt;]] [--force]</td><td>Write the assets a dacpack carries into a directory. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
       <tr><td class="mono">dac cache list [--all]</td><td>List cached objects with size, last use, and the assets they belong to.</td></tr>
+      <tr><td class="mono">dac cache import &lt;dacpack|directory&gt;</td><td>Install objects from a dacpack, or from a directory of digest-named files, into the local cache. Reads no project files.</td></tr>
       <tr><td class="mono">dac cache clear [--dry-run]</td><td>Remove every cache object.</td></tr>
       <tr><td class="mono">dac cache remove &lt;coordinate&gt;… [--force]</td><td>Remove the objects specific asset versions resolved to.</td></tr>
       <tr><td class="mono">dac cache scrub [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
@@ -656,7 +655,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <div class="card"><h3>Firmware &amp; images</h3><p>Device firmware blobs, base rootfs tarballs, VM images that a deployment job stages onto hardware.</p></div>
     <div class="card"><h3>Test corpora</h3><p>Golden files, fuzzing corpora, recorded fixtures. Too big for git, and a silent change turns into a mystery test failure.</p></div>
     <div class="card"><h3>Licensed datasets</h3><p>Vendor data behind an authenticated URL, fetched with a credential helper so no token lands in the repository.</p></div>
-    <div class="card"><h3>Air-gapped delivery</h3><p>Build the bundle once on a connected machine, carry one tar across the boundary, pull offline on the other side.</p></div>
+    <div class="card"><h3>Air-gapped delivery</h3><p>Pack once on a connected machine, carry one archive across the boundary, import and pull offline on the other side.</p></div>
     <div class="card"><h3>Multi-tool builds</h3><p>Anything where <code>make</code>, Docker, Ansible, and a deploy script all need the same file and must agree on which one.</p></div>
   </div>
 
@@ -862,30 +861,38 @@ exit 1</code></pre></div>
 <div class="codeblock"><div class="codebar"><span class="name">shell — connected side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># From a checkout of the exact commit the isolated machine will build.
 git checkout v1.8.0
 dac pull
-dac export dac-cache.tar
+dac pack dac-delivery.dacpack
 
-# The bundle carries every locked object plus an index naming each coordinate,
-# source URL, digest, and size. Two assets that resolved to the same bytes
-# share one blob, so the bundle is no larger than the object set.
-sha256sum dac-cache.tar</code></pre></div>
+# The archive carries every locked asset plus an index naming each coordinate,
+# source URL, file name, digest, and size. Each asset is materialized under the
+# name its origin gave it, so the far side does not have to run DAC to use it.
+sha256sum dac-delivery.dacpack</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac import dac-cache.tar   # validates index, paths, sizes, and digests
-dac pull --offline                # installs from the cache; no requests at all
+<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac cache import dac-delivery.dacpack   # validates index, paths, sizes, digests
+dac pull --offline                      # installs from the cache; no requests at all
 make build</code></pre></div>
 
     <p>
-      <code>import</code> checks the index, the entry type, the path, the size, and the digest, and rejects an
-      invalid bundle before it installs anything. It does not read the project files, so one bundle can seed
-      several checkouts. <code>export</code> refuses if any locked object is missing or corrupt — a bundle is the one
-      artifact that would carry cache damage onto a machine with no way to tell where it came from.
+      <code>cache import</code> checks the index, the entry type, the path, the size, and the digest, and refuses
+      an invalid archive rather than install the part of it that read cleanly. It does not read the project
+      files, so one archive can seed several checkouts. <code>pack</code> refuses if any locked object is missing
+      or corrupt — an archive is the one artifact that would carry cache damage onto a machine with no way to
+      tell where it came from.
+    </p>
+    <p>
+      There used to be a second archive here: a cache bundle, written by <code>dac export</code> and read by
+      <code>dac import</code>, holding every object under <code>blobs/sha256/&lt;hex&gt;</code>. It made the
+      import's validation free — the only path an item could claim was the one its digest spelled — and it made
+      the file useless to anyone who did not run DAC. One archive answers both sides, so the bundle is gone and
+      <code>dac pack</code> writes what both <code>dac cache import</code> and <code>dac unpack</code> read.
     </p>
 
     <h4>Variant: a distribution directory</h4>
     <p>
-      If your transfer mechanism is a mounted share rather than a tar, <code>dac import</code> takes the directory
-      directly. Each file must be named by its SHA-256 hexadecimal digest — the only name a consumer can
-      actually check. Anything else in the directory is left alone, so a <code>README</code> beside the objects
-      costs nothing, and a file whose contents do not match the name it carries is refused.
+      If your transfer mechanism is a mounted share rather than a file, <code>dac cache import</code> takes the
+      directory directly. Each file must be named by its SHA-256 hexadecimal digest — the only name a consumer
+      can actually check. Anything else in the directory is left alone, so a <code>README</code> beside the
+      objects costs nothing, and a file whose contents do not match the name it carries is refused.
     </p>
 <div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># Populate the share, naming each file by its digest.
 for file in /staging/*; do
@@ -893,22 +900,22 @@ for file in /staging/*; do
 done
 
 # On the isolated machine:
-dac import /mnt/dist
+dac cache import /mnt/dist
 dac pull --offline</code></pre></div>
 
     <p>
       This replaces <code>dac pull --distdir</code>, which installed the same digest-named objects from the same
       kind of directory as a flag on an unrelated command. One difference is worth knowing: the flag read only
-      the objects the lock named, where <code>import</code> installs everything in the directory — a share
+      the objects the lock named, where an import installs everything in the directory — a share
       holding more than this project needs will cost more cache than it used to.
     </p>
 
-    <h4>Variant: a dacpack, when the far side is not DAC</h4>
+    <h4>Variant: unpacking, when the far side is not DAC</h4>
     <p>
-      A bundle names everything by digest, which is exactly what DAC needs and exactly what nothing else can
-      read. When the thing receiving the archive is a person, an installer, or a build step that switches on a
-      file extension, <code>dac pack</code> writes the same assets materialized under the names their origins
-      gave them.
+      The same archive answers a receiver that has never heard of DAC. When the thing on the other side is a
+      person, an installer, or a build step that switches on a file extension, <code>dac unpack</code> — or
+      <code>tar</code> — turns it into a directory of real files under the names their origins gave them,
+      without a cache anywhere in sight.
     </p>
 <div class="codeblock"><div class="codebar"><span class="name">shell — connected side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac pull
 dac pack                          # writes ./dac.dacpack; an argument names another
@@ -924,7 +931,7 @@ dac unpack dac.dacpack /opt/inputs
 tar -xf dac.dacpack -C /opt/inputs</code></pre></div>
     <p>
       <code>unpack</code> writes files and never touches the cache — that is the whole difference from
-      <code>import</code>, and it is why the command reads no project files and needs no cache directory. Each
+      <code>cache import</code>, and it is why the command reads no project files and needs no cache directory. Each
       file lands at the same path under the destination that it has inside the archive, so
       <code>dac unpack &lt;archive&gt; &lt;dir&gt;</code> and <code>tar -xf &lt;archive&gt; -C &lt;dir&gt;</code>
       put the files in the same places. The coordinate supplies the directories, because two versions of one
@@ -932,12 +939,12 @@ tar -xf dac.dacpack -C /opt/inputs</code></pre></div>
       file would silently overwrite the first.
     </p>
     <p>
-      Two costs come with materializing. Two coordinates that resolved to the same bytes are one blob in a
-      bundle and two files in a dacpack, so a project whose assets overlap packs larger than it exports. And
-      the paths now carry names a remote server chose, so <code>unpack</code> recomputes every path from the
-      coordinate it belongs to and refuses an index that claims anything else; a file name that is not a single
-      safe path element is refused outright, and a symlink where a file is going counts as something already
-      there rather than as empty space.
+      Two costs come with materializing. Two coordinates that resolved to the same bytes are one object in the
+      cache and two files in a dacpack, so a project whose assets overlap packs larger than the cache it came
+      from; an import of one still installs a single object. And the paths now carry names a remote server
+      chose, so a reader recomputes every path from the coordinate it belongs to and refuses an index that
+      claims anything else; a file name that is not a single safe path element is refused outright, and a
+      symlink where a file is going counts as something already there rather than as empty space.
     </p>
     <div class="callout warn">
       <span class="label">Unpacking writes into the directory you are standing in</span>
@@ -1251,7 +1258,7 @@ dac cache scrub --all --repair</code></pre></div>
 dac pull                    # download them again and install good bytes</code></pre></div>
 
     <p>
-      Damage is reported wherever it turns up: <code>dac path</code> and <code>dac export</code> refuse, <code>dac info</code>
+      Damage is reported wherever it turns up: <code>dac path</code> and <code>dac pack</code> refuse, <code>dac info</code>
       reports <code>cache: corrupt</code>, and <code>dac pull</code> downloads the asset again and reports it as
       <code>repaired</code>.
     </p>
@@ -1268,9 +1275,9 @@ dac pull                    # download them again and install good bytes</code><
     disables progress in JSON mode so that exactly one document lands on stdout.
   </p>
 
-<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":5,"ok":true,"command":"path","data":{}}</code></pre></div>
+<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":6,"ok":true,"command":"path","data":{}}</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":5,"ok":false,"command":"pull","error":{
+<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":6,"ok":false,"command":"pull","error":{
   "code":"network_error",
   "message":"The asset request failed.",
   "cause":"https://example.com/db: unconditional request returned HTTP 404",
@@ -1307,7 +1314,7 @@ dac pull                    # download them again and install good bytes</code><
       <tr><td class="mono">content_mismatch</td><td>Downloaded bytes failed their digest or size check.</td><td>Retry; if it persists, the publisher or mirror changed</td></tr>
       <tr><td class="mono">cache_object_corrupt</td><td>A cache object no longer matches its digest.</td><td><code>dac cache scrub --repair</code> then <code>dac pull</code></td></tr>
       <tr><td class="mono">cache_object_invalid</td><td>The object is simply missing.</td><td><code>dac pull</code></td></tr>
-      <tr><td class="mono">offline_cache_miss</td><td>Offline mode needed an object the cache lacks.</td><td>Warm the cache, import a bundle, or drop <code>--offline</code></td></tr>
+      <tr><td class="mono">offline_cache_miss</td><td>Offline mode needed an object the cache lacks.</td><td>Warm the cache, import a dacpack, or drop <code>--offline</code></td></tr>
       <tr><td class="mono">network_error</td><td>The request failed. <code>details.status</code> and <code>details.url</code> say how.</td><td>Depends on the status</td></tr>
       <tr><td class="mono">timeout</td><td>The transfer stalled or the request timed out.</td><td>Raise <code>transfer.timeout</code>, or look at the origin</td></tr>
       <tr><td class="mono">url_not_permitted</td><td>URL policy or the rewrite config refused the host.</td><td>Fix the manifest URL or the rewrite config</td></tr>

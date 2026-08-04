@@ -3,11 +3,16 @@ package application
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 )
 
@@ -27,18 +32,18 @@ type packEntry struct {
 // Pack writes every locked asset to one tar file under the name its origin
 // gave it.
 //
-// It is export with the files materialized. A cache bundle is for moving the
-// cache between machines that both run DAC, and names everything by digest
-// because that is all DAC needs. A dacpack is for handing a project's assets to
-// something that is not DAC: unpack it, or extract it with tar, and there is a
-// directory of real files with real extensions, plus an index recording what
-// each one is and what it should hash to.
+// It is the cache, moved, with the files materialized. Unpack it, or extract it
+// with tar, and there is a directory of real files with real extensions, plus
+// an index recording what each one is and what it should hash to; hand it to
+// cache import instead and the same bytes land in another machine's cache. One
+// archive answers both, which is why DAC no longer writes a second one that
+// only another DAC could read.
 //
-// The cost of that is duplication. Two coordinates that resolved to the same
-// bytes share one object in the cache and one blob in a bundle, but they are
-// two files here, because each is materialized under its own name and a file
-// cannot be in two places. Packing a project whose assets overlap therefore
-// costs more than exporting it.
+// The cost is duplication. Two coordinates that resolved to the same bytes
+// share one object in the cache and arrive as two files here, because each is
+// materialized under its own name and a file cannot be in two places. Packing a
+// project whose assets overlap therefore costs more than the cache it came
+// from.
 func (service *Service) Pack(ctx context.Context, packPath string) (PackResult, error) {
 	manifest, lock, err := service.readProject()
 	if err != nil {
@@ -140,10 +145,10 @@ func writePack(ctx context.Context, destination string, entries []packEntry) err
 
 // writePackContents writes the index first and then one file per asset.
 //
-// The index leads for the same reason a bundle's does: a reader streaming the
-// archive has to know what it is looking at before the first file arrives,
-// which is what lets unpack check each file as it goes rather than buffering
-// the archive to find out.
+// The index leads because a reader streaming the archive has to know what it is
+// looking at before the first file arrives, which is what lets unpack and cache
+// import check each file as it goes rather than buffering the archive to find
+// out.
 func writePackContents(ctx context.Context, writer *tar.Writer, entries []packEntry) error {
 	metadata := make([]PackItem, 0, len(entries))
 	for _, entry := range entries {
@@ -168,10 +173,9 @@ func writePackContents(ctx context.Context, writer *tar.Writer, entries []packEn
 		if err := writeTarHeader(writer, entry.metadata.File, entry.metadata.Size); err != nil {
 			return err
 		}
-		// The same check export makes, for the same reason: these bytes were
-		// vouched for by a stat against the sidecar rather than by reading them,
-		// and this is the read that could prove otherwise.
-		if err := copyBundleObject(ctx, writer, entry.asset.Path, Object{
+		// These bytes were vouched for by a stat against the sidecar rather than
+		// by reading them, and this is the read that could prove otherwise.
+		if err := copyPackObject(ctx, writer, entry.asset.Path, Object{
 			Digest: entry.metadata.Digest,
 			Size:   entry.metadata.Size,
 		}); err != nil {
@@ -179,4 +183,48 @@ func writePackContents(ctx context.Context, writer *tar.Writer, entries []packEn
 		}
 	}
 	return nil
+}
+
+// writeTarHeader writes one stable regular-file header.
+func writeTarHeader(writer *tar.Writer, name string, size int64) error {
+	return writer.WriteHeader(&tar.Header{
+		Name:    name,
+		Mode:    0o444,
+		Size:    size,
+		ModTime: time.Unix(0, 0),
+		Format:  tar.FormatUSTAR,
+	})
+}
+
+// copyPackObject checks the exact bytes while it writes one file.
+func copyPackObject(ctx context.Context, destination io.Writer, source string, expected Object) error {
+	reader, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reader.Close() }()
+	hashValue := sha256.New()
+	written, err := io.Copy(io.MultiWriter(destination, hashValue), &contextReader{ctx: ctx, reader: reader})
+	if err != nil {
+		return err
+	}
+	actual := digest.Prefix + hex.EncodeToString(hashValue.Sum(nil))
+	if actual != expected.Digest || written != expected.Size {
+		return &CorruptError{Digest: expected.Digest, ActualDigest: actual, Path: source}
+	}
+	return nil
+}
+
+// contextReader stops a long file copy after command cancellation.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+// Read checks the command context before it reads the next file block.
+func (reader *contextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buffer)
 }

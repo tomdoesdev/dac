@@ -11,24 +11,34 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
-// ImportResult reports the objects installed from one cache bundle.
+// ImportResult reports the objects installed from one source.
 type ImportResult struct {
-	Bundle      string `json:"bundle"`
-	ItemCount   int    `json:"itemCount"`
-	ObjectCount int    `json:"objectCount"`
-	ByteCount   int64  `json:"byteCount"`
+	Source    string `json:"source"`
+	ItemCount int    `json:"itemCount"`
+	// ObjectCount and ByteCount report what the cache gained rather than what
+	// the source held. A dacpack materializes each asset separately, so two
+	// coordinates that resolved to one object arrive as two files and become one
+	// object here, which is the number an operator is asking about when they ask
+	// what an import installed.
+	ObjectCount int   `json:"objectCount"`
+	ByteCount   int64 `json:"byteCount"`
 }
 
-// Import installs objects into the local cache from a cache bundle or from a
+// Import installs objects into the local cache from a dacpack or from a
 // directory of digest-named files.
 //
-// The two are the same delivery in different wrappers -- a tar of objects named
-// by digest, or those objects loose on a mounted share -- so they are one
-// command rather than a command and a flag on an unrelated one. A digest is the
-// only name a consumer can check, which is why both forms use it.
+// The two are the same delivery in different wrappers -- a project's assets in
+// a tar, or objects loose on a mounted share -- so they are one command rather
+// than a command and a flag on an unrelated one.
+//
+// The archive is the one pack writes, which is also the one unpack reads. DAC
+// used to have a second format for this half alone, and a bundle only ever
+// reached another DAC: a machine that received one and did not run DAC had a
+// tar full of files named by hash and no way to tell which was which. Reading
+// the archive that carries the origins' names costs this command a validation
+// the digest layout gave for free, and dacpack.go is where that is paid back.
 func (service *Service) Import(ctx context.Context, sourcePath string) (ImportResult, error) {
 	absolute, err := filepath.Abs(sourcePath)
 	if err != nil {
@@ -41,24 +51,35 @@ func (service *Service) Import(ctx context.Context, sourcePath string) (ImportRe
 	if info.IsDir() {
 		return service.importDirectory(ctx, absolute)
 	}
-	return service.importBundle(ctx, absolute)
+	return service.importPack(ctx, absolute)
 }
 
-// importBundle installs the objects one cache bundle carries.
-func (service *Service) importBundle(ctx context.Context, absolute string) (ImportResult, error) {
+// importPack installs the objects one dacpack carries.
+//
+// It reads the archive the way unpack does and writes it where unpack does not.
+// Every check unpack makes about an entry is made here too -- an entry the index
+// never listed, a repeat, a type that is not a regular file, a size that
+// disagrees -- because an import is the half that runs on the machine with no
+// way to check the delivery against anything else.
+//
+// The one thing it does not do is derive a filesystem path. Nothing in the
+// archive names a place on this machine: the cache decides where an object
+// lives, from the digest, which is the same reason a bundle's layout was safe.
+func (service *Service) importPack(ctx context.Context, absolute string) (ImportResult, error) {
 	file, err := os.Open(absolute)
 	if err != nil {
-		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the cache bundle.", err)
+		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the dacpack.", err)
 	}
 	defer func() { _ = file.Close() }()
 
 	reader := tar.NewReader(file)
-	index, objects, err := readBundleIndex(reader)
+	index, targets, err := readPackIndex(reader)
 	if err != nil {
-		return ImportResult{}, invalidBundle(err)
+		return ImportResult{}, invalidPack(err)
 	}
-	result := ImportResult{Bundle: absolute, ItemCount: len(index.Items)}
-	seen := make(map[string]struct{}, len(objects))
+	result := ImportResult{Source: absolute, ItemCount: len(index.Items)}
+	seen := make(map[string]struct{}, len(targets))
+	installed := make(map[string]struct{}, len(targets))
 	for {
 		if err := ctx.Err(); err != nil {
 			return ImportResult{}, networkError(err)
@@ -68,45 +89,55 @@ func (service *Service) importBundle(ctx context.Context, absolute string) (Impo
 			break
 		}
 		if err != nil {
-			return ImportResult{}, invalidBundle(err)
+			return ImportResult{}, invalidPack(err)
 		}
-		object, exists := objects[header.Name]
+		// The entry's name is a lookup key and never a path. What it finds
+		// carries the digest DAC checked, which is what decides where the bytes
+		// go and what they must be.
+		target, exists := targets[header.Name]
 		if !exists {
-			return ImportResult{}, invalidBundle(fmt.Errorf("bundle has unexpected file %q", header.Name))
+			return ImportResult{}, invalidPack(fmt.Errorf("dacpack has unexpected file %q", header.Name))
 		}
-		if _, duplicate := seen[header.Name]; duplicate {
-			return ImportResult{}, invalidBundle(fmt.Errorf("bundle has duplicate file %q", header.Name))
+		if _, duplicate := seen[target.path]; duplicate {
+			return ImportResult{}, invalidPack(fmt.Errorf("dacpack has duplicate file %q", target.path))
 		}
 		if !regularTarFile(header) {
-			return ImportResult{}, invalidBundle(fmt.Errorf("bundle file %q is not a regular file", header.Name))
+			return ImportResult{}, invalidPack(fmt.Errorf("dacpack file %q is not a regular file", target.path))
 		}
-		if header.Size != object.Size {
-			return ImportResult{}, invalidBundle(fmt.Errorf("bundle file %q has size %d, not %d", header.Name, header.Size, object.Size))
+		if header.Size != target.object.Size {
+			return ImportResult{}, invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", target.path, header.Size, target.object.Size))
 		}
 		// Hold the digest lock because PutExact assumes that its caller owns it.
-		err = service.Store.WithLock(ctx, object.Digest, func() error {
-			_, putErr := service.Store.Put(ctx, reader, PutExact(object))
+		err = service.Store.WithLock(ctx, target.object.Digest, func() error {
+			_, putErr := service.Store.Put(ctx, reader, PutExact(target.object))
 			return putErr
 		})
 		if err != nil {
 			var content *ContentError
 			switch {
 			case errors.As(err, &content), errors.Is(err, io.ErrUnexpectedEOF):
-				return ImportResult{}, invalidBundle(err)
+				return ImportResult{}, invalidPack(err)
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				return ImportResult{}, networkError(err)
 			default:
 				return ImportResult{}, fault.Wrap("cache_write_failed", "DAC could not write the cache object.", err)
 			}
 		}
-		seen[header.Name] = struct{}{}
-		result.ObjectCount++
-		result.ByteCount += object.Size
+		seen[target.path] = struct{}{}
+		// A repeat of an object already installed is still read and still
+		// checked -- the archive claims those bytes at that path, and an import
+		// that skipped them would not have looked at the whole delivery -- but
+		// the cache gained it once, so it is counted once.
+		if _, duplicate := installed[target.object.Digest]; !duplicate {
+			installed[target.object.Digest] = struct{}{}
+			result.ObjectCount++
+			result.ByteCount += target.object.Size
+		}
 	}
-	if len(seen) != len(objects) {
-		for path := range objects {
+	if len(seen) != len(targets) {
+		for path := range targets {
 			if _, exists := seen[path]; !exists {
-				return ImportResult{}, invalidBundle(fmt.Errorf("bundle file %q is missing", path))
+				return ImportResult{}, invalidPack(fmt.Errorf("dacpack file %q is missing", path))
 			}
 		}
 	}
@@ -119,13 +150,13 @@ func (service *Service) importBundle(ctx context.Context, absolute string) (Impo
 // claim about what is in it, and Put checks each object against the digest its
 // name gives. A file DAC cannot read as a digest is skipped rather than
 // refused: a share holding a README beside the objects is a share, not a
-// damaged bundle.
+// damaged delivery.
 func (service *Service) importDirectory(ctx context.Context, absolute string) (ImportResult, error) {
 	entries, err := os.ReadDir(absolute)
 	if err != nil {
 		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the import directory.", err)
 	}
-	result := ImportResult{Bundle: absolute}
+	result := ImportResult{Source: absolute}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return ImportResult{}, networkError(err)
@@ -176,38 +207,4 @@ func (service *Service) importFile(ctx context.Context, path, value string) (int
 		}
 	}
 	return object.Size, nil
-}
-
-// readBundleIndex reads and checks the first tar entry.
-func readBundleIndex(reader *tar.Reader) (bundleIndex, map[string]Object, error) {
-	header, err := reader.Next()
-	if err != nil {
-		return bundleIndex{}, nil, err
-	}
-	if header.Name != bundleIndexPath || !regularTarFile(header) {
-		return bundleIndex{}, nil, errors.New("the first bundle entry must be a regular index.json file")
-	}
-	if header.Size > maximumIndexSize {
-		return bundleIndex{}, nil, fmt.Errorf("bundle index is larger than %d bytes", maximumIndexSize)
-	}
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return bundleIndex{}, nil, err
-	}
-	var index bundleIndex
-	if err := jsonfile.DecodeStrict(data, &index); err != nil {
-		return bundleIndex{}, nil, err
-	}
-	objects, err := validateBundleIndex(index)
-	return index, objects, err
-}
-
-// regularTarFile accepts the current and historical regular-file type flags.
-func regularTarFile(header *tar.Header) bool {
-	return header.Typeflag == tar.TypeReg || header.Typeflag == 0
-}
-
-// invalidBundle gives all bundle format failures one stable command error.
-func invalidBundle(err error) error {
-	return fault.Wrap("bundle_invalid", "The cache bundle is invalid.", err)
 }

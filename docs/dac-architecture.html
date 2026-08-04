@@ -224,7 +224,7 @@ footer.page a{color:var(--muted)}
     <div class="nav-group">Storage</div>
     <ul>
       <li><a href="#cache">The object cache</a></li>
-      <li><a href="#bundles">Cache bundles</a></li>
+      <li><a href="#dacpacks">dacpacks</a></li>
     </ul>
     <div class="nav-group">Contracts</div>
     <ul>
@@ -253,10 +253,10 @@ footer.page a{color:var(--muted)}
     decisions those follow from.
   </p>
   <div class="chips">
-    <span class="chip on">application v7.0.0</span>
+    <span class="chip on">application v8.0.0</span>
     <span class="chip">schema 2</span>
-    <span class="chip">output 3</span>
-    <span class="chip">bundle 2</span>
+    <span class="chip">output 6</span>
+    <span class="chip">dacpack 1</span>
     <span class="chip">sidecar 1</span>
   </div>
 </div>
@@ -282,7 +282,7 @@ footer.page a{color:var(--muted)}
     <div class="layer">
       <span class="lname">core — defines the ports</span>
       <div class="pills"><span class="pill k">internal/application</span><span class="pill d">Service</span><span class="pill d">ObjectStore</span><span class="pill d">Fetcher</span><span class="pill d">Reporter</span></div>
-      <p class="lnote">Every command lives here as a method on one <code>Service</code>: <code>Add</code>, <code>Pull</code>, <code>Verify</code>, <code>Path</code>, <code>Remove</code>, <code>Init</code>, <code>Info</code>, <code>Export</code>, <code>Import</code>, <code>CacheGC</code>, <code>VerifyCache</code>. Nothing here knows what HTTP is.</p>
+      <p class="lnote">Every command lives here as a method on one <code>Service</code>: <code>Add</code>, <code>Pull</code>, <code>Verify</code>, <code>Path</code>, <code>Remove</code>, <code>Init</code>, <code>Info</code>, <code>Pack</code>, <code>Unpack</code>, <code>Import</code>, <code>CacheGC</code>, <code>VerifyCache</code>. Nothing here knows what HTTP is.</p>
     </div>
     <p class="down">▼</p>
     <div class="layer">
@@ -617,7 +617,7 @@ type RequestDetail interface {
     </li>
     <li>
       <h4>Try the distribution directory</h4>
-      <p>With <code>dac import &lt;dir&gt;</code>, a file named by the locked digest's hexadecimal value is installed straight
+      <p>With <code>dac cache import &lt;dir&gt;</code>, a file named by the locked digest's hexadecimal value is installed straight
       from disk. That name is the only one a consumer can actually check — DAC used to accept the final URL
       element, which was a guess and so could not report a mismatch correctly.</p>
       <span class="out">status: distdir</span>
@@ -1057,7 +1057,7 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
       <tr><td class="mono">dac pull</td><td>Downloads again, installs over it, reports <code>repaired</code>.</td><td>The command that noticed the damage is also the one that can undo it.</td></tr>
       <tr><td class="mono">dac pull --offline</td><td>Fails with <code>cache_object_corrupt</code>.</td><td>Damage to report, and no way to repair it here.</td></tr>
       <tr><td class="mono">dac info</td><td>Prints <code>cache: corrupt</code>.</td><td>Reporting state is its whole job.</td></tr>
-      <tr><td class="mono">dac export</td><td>Refuses.</td><td>A bundle is the one artifact that would carry cache damage onto machines with no way to tell where it came from.</td></tr>
+      <tr><td class="mono">dac pack</td><td>Refuses.</td><td>An archive is the one artifact that would carry cache damage onto machines with no way to tell where it came from.</td></tr>
       <tr><td class="mono">resolve (add / lock)</td><td>Falls through to the origin.</td><td>It was about to fetch anyway; good bytes replace bad ones.</td></tr>
       <tr><td class="mono">dac cache scrub</td><td>Reports and exits 1; <code>--repair</code> removes.</td><td>Finding the damage is not the same as it not being there, so a scripted run gets a nonzero status.</td></tr>
     </tbody>
@@ -1070,23 +1070,33 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
   </p>
 </section>
 
-<section id="bundles">
+<section id="dacpacks">
   <p class="h2-kicker">Storage</p>
-  <h2>Cache bundles</h2>
+  <h2>dacpacks</h2>
 
   <p>
-    A bundle is a tar file borrowing two ideas from the OCI image layout: an <code>index.json</code> at the tar
-    root, and content-addressed blob paths. It does <em>not</em> borrow OCI's manifest indirection, because a
-    cache bundle has nothing to describe that a flat item list cannot.
+    A dacpack is a tar file with an <code>index.json</code> at its root and one file per locked asset,
+    materialized under the name its origin gave it. <code>dac pack</code> writes it;
+    <code>dac cache import</code> and <code>dac unpack</code> read it. There is one archive rather than two
+    because the choice between them had to be made before the file was written, by somebody who could not yet
+    know what the machine receiving it would want to do with it.
+  </p>
+  <p>
+    The archive it replaced was a cache bundle: the same objects under
+    <code>blobs/sha256/&lt;hex&gt;</code>, borrowing the OCI image layout's index and content-addressed blob
+    paths. That layout made the reader's validation free — the only path an item could claim was the one its
+    own digest spelled — and made the file unreadable to anything that was not DAC. What follows is how the
+    property is paid for now that a path carries a name a remote server chose.
   </p>
 
 <div class="codeblock"><div class="codebar"><span class="name">index.json</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "items": [
     {
       "coordinate": "backend-app/geo-database@2026.08",
       "sourceUrl": "https://example.com/geo/2026.08/database.bin",
-      "file": "blobs/sha256/9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820",
+      "file": "assets/backend-app/geo-database/2026.08/database.bin",
+      "filename": "database.bin",
       "digest": "sha256:9c01741d92a2f71fb069201ab22b458b72400a2b884394ff772c4c07fc031820",
       "size": 4194304
     }
@@ -1096,26 +1106,39 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
   <p>
     An item names the asset by its whole coordinate rather than by parts: the parts exist for a consumer
     reading a command result, and an index DAC writes and reads back has no use for three fields that could
-    contradict each other.
+    contradict each other. <code>file</code> and <code>filename</code> are both recorded because they answer
+    different questions — where this is, and what to call it — and a consumer that only wants the name the
+    origin used should not have to parse a path to find it. The coordinate supplies the directories: two
+    versions of one asset almost always share a file name, and two assets easily can, so a layout keyed on the
+    name alone would have the second file silently overwrite the first. Everything sits under
+    <code>assets/</code>, so extracting one cannot scatter files across the directory it was extracted into.
   </p>
 
   <h4>Writing</h4>
   <ul>
     <li>The whole archive is written through a temporary file and one rename, like every other file DAC writes.</li>
-    <li>The index goes first, then each <em>unique</em> blob — two assets that resolved to one object share one blob, which is what makes a bundle for a project vendoring the same file under two namespaces no larger than one that does not.</li>
-    <li>Tar headers are fixed: USTAR format, mode <code>0444</code>, modification time at the Unix epoch. The same object set produces the same bytes.</li>
-    <li>Each blob is hashed <em>while</em> it is written and compared to the locked digest, so a corrupt object is caught during export rather than during import on a machine that cannot fix it.</li>
+    <li>The index goes first, then one file per asset — two coordinates that resolved to one object are one object in the cache and two files here, because each is materialized under its own name and a file cannot be in two places.</li>
+    <li>Tar headers are fixed: USTAR format, mode <code>0444</code>, modification time at the Unix epoch. The same asset set produces the same bytes.</li>
+    <li>Each file is hashed <em>while</em> it is written and compared to the locked digest, so a corrupt object is caught during the pack rather than on a machine that cannot fix it.</li>
     <li>A long copy checks the command context between blocks, so cancellation is prompt.</li>
   </ul>
 
   <h4>Reading</h4>
   <p>
-    <code>import</code> validates the schema version, every coordinate, a non-empty source URL, a non-negative
-    size, and — critically — that each item's <code>file</code> equals the path <em>derived from its own
-    digest</em>. It rejects duplicate coordinates and inconsistent metadata for one file, and it caps the
-    index at 16 MiB. The whole index is validated before a single object is installed, and each object is
-    installed through the same <code>Put</code> path as a download, so it is hashed and checked on the way in.
-    <code>import</code> reads no project files, so one bundle can seed several checkouts.
+    Both readers start at the same index, and it is the first entry, so every destination and every expected
+    digest is known before a single file has been read. Validation covers the schema version, every
+    coordinate, a non-empty source URL, a non-negative size, a well-formed digest, and — critically — that
+    each item's <code>file</code> equals the path <em>derived</em> from its coordinate and file name. It
+    rejects duplicate coordinates and duplicate paths, and it caps the index at 16 MiB. An entry's own name in
+    the archive is a lookup key and never a path: what it finds carries the path DAC computed.
+  </p>
+  <p>
+    <code>dac cache import</code> installs each file through the same <code>Put</code> path as a download, so
+    it is hashed and checked on the way in, and it derives no filesystem path at all — the cache decides where
+    an object lives, from its digest. <code>dac unpack</code> writes files instead, refusing to replace
+    anything without <code>--force</code>, checking containment at the line that touches the filesystem, and
+    taking back everything it created if the archive turns out to be unsound before the end. Neither reads any
+    project files, so one archive can seed several checkouts.
   </p>
 </section>
 
@@ -1389,7 +1412,7 @@ type Error struct {
     <div class="card">
       <span class="tag">compatibility</span>
       <h3>Four version numbers</h3>
-      <p>Application <code>7.0.0</code>, manifest and lock schema <code>2</code>, output contract <code>5</code>, config schema <code>1</code>, bundle schema <code>2</code>, sidecar <code>1</code>. Each moves for its own reasons and each rejects what it does not understand.</p>
+      <p>Application <code>8.0.0</code>, manifest and lock schema <code>2</code>, output contract <code>6</code>, config schema <code>1</code>, dacpack schema <code>1</code>, sidecar <code>1</code>. Each moves for its own reasons and each rejects what it does not understand.</p>
     </div>
   </div>
 

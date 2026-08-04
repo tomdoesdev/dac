@@ -632,7 +632,12 @@ func TestCacheGCRejectsAnInvalidAge(t *testing.T) {
 	}
 }
 
-func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
+// TestPackAndCacheImportMoveObjectsBetweenCaches covers the air-gap round trip.
+// One machine packs what it locked, another installs those objects into its
+// cache and can then answer dac path with no network at all. The archive is the
+// one dac unpack reads, so the machine on the far side of the gap is not
+// required to run DAC to get anything out of it.
+func TestPackAndCacheImportMoveObjectsBetweenCaches(t *testing.T) {
 	content := []byte("portable asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(content)
@@ -643,37 +648,58 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 
-	bundle := filepath.Join(t.TempDir(), "cache.tar")
-	result := runJSON(t, appendArgs(paths.base, "export", bundle))
-	assertSuccess(t, result, "export")
+	archive := filepath.Join(t.TempDir(), "delivery.dacpack")
+	result := runJSON(t, appendArgs(paths.base, "pack", archive))
+	assertSuccess(t, result, "pack")
 	if result.value["data"].(map[string]any)["assetCount"].(float64) != 1 {
-		t.Fatalf("unexpected export: %#v", result.value)
+		t.Fatalf("unexpected pack: %#v", result.value)
 	}
 
-	// A second project starts with a cold cache and receives the bundle.
+	// A second project starts with a cold cache and receives the archive.
 	server.Close()
 	offline := newProject(t)
 	copyInto(t, paths.manifestPath, offline.manifestPath)
 	copyInto(t, paths.lockPath, offline.lockPath)
-	result = runJSON(t, appendArgs(offline.base, "import", bundle))
-	assertSuccess(t, result, "import")
+	result = runJSON(t, appendArgs(offline.base, "cache", "import", archive))
+	assertSuccess(t, result, "cache.import")
 	data := result.value["data"].(map[string]any)
-	if data["itemCount"] != float64(1) || data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
+	if data["source"] != archive || data["itemCount"] != float64(1) ||
+		data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
 		t.Fatalf("unexpected import: %#v", data)
 	}
 	if human := run(t, appendArgs(offline.base, "path", "app/geo@1")); human.status != ExitOK {
-		t.Fatalf("the bundle did not populate the cache: %#v", human)
+		t.Fatalf("the dacpack did not populate the cache: %#v", human)
 	}
 
-	// The bundle path is the argument both halves take, and neither has a
-	// default to fall back on. Leaving it off, naming two, or handing over the
-	// empty string a shell makes from a variable nobody set are all mistakes
-	// rather than requests to guess at a file name.
-	assertError(t, runJSON(t, appendArgs(paths.base, "export")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(paths.base, "export", bundle, "extra")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(paths.base, "export", "  ")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(offline.base, "import")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(offline.base, "import", bundle, "extra")), "invalid_arguments")
+	// The source is an argument and has no default to fall back on. Leaving it
+	// off, naming two, or handing over the empty string a shell makes from a
+	// variable nobody set are all mistakes rather than requests to guess at a
+	// file name.
+	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import", archive, "extra")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import", "  ")), "invalid_arguments")
+}
+
+// TestRetiredArchiveCommandsSayWhereTheyWent covers the two spellings a script
+// written against version 7 has. Answering "that is not a command" would be
+// true and useless: both of them named work DAC still does, under one archive
+// rather than two.
+func TestRetiredArchiveCommandsSayWhereTheyWent(t *testing.T) {
+	base := newProject(t).base
+	for command, replacement := range map[string]string{
+		"import": "dac cache import",
+		"export": "dac pack",
+	} {
+		result := runJSON(t, appendArgs(base, command, "delivery.dacpack"))
+		assertError(t, result, "invalid_arguments")
+		message, _ := result.value["error"].(map[string]any)["message"].(string)
+		if !strings.Contains(message, replacement) {
+			t.Fatalf("dac %s does not point at %s: %q", command, replacement, message)
+		}
+		if result.status != ExitUsage {
+			t.Fatalf("dac %s exited %d, want %d", command, result.status, ExitUsage)
+		}
+	}
 }
 
 // TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory covers the two
@@ -1283,7 +1309,7 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	// path used to return this object, and every script downstream would have
 	// read the wrong bytes without ever being told.
 	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
-	assertError(t, runJSON(t, appendArgs(base, "export", filepath.Join(directory, "bundle.tar"))), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "pack", filepath.Join(directory, "damaged.dacpack"))), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "cache", "scrub")), "cache_object_corrupt")
 
 	info := runJSON(t, appendArgs(base, "info"))

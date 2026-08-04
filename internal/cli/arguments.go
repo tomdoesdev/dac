@@ -169,10 +169,10 @@ func optionalPaths(current *urfave.Command, most int, usage string) ([]string, e
 // requiredPath reads the one positional path a command has no default for.
 //
 // It is optionalPaths with the fallback taken away: same trimming, same refusal
-// of an empty argument, but leaving it off is an error rather than a default. A
-// cache bundle is a thing being moved somewhere and the somewhere is the point
-// of the command, so there is no file DAC could pick unasked -- which is a
-// reason to require the argument, not a reason to spell it as a flag.
+// of an empty argument, but leaving it off is an error rather than a default. An
+// import reads a delivery that arrived from somewhere else, at whatever path
+// whoever delivered it chose, so there is no file DAC could pick unasked --
+// which is a reason to require the argument, not a reason to spell it as a flag.
 func requiredPath(current *urfave.Command, usage string) (string, error) {
 	values := current.Args().Slice()
 	if len(values) != 1 {

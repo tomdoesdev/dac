@@ -1,28 +1,39 @@
 package application
 
-// This file defines the archive that pack writes and unpack reads.
-//
-// A cache bundle and a dacpack carry the same bytes and answer different
-// questions. A bundle is the cache, moved: every file in it is named by its
-// digest, which is what makes import's validation trivial -- the only path an
-// item may claim is the one its digest spells, so nothing an attacker writes in
-// the index can point anywhere else.
+// This file defines the archive that pack writes, and that unpack and cache
+// import read.
 //
 // A dacpack is the project, materialized. Its files are named the way the
 // origins name them, so the archive is useful to something that is not DAC: it
 // can be extracted and read by a tool that switches on an extension, which a
-// directory of sha256 hashes cannot be. That is the whole point, and it is also
-// what costs the free validation, because a name that came from a remote server
-// is now part of a path. Everything below exists to give that path back the
-// property the digest layout got for nothing.
+// directory of sha256 hashes cannot be.
+//
+// DAC used to carry a second archive for its own use. A cache bundle held the
+// same bytes under their digests, and that layout made import's validation
+// free: the only path an item could claim was the one its digest spelled, so
+// nothing written into the index could point anywhere else. It cost two
+// formats, two commands to write them, and an operator choosing between them
+// before knowing which of the two things they wanted the file for -- and the
+// choice was rarely the one they wanted, because a bundle only ever reached
+// another DAC. One archive that both halves read is worth more than a check
+// that came for nothing, so a dacpack is what moves a cache now.
+//
+// The price is that a name that came from a remote server is part of a path.
+// Everything below exists to give that path back the property the digest layout
+// had by construction.
 
 import (
+	"archive/tar"
+	"errors"
 	"fmt"
+	"io"
 	"path"
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
@@ -33,15 +44,19 @@ const (
 	// index is the only thing at the root of the archive and extracting one
 	// cannot scatter files across the directory it was extracted into.
 	packAssetRoot = "assets"
+	// maximumIndexSize bounds the one entry DAC reads into memory. Everything
+	// else in an archive is streamed, so this is the only place a hand-written
+	// file could ask for as much memory as it liked.
+	maximumIndexSize = 16 << 20
 )
 
 // DefaultPackFile is the archive pack writes and unpack reads when a command
 // names none.
 //
-// Export takes a required --file because a cache bundle is a thing you are
-// moving somewhere and the destination is the point. A dacpack is a build
-// output: the common case is one per project, made and consumed by scripts that
-// should not each invent a spelling for it.
+// A dacpack is a build output: the common case is one per project, made and
+// consumed by scripts that should not each invent a spelling for it. Import
+// takes no default, because a pack it reads arrived from somewhere else and was
+// put down wherever whoever delivered it chose.
 const DefaultPackFile = "dac.dacpack"
 
 // PackItem describes one materialized file in a dacpack.
@@ -88,11 +103,12 @@ func packFileName(name coord.Coordinate, locked project.LockAsset) string {
 
 // packFilePath returns the only path a dacpack may carry one asset at.
 //
-// This is the dacpack's answer to bundleBlobPath, and it is doing the same job:
-// the path is derived, never taken. Unpack recomputes it from the coordinate
+// The path is derived, never taken. A reader recomputes it from the coordinate
 // and the name in the index and refuses an item that claims anything else, so a
 // hand-written index naming "../../../etc/cron.d/root" is rejected before
-// anything reads the file, not after.
+// anything reads the file, not after. That is the property a digest layout had
+// by construction, since the only path an item could claim was the one its
+// digest spelled.
 //
 // The coordinate supplies the directories because it is unique by definition
 // and coord has already checked that all three of its parts are single path
@@ -125,10 +141,11 @@ type packTarget struct {
 
 // validatePackIndex checks item metadata and returns what belongs at each path.
 //
-// It returns a map keyed by path rather than the set of distinct objects a
-// bundle returns. A dacpack materializes each asset separately, so two
-// coordinates that resolved to the same bytes appear as two files with two
-// paths and one digest, and the reader needs to know what to expect at each.
+// It is keyed by path rather than by object. A dacpack materializes each asset
+// separately, so two coordinates that resolved to the same bytes appear as two
+// files with two paths and one digest, and both readers need to know what to
+// expect at each -- unpack to write it, import to check it before the cache
+// takes it.
 func validatePackIndex(index packIndex) (map[string]packTarget, error) {
 	if index.SchemaVersion != packSchemaVersion {
 		return nil, fmt.Errorf("unsupported dacpack schema version %d", index.SchemaVersion)
@@ -178,4 +195,43 @@ func validatePackIndex(index packIndex) (map[string]packTarget, error) {
 		}
 	}
 	return targets, nil
+}
+
+// readPackIndex reads and checks the first tar entry.
+//
+// Both readers start here, because both have to know what the archive claims
+// before the first file arrives: unpack to know where a file may be written and
+// import to know what bytes it must turn out to be. Reading it any later would
+// mean buffering the archive to find out.
+func readPackIndex(reader *tar.Reader) (packIndex, map[string]packTarget, error) {
+	header, err := reader.Next()
+	if err != nil {
+		return packIndex{}, nil, err
+	}
+	if header.Name != packIndexPath || !regularTarFile(header) {
+		return packIndex{}, nil, errors.New("the first dacpack entry must be a regular index.json file")
+	}
+	if header.Size > maximumIndexSize {
+		return packIndex{}, nil, fmt.Errorf("dacpack index is larger than %d bytes", maximumIndexSize)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return packIndex{}, nil, err
+	}
+	var index packIndex
+	if err := jsonfile.DecodeStrict(data, &index); err != nil {
+		return packIndex{}, nil, err
+	}
+	targets, err := validatePackIndex(index)
+	return index, targets, err
+}
+
+// regularTarFile accepts the current and historical regular-file type flags.
+func regularTarFile(header *tar.Header) bool {
+	return header.Typeflag == tar.TypeReg || header.Typeflag == 0
+}
+
+// invalidPack gives all dacpack format failures one stable command error.
+func invalidPack(err error) error {
+	return fault.Wrap("dacpack_invalid", "The dacpack is invalid.", err)
 }

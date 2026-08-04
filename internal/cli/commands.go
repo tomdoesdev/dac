@@ -92,76 +92,13 @@ func (runner *runner) pathCommand() *urfave.Command {
 	}
 }
 
-// exportCommand builds the cache bundle export command.
+// packCommand builds the archive command.
 //
-// The bundle is a required argument rather than a required flag. A required
-// flag is a flag in name only: an export is "write this cache to here", and the
-// destination is half of what the command says rather than a setting attached
-// to it. That the path has no default is why it is required; it is not a reason
-// to make every script that writes a bundle spell --file first.
-func (runner *runner) exportCommand() *urfave.Command {
-	return &urfave.Command{
-		Name:      "export",
-		Usage:     "Write locked objects to a cache bundle.",
-		ArgsUsage: "<bundle>",
-		Action: runner.run("export", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			bundle, err := requiredPath(current, "Specify one bundle path to write, as <bundle>.")
-			if err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
-			result, err := service.Export(ctx, bundle)
-			if err != nil {
-				return nil, "", err
-			}
-			return result, fmt.Sprintf("Exported %s (%s).", plural(result.AssetCount, "asset"), bytesize.Format(result.ByteCount)), nil
-		}),
-	}
-}
-
-// importCommand builds the local cache import command.
-//
-// It takes the source as an argument for the same reason export does, and the
-// pair reads as one round trip because both spell it the same way.
-//
-// It accepts a directory as well as a bundle. Both are the same delivery in
-// different wrappers -- objects named by digest, in a tar or loose on a mounted
-// share -- and having a command for one and a flag on pull for the other meant
-// two ways to say the same thing, in two places, that could not be told apart
-// by reading either.
-func (runner *runner) importCommand() *urfave.Command {
-	return &urfave.Command{
-		Name:      "import",
-		Usage:     "Install objects from a cache bundle or a directory of digest-named files.",
-		ArgsUsage: "<bundle|directory>",
-		Action: runner.run("import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			bundle, err := requiredPath(current, "Specify one bundle or directory path to read, as <bundle|directory>.")
-			if err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
-			result, err := service.Import(ctx, bundle)
-			if err != nil {
-				return nil, "", err
-			}
-			return result, fmt.Sprintf("Imported %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
-		}),
-	}
-}
-
-// packCommand builds the materialized archive command.
-//
-// The archive is an optional argument rather than a required flag, which is the
-// one way this differs from export at the command line. A cache bundle is a
-// thing you are moving somewhere and the destination is the point of writing
-// it; a dacpack is a build output a project makes one of, and a required flag
-// would have every script that touches one invent a spelling for the same file.
+// The archive is an optional argument rather than a required flag. A dacpack is
+// a build output a project makes one of, so it has a default worth having, and
+// a required flag would make every script that touches one invent a spelling
+// for the same file. Whether a path has a default and whether it is a flag are
+// separate questions: a required flag is a flag in name only.
 func (runner *runner) packCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "pack",
@@ -188,11 +125,12 @@ func (runner *runner) packCommand() *urfave.Command {
 
 // unpackCommand builds the materialization command.
 //
-// It writes files and never touches the cache, so it needs no cache directory
-// and reads no project files -- it runs anywhere the archive does. The
-// destination defaults to the working directory, which is why --force exists:
-// replacing files somebody is standing in the middle of is not something to do
-// because an archive said so.
+// It writes files and never touches the cache, which is what separates it from
+// dac cache import: the two read the same archive and disagree about where the
+// bytes belong. So it needs no cache directory and reads no project files -- it
+// runs anywhere the archive does. The destination defaults to the working
+// directory, which is why --force exists: replacing files somebody is standing
+// in the middle of is not something to do because an archive said so.
 func (runner *runner) unpackCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "unpack",

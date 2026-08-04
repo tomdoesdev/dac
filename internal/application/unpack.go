@@ -16,7 +16,6 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
 // UnpackOptions controls one materialization.
@@ -57,9 +56,10 @@ type UnpackResult struct {
 // Unpack writes the assets a dacpack carries into a directory.
 //
 // It never touches the cache. That is the whole difference between this and
-// import: a cache bundle is how DAC moves objects to another DAC, and a dacpack
-// is how a project hands its assets to something that is not DAC at all. What
-// comes out is a tree of real files with real names, which is the thing the
+// cache import, which reads the same archive and installs the same bytes under
+// their digests: one hands a project's assets to something that is not DAC at
+// all, and the other moves a cache to another machine that runs it. What comes
+// out here is a tree of real files with real names, which is the thing the
 // cache cannot be -- a cache path is a digest, and nothing that reads an
 // extension can use one.
 //
@@ -375,33 +375,4 @@ func writeMaterializedFile(ctx context.Context, target string, source io.Reader,
 		return err
 	}
 	return os.Rename(temporaryPath, target)
-}
-
-// readPackIndex reads and checks the first tar entry.
-func readPackIndex(reader *tar.Reader) (packIndex, map[string]packTarget, error) {
-	header, err := reader.Next()
-	if err != nil {
-		return packIndex{}, nil, err
-	}
-	if header.Name != packIndexPath || !regularTarFile(header) {
-		return packIndex{}, nil, errors.New("the first dacpack entry must be a regular index.json file")
-	}
-	if header.Size > maximumIndexSize {
-		return packIndex{}, nil, fmt.Errorf("dacpack index is larger than %d bytes", maximumIndexSize)
-	}
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return packIndex{}, nil, err
-	}
-	var index packIndex
-	if err := jsonfile.DecodeStrict(data, &index); err != nil {
-		return packIndex{}, nil, err
-	}
-	targets, err := validatePackIndex(index)
-	return index, targets, err
-}
-
-// invalidPack gives all dacpack format failures one stable command error.
-func invalidPack(err error) error {
-	return fault.Wrap("dacpack_invalid", "The dacpack is invalid.", err)
 }

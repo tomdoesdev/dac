@@ -12,7 +12,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
-const Version = "7.0.0"
+const Version = "8.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {

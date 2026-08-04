@@ -1,12 +1,10 @@
 package application_test
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -836,7 +834,7 @@ func warm(t *testing.T, store *fakeStore, content []byte) {
 	}
 }
 
-// warmStore installs content into a real cache, which Export needs because it
+// warmStore installs content into a real cache, which Pack needs because it
 // copies the object out of the filesystem.
 func warmStore(t *testing.T, store *cache.Store, content []byte) {
 	t.Helper()
@@ -863,10 +861,10 @@ func writeDist(t *testing.T, directory, name string, content []byte) {
 	}
 }
 
-// A distribution directory is a cache bundle with the tar taken off: the same
-// objects under the same digest names. Import reads both, so the cold-cache
-// path for an isolated machine is one command rather than a command and a flag
-// on an unrelated one.
+// A distribution directory is the cache with the archive taken off: objects
+// under the digest names that are the only names a consumer can check. Import
+// reads it as well as a dacpack, so the cold-cache path for an isolated machine
+// is one command rather than a command and a flag on an unrelated one.
 func TestImportInstallsFromADistributionDirectory(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -942,86 +940,29 @@ func TestImportAcceptsAnEmptyDirectory(t *testing.T) {
 	}
 }
 
-func TestExportWritesAnIndexedCacheBundle(t *testing.T) {
+// TestImportInstallsAPackedProject is the round trip DAC exists to support: a
+// machine with network access packs what it locked, and a machine with none
+// installs those objects into its cache. It used to take an archive of its own,
+// which meant the file that could cross an air gap was one only another DAC
+// could read.
+func TestImportInstallsAPackedProject(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	store := cache.New(t.TempDir())
-	warmStore(t, store, content)
-	service := application.New(manifestPath, lockPath, store, nil, nil)
-
-	bundle := filepath.Join(t.TempDir(), "cache.tar")
-	result, err := service.Export(context.Background(), bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Bundle != bundle || result.AssetCount != 1 || result.ByteCount != int64(len(content)) {
-		t.Fatalf("unexpected export result: %#v", result)
-	}
-	file, err := os.Open(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = file.Close() }()
-	reader := tar.NewReader(file)
-	header, err := reader.Next()
-	if err != nil || header.Name != "index.json" {
-		t.Fatalf("unexpected index header: %#v %v", header, err)
-	}
-	var index struct {
-		SchemaVersion int `json:"schemaVersion"`
-		Items         []struct {
-			Coordinate string `json:"coordinate"`
-			SourceURL  string `json:"sourceUrl"`
-			File       string `json:"file"`
-			Digest     string `json:"digest"`
-			Size       int64  `json:"size"`
-		} `json:"items"`
-	}
-	if err := json.NewDecoder(reader).Decode(&index); err != nil {
-		t.Fatal(err)
-	}
-	value := digest.Bytes(content)
-	expectedFile := "blobs/sha256/" + strings.TrimPrefix(value, digest.Prefix)
-	if index.SchemaVersion != 2 || len(index.Items) != 1 {
-		t.Fatalf("unexpected index: %#v", index)
-	}
-	item := index.Items[0]
-	if item.Coordinate != "test/asset@1" || item.SourceURL != "https://example.com/asset" ||
-		item.File != expectedFile || item.Digest != value || item.Size != int64(len(content)) {
-		t.Fatalf("unexpected bundle item: %#v", item)
-	}
-	header, err = reader.Next()
-	if err != nil || header.Name != expectedFile {
-		t.Fatalf("unexpected blob header: %#v %v", header, err)
-	}
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(data, content) {
-		t.Fatalf("exported %q, want %q", data, content)
-	}
-	if _, err := reader.Next(); !errors.Is(err, io.EOF) {
-		t.Fatalf("unexpected final tar entry: %v", err)
-	}
-}
-
-func TestImportInstallsAnExportedCacheBundle(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	exportStore := cache.New(t.TempDir())
-	warmStore(t, exportStore, content)
-	bundle := filepath.Join(t.TempDir(), "cache.tar")
-	if _, err := application.New(manifestPath, lockPath, exportStore, nil, nil).Export(context.Background(), bundle); err != nil {
+	packStore := cache.New(t.TempDir())
+	warmStore(t, packStore, content)
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
 		t.Fatal(err)
 	}
 
+	// No project paths: an import reads the archive and the cache, and nothing
+	// about the machine it lands on has to describe the project it came from.
 	importStore := cache.New(t.TempDir())
-	result, err := application.New("", "", importStore, nil, nil).Import(context.Background(), bundle)
+	result, err := application.New("", "", importStore, nil, nil).Import(context.Background(), archive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Bundle != bundle || result.ItemCount != 1 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
+	if result.Source != archive || result.ItemCount != 1 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
 		t.Fatalf("unexpected import result: %#v", result)
 	}
 	object, found, err := importStore.Stat(digest.Bytes(content))
@@ -1030,37 +971,94 @@ func TestImportInstallsAnExportedCacheBundle(t *testing.T) {
 	}
 }
 
-func TestImportRejectsBlobContentThatDoesNotMatchTheIndex(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	exportStore := cache.New(t.TempDir())
-	warmStore(t, exportStore, content)
-	bundle := filepath.Join(t.TempDir(), "cache.tar")
-	if _, err := application.New(manifestPath, lockPath, exportStore, nil, nil).Export(context.Background(), bundle); err != nil {
-		t.Fatal(err)
-	}
-	data := projecttest.MustRead(t, bundle)
-	position := bytes.Index(data, content)
-	if position < 0 {
-		t.Fatal("the bundle does not contain the object")
-	}
-	copy(data[position:position+len(content)], []byte("other bytes"))
-	if err := os.WriteFile(bundle, data, 0o644); err != nil {
+// TestImportCountsSharedBytesOnce covers what a dacpack costs this half. Two
+// coordinates that resolved to one object are materialized under their own
+// names, so they arrive as two files, and the cache holds one object either
+// way. The count reports what the cache gained rather than what the archive
+// carried.
+func TestImportCountsSharedBytesOnce(t *testing.T) {
+	content := []byte("shared asset bytes")
+	value := digest.Bytes(content)
+	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
+		coord.MustParse("app/first@1"): {
+			URL: "https://example.com/shared.bin", Digest: value,
+			Size: int64(len(content)), Filename: "shared.bin",
+		},
+		coord.MustParse("app/second@1"): {
+			URL: "https://example.com/shared.bin", Digest: value,
+			Size: int64(len(content)), Filename: "shared.bin",
+		},
+	})
+	packStore := cache.New(t.TempDir())
+	warmStore(t, packStore, content)
+	archive := filepath.Join(t.TempDir(), "shared.dacpack")
+	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), bundle)
-	if fault.As(err).Code != "bundle_invalid" {
-		t.Fatalf("expected bundle_invalid, got %v", err)
+	result, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ItemCount != 2 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
+		t.Fatalf("unexpected import result: %#v", result)
 	}
 }
 
-func TestExportRequiresACompleteCache(t *testing.T) {
-	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, cache.New(t.TempDir()), nil, nil)
-	_, err := service.Export(context.Background(), filepath.Join(t.TempDir(), "bundle.tar"))
-	if fault.As(err).Code != "cache_object_invalid" {
-		t.Fatalf("expected cache_object_invalid, got %v", err)
+func TestImportRejectsPackContentThatDoesNotMatchTheIndex(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	packStore := cache.New(t.TempDir())
+	warmStore(t, packStore, content)
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
+		t.Fatal(err)
+	}
+	data := projecttest.MustRead(t, archive)
+	position := bytes.Index(data, content)
+	if position < 0 {
+		t.Fatal("the dacpack does not contain the object")
+	}
+	copy(data[position:position+len(content)], []byte("other bytes"))
+	if err := os.WriteFile(archive, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := cache.New(t.TempDir())
+	_, err := application.New("", "", store, nil, nil).Import(context.Background(), archive)
+	if code := fault.As(err).Code; code != "dacpack_invalid" {
+		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
+	}
+	// The bytes never became an object. An import that left what it refused in
+	// the cache would hand the next command the damage it just rejected.
+	if _, found, err := store.Stat(digest.Bytes(content)); found || err != nil {
+		t.Fatalf("the refused object reached the cache: %t %v", found, err)
+	}
+}
+
+// TestImportRefusesAnIndexItDidNotDerive is the check a digest layout gave for
+// free. Import writes nothing at a path an archive names -- the cache decides
+// where an object lives -- but it still validates the index that unpack derives
+// its paths from, so a hostile dacpack is refused by whichever half reads it
+// rather than only by the half that writes files.
+func TestImportRefusesAnIndexItDidNotDerive(t *testing.T) {
+	content := []byte("evil payload")
+	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
+	writePackArchive(t, archive, map[string]any{
+		"schemaVersion": 1,
+		"items": []any{map[string]any{
+			"coordinate": "app/evil@1",
+			"sourceUrl":  "https://evil.example.com/x",
+			"file":       "../../../etc/cron.d/root",
+			"filename":   "x.bin",
+			"digest":     digest.Bytes(content),
+			"size":       len(content),
+		}},
+	}, [][2]any{{"../../../etc/cron.d/root", content}})
+
+	_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), archive)
+	if code := fault.As(err).Code; code != "dacpack_invalid" {
+		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
 	}
 }
 
@@ -1274,11 +1272,15 @@ func TestInfoReportsACorruptObject(t *testing.T) {
 	}
 }
 
-func TestExportRefusesACorruptObject(t *testing.T) {
+// TestPackRefusesACorruptObject keeps damage on the machine that has it. An
+// archive is the one artifact that carries a bad object onto a machine with no
+// way to tell where it came from, and the receiving DAC would install bytes
+// that match the digest the archive claims for them.
+func TestPackRefusesACorruptObject(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	_, err := service.Export(context.Background(), t.TempDir())
+	_, err := service.Pack(context.Background(), filepath.Join(t.TempDir(), "project.dacpack"))
 	if code := fault.As(err).Code; code != "cache_object_corrupt" {
 		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
 	}
