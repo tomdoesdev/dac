@@ -161,7 +161,14 @@ func (service *Service) Path(selection Selection) (PathResult, error) {
 // GCOptions controls one cache collection.
 type GCOptions struct {
 	MaxAge time.Duration
-	DryRun bool
+	// MaxSize bounds what the cache may hold once collection has run. Zero
+	// leaves it unbounded, which is what a cache collected only by age is.
+	//
+	// It is a bound on collection rather than a quota: nothing stands between a
+	// download and the disk, so a single pull larger than the bound still
+	// lands, and the next collection brings the cache back under.
+	MaxSize int64
+	DryRun  bool
 	// All removes every object regardless of age. It backs cache clear, which
 	// exists because the way to empty a cache used to be a collection with an
 	// age short enough that everything fell outside it -- a spelling that meant
@@ -177,7 +184,17 @@ type GCResult struct {
 	ByteCount    int64    `json:"byteCount"`
 	TempCount    int      `json:"tempCount"`
 	SidecarCount int      `json:"sidecarCount"`
-	DryRun       bool     `json:"dryRun"`
+	// EvictedCount and EvictedBytes are the part of the removal that a size
+	// bound forced rather than age, and they are counted apart because only one
+	// of the two is worth acting on. Collecting an object nothing has touched
+	// in a month is a cache doing its job. Evicting one a project used
+	// yesterday is a cache too small for what this machine builds, and the next
+	// command pays to download it again.
+	//
+	// They are included in ObjectCount and ByteCount, which stay the total.
+	EvictedCount int   `json:"evictedCount"`
+	EvictedBytes int64 `json:"evictedBytes"`
+	DryRun       bool  `json:"dryRun"`
 }
 
 // ConfigPathResult reports the config files one run read, most important first.

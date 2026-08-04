@@ -450,6 +450,7 @@ progress = false
 [cache]
 dir = "/var/cache/dac"
 max-age = "2w"
+max-size = "20GiB"
 
 [credentials]
 default = "site-helper"
@@ -466,7 +467,8 @@ default = "site-helper"
 	if first.Timeout != second.Timeout || first.Retries != second.Retries ||
 		first.Concurrency != second.Concurrency || first.DownloadParts != second.DownloadParts ||
 		first.MaxSize != second.MaxSize || first.Progress != second.Progress ||
-		first.CacheDir != second.CacheDir || first.MaxAge != second.MaxAge {
+		first.CacheDir != second.CacheDir || first.MaxAge != second.MaxAge ||
+		first.CacheMaxSize != second.CacheMaxSize {
 		t.Fatalf("settings changed across a round trip:\n%s\nfirst=%+v\nsecond=%+v", first.TOML(), first, second)
 	}
 	if len(first.Credentials) != len(second.Credentials) {
@@ -489,7 +491,8 @@ func TestTOMLRoundTripsTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := load(t, rendered)
-	if first.Timeout != second.Timeout || first.MaxSize != second.MaxSize || first.MaxAge != second.MaxAge {
+	if first.Timeout != second.Timeout || first.MaxSize != second.MaxSize || first.MaxAge != second.MaxAge ||
+		first.CacheMaxSize != second.CacheMaxSize {
 		t.Fatalf("the defaults changed across a round trip:\n%s", first.TOML())
 	}
 }
@@ -520,6 +523,42 @@ func TestFormatDuration(t *testing.T) {
 		}
 		if back != test.value {
 			t.Errorf("FormatDuration(%v) round-tripped to %v", test.value, back)
+		}
+	}
+}
+
+// TestCacheMaxSize covers the bound a collection leaves the cache inside.
+//
+// Its default is the word that removes it, because a cache nobody bounded is
+// unbounded: a size that started out set would delete objects on machines whose
+// operators never asked for a bound.
+func TestCacheMaxSize(t *testing.T) {
+	isolate(t)
+	if value := load(t, "").CacheMaxSize; value != 0 {
+		t.Fatalf("the default cache bound is %d, want none", value)
+	}
+
+	userHome, _ := isolate(t)
+	write(t, userHome, "[cache]\nmax-size = \"20GiB\"\n")
+	if value := load(t, "").CacheMaxSize; value != 20<<30 {
+		t.Fatalf("cache.max-size is %d, want 20GiB", value)
+	}
+
+	userHome, _ = isolate(t)
+	write(t, userHome, "[cache]\nmax-size = \"none\"\n")
+	if value := load(t, "").CacheMaxSize; value != 0 {
+		t.Fatalf("an explicit none is %d, want no bound", value)
+	}
+
+	// The values that mean nothing in particular are refused here for the same
+	// reason transfer.max-size refuses them: both are what a shell produces
+	// from a variable nobody set, and neither should be read as switching a
+	// bound off by accident.
+	for _, value := range []string{"0", "", "banana", "-1GiB"} {
+		userHome, _ = isolate(t)
+		write(t, userHome, "[cache]\nmax-size = \""+value+"\"\n")
+		if _, err := config.Load(""); err == nil {
+			t.Fatalf("cache.max-size %q was accepted", value)
 		}
 	}
 }

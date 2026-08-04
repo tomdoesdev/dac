@@ -110,7 +110,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
-| `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
+| `dac cache gc [--max-age <age>] [--max-size <size>] [--dry-run]` | Remove cache objects that nothing has used recently, then evict until the cache fits. |
 | `dac cache clear [--dry-run]` | Remove every cache object. |
 | `dac cache remove <coordinate>... [--force]` | Remove the objects specific asset versions resolved to. |
 | `dac cache scrub [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
@@ -395,8 +395,9 @@ max-size       = "2GiB"    # or "none"
 progress       = true
 
 [cache]
-dir     = "/var/cache/dac"  # absolute; unset means the XDG cache
-max-age = "30d"             # the default dac cache gc collects by
+dir      = "/var/cache/dac"  # absolute; unset means the XDG cache
+max-age  = "30d"             # the default dac cache gc collects by
+max-size = "20GiB"           # or "none"; what dac cache gc leaves behind
 
 [credentials]
 default             = "/usr/local/bin/dac-cred"
@@ -720,6 +721,7 @@ dac cache dir                        # where it is
 dac cache list                       # what this project has in it
 dac cache list --all                 # everything, with sizes and last use
 dac cache gc                         # collect by age
+dac cache gc --max-size 20GiB        # and evict until it fits
 dac cache clear                      # empty it
 dac cache remove app/geo@2026.08     # forget one asset's bytes
 dac cache scrub --all                # read every byte and check it
@@ -757,6 +759,44 @@ DAC process running alongside.
 
 Neither one removes a digest lock file. Unlinking a lock that another process
 holds would let a later process take the same lock through a new inode.
+
+### Keeping the cache to a size
+
+Age answers whether anything is still using an object. It does not answer
+whether there is room, and on a build machine that is the question: a set of
+projects that genuinely uses more than the disk has to spare has nothing old
+enough to collect and is still too full. The only lever used to be guessing an
+age short enough to hurt.
+
+`--max-size`, or `cache.max-size` in the config file, is the other half. A
+collection first removes what nothing has used within `--max-age`, and then, if
+the cache is still over the bound, evicts the least recently used objects until
+it fits:
+
+```bash
+dac cache gc --max-size 20GiB --dry-run    # what it would take
+dac cache gc --max-size 20GiB
+```
+
+It accepts the same sizes `transfer.max-size` does, and `none` — the default —
+means no bound, which is what collection by age alone amounts to.
+
+Eviction is reported apart from collection, in `evictedCount` and
+`evictedBytes` and in the summary line, because the two mean different things.
+Taking an object nothing has touched in a month is a cache doing its job.
+Taking one a project used yesterday is a cache too small for what this machine
+builds, and the next `dac pull` downloads it again. Both counts are included in
+the totals beside them.
+
+An object something reaches for while the collection is waiting for its digest
+lock is left alone: it has just become the most recently used thing in the
+cache rather than the least. That can end a run still over the bound, which the
+next collection settles.
+
+This is a bound on collection rather than a quota on the cache. Nothing stands
+between a download and the disk, so a single `dac pull` larger than the bound
+still lands, and `gc` brings the cache back under afterwards. Set the bound
+below the disk you have rather than at it.
 
 ### Cache bundles
 

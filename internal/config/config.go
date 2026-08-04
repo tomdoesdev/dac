@@ -61,6 +61,10 @@ const (
 	DefaultDownloadParts = 4
 	DefaultMaxSize       = "2GiB"
 	DefaultMaxAge        = "30d"
+	// A cache nobody bounded is unbounded. Collection by age is the policy DAC
+	// has always had, and a size that started out set would delete objects on
+	// machines whose operators never asked for a bound.
+	DefaultCacheMaxSize = NoSizeLimit
 )
 
 // DefaultSource is the source name reported for a value no file supplied.
@@ -78,6 +82,9 @@ type Config struct {
 	Progress bool
 	CacheDir string
 	MaxAge   time.Duration
+	// CacheMaxSize bounds what the cache holds after a collection. Zero means
+	// no bound, which is what collection by age alone amounts to.
+	CacheMaxSize int64
 	// Credentials holds helper specifications in the form credential.New
 	// takes: "<command>" for every host, "<host>=<command>" for one.
 	Credentials []string
@@ -194,8 +201,9 @@ type fileTransfer struct {
 }
 
 type fileCache struct {
-	Dir    *string `toml:"dir"`
-	MaxAge *string `toml:"max-age"`
+	Dir     *string `toml:"dir"`
+	MaxAge  *string `toml:"max-age"`
+	MaxSize *string `toml:"max-size"`
 }
 
 type fileRewrite struct {
@@ -280,6 +288,7 @@ func merge(files []*file) (*Config, error) {
 	progress := setting[bool]{name: "transfer.progress"}
 	cacheDir := setting[string]{name: "cache.dir"}
 	maxAge := setting[string]{name: "cache.max-age"}
+	cacheMaxSize := setting[string]{name: "cache.max-size"}
 
 	credentials := map[string]string{}
 	credentialSource := ""
@@ -297,6 +306,7 @@ func merge(files []*file) (*Config, error) {
 		progress.take(data.Transfer.Progress, parsed.path)
 		cacheDir.take(data.Cache.Dir, parsed.path)
 		maxAge.take(data.Cache.MaxAge, parsed.path)
+		cacheMaxSize.take(data.Cache.MaxSize, parsed.path)
 
 		for host, command := range data.Credentials {
 			if _, exists := credentials[host]; exists {
@@ -328,6 +338,9 @@ func merge(files []*file) (*Config, error) {
 		return nil, err
 	}
 	if config.MaxAge, err = converted(config, maxAge, DefaultMaxAge, ParseDuration); err != nil {
+		return nil, err
+	}
+	if config.CacheMaxSize, err = converted(config, cacheMaxSize, DefaultCacheMaxSize, ParseSize); err != nil {
 		return nil, err
 	}
 	if err := config.validate(); err != nil {
@@ -484,10 +497,11 @@ func (config *Config) Settings() []Setting {
 		{"transfer.retries", strconv.Itoa(config.Retries)},
 		{"transfer.concurrency", strconv.Itoa(config.Concurrency)},
 		{"transfer.download-parts", strconv.Itoa(config.DownloadParts)},
-		{"transfer.max-size", config.sizeText()},
+		{"transfer.max-size", sizeText(config.MaxSize)},
 		{"transfer.progress", strconv.FormatBool(config.Progress)},
 		{"cache.dir", config.CacheDir},
 		{"cache.max-age", FormatDuration(config.MaxAge)},
+		{"cache.max-size", sizeText(config.CacheMaxSize)},
 	}
 	settings := make([]Setting, 0, len(keys)+1)
 	for _, key := range keys {
@@ -501,11 +515,13 @@ func (config *Config) Settings() []Setting {
 	return settings
 }
 
-func (config *Config) sizeText() string {
-	if config.MaxSize == 0 {
+// sizeText writes a byte bound the way a config file would, where the value
+// that removes the bound is a word rather than a zero.
+func sizeText(value int64) string {
+	if value == 0 {
 		return NoSizeLimit
 	}
-	return bytesize.Format(config.MaxSize)
+	return bytesize.Format(value)
 }
 
 // FormatDuration writes a duration the way a config file would.
@@ -562,7 +578,7 @@ func (config *Config) TOML() string {
 		switch setting.Key {
 		case "transfer.retries", "transfer.concurrency", "transfer.download-parts", "transfer.progress":
 			_, _ = fmt.Fprintf(&text, "%s = %s  # %s\n", key, setting.Value, setting.Source)
-		case "transfer.timeout", "transfer.max-size", "cache.max-age":
+		case "transfer.timeout", "transfer.max-size", "cache.max-age", "cache.max-size":
 			_, _ = fmt.Fprintf(&text, "%s = %q  # %s\n", key, setting.Value, setting.Source)
 		}
 	}
