@@ -83,6 +83,29 @@ func TestPackDestinationRefusesAnythingOutsideTheDirectory(t *testing.T) {
 	}
 }
 
+// TestFlatDestinationRefusesAnythingThatIsNotAFileName is the same check for
+// the layout that has no directories to anchor it. A flat unpack's whole path
+// is a name a remote server chose, so the one thing standing between that name
+// and the destination is that it has to be a name.
+func TestFlatDestinationRefusesAnythingThatIsNotAFileName(t *testing.T) {
+	directory := t.TempDir()
+	inside, err := flatDestination(directory, "geo.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(directory, "geo.bin"); inside != want {
+		t.Fatalf("flatDestination returned %q, want %q", inside, want)
+	}
+	for _, name := range []string{
+		"", "   ", ".", "..", "../escape", "a/b", `a\b`, "/etc/passwd",
+		"-rf", "with\x00null", strings.Repeat("a", 256),
+	} {
+		if got, err := flatDestination(directory, name); err == nil {
+			t.Errorf("flatDestination accepted %q as %q", name, got)
+		}
+	}
+}
+
 // TestValidatePackIndexKeysOnTheDerivedPath is what makes an archive entry's
 // name a lookup key rather than a destination. The map an entry is matched
 // against is built from paths DAC computed, so a name that finds something has

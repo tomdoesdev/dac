@@ -17,16 +17,16 @@ import (
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/filename"
 )
 
 // UnpackOptions controls one materialization.
 type UnpackOptions struct {
 	// Pack is the archive to read.
 	Pack string
-	// Directory is where the files go. Every file in the archive is written at
-	// the same path beneath it, so the mapping from archive to disk is the
-	// identity and the paths the index was already checked against are the paths
-	// that reach the filesystem.
+	// Directory is where the files go. Each asset is written directly into it,
+	// under the name its origin gave it, so what comes out is the files
+	// themselves rather than a tree to go looking through them in.
 	Directory string
 	// Assets narrows the unpack to the coordinates these selections name. An
 	// empty list is every asset the archive carries.
@@ -37,6 +37,15 @@ type UnpackOptions struct {
 	// materialize twenty files and delete nineteen, in a directory the command
 	// defaults to the one it was run in.
 	Assets []Selection
+	// Tree writes each file at the path it has inside the archive --
+	// assets/<namespace>/<name>/<version>/<file> -- rather than directly into
+	// the destination.
+	//
+	// It is what a whole-project unpack needs when two assets share a file name,
+	// since flat they would land on one path and the unpack is refused. Nothing
+	// else can materialize such an archive with its digests checked: tar puts
+	// the files in the same places and checks nothing.
+	Tree bool
 	// Force replaces files that are already there. Without it an unpack that
 	// would overwrite anything writes nothing at all: the default directory is
 	// wherever the command was run, and a mistake there costs work that was not
@@ -74,9 +83,18 @@ type UnpackResult struct {
 // cache import, which reads the same archive and installs the same bytes under
 // their digests: one hands a project's assets to something that is not DAC at
 // all, and the other moves a cache to another machine that runs it. What comes
-// out here is a tree of real files with real names, which is the thing the
-// cache cannot be -- a cache path is a digest, and nothing that reads an
-// extension can use one.
+// out here is real files with real names, which is the thing the cache cannot
+// be -- a cache path is a digest, and nothing that reads an extension can use
+// one.
+//
+// The files land in the destination directory and nowhere below it. An archive
+// carries each one under the coordinate it belongs to, because two assets can
+// share a name and the archive has to keep them apart, but that layout is a
+// property of the container rather than of the assets: what somebody unpacking
+// wants is the file, and making them walk four directories to reach it is the
+// container's problem leaking out. Tree puts the layout back for the archive
+// that needs it, and a name two assets would land on is refused rather than
+// resolved -- see checkPackNames.
 //
 // It reads no project files and needs no cache directory, so it runs anywhere
 // the archive does.
@@ -90,12 +108,12 @@ type UnpackResult struct {
 // whoever asks for them, and reading them here would cost the narrowing its
 // point.
 //
-// Every path in the archive came from a name a remote server chose, so none of
-// them are trusted. Each is recomputed from the coordinate it belongs to before
-// anything is read, an index that claims a different one is rejected, and the
-// path that reaches the filesystem is the one DAC derived rather than the one
-// the archive carried. An entry's own name is a key for finding that, never a
-// place to write.
+// Every name in the archive came from a remote server, so none of them are
+// trusted. Each path is recomputed from the coordinate it belongs to before
+// anything is read, an index that claims a different one is rejected, and what
+// reaches the filesystem is derived rather than taken: the archive's own path
+// under --tree, and a file name filename.Clean vouched for otherwise. An
+// entry's name is a key for finding that, never a place to write.
 func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (UnpackResult, error) {
 	absolutePack, err := filepath.Abs(options.Pack)
 	if err != nil {
@@ -124,10 +142,18 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 	if err != nil {
 		return UnpackResult{}, err
 	}
+	// Two assets landing on one name is a question about the archive and the
+	// selection rather than about the disk, so it is answered before the disk is
+	// asked anything.
+	if !options.Tree {
+		if err := checkPackNames(wanted); err != nil {
+			return UnpackResult{}, err
+		}
+	}
 	// The index is the first entry, so every destination is known before a
 	// single file has been read. Refusing here rather than on the way past is
 	// what keeps a collision from leaving half a tree behind.
-	if err := checkPackDestinations(directory, wanted, options.Force); err != nil {
+	if err := checkPackDestinations(directory, wanted, options.Tree, options.Force); err != nil {
 		return UnpackResult{}, err
 	}
 
@@ -179,7 +205,7 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		if _, chosen := wanted[target.path]; !chosen {
 			continue
 		}
-		destination, err := packDestination(directory, target.path)
+		destination, err := unpackDestination(directory, target, options.Tree)
 		if err != nil {
 			return failed(invalidPack(err))
 		}
@@ -243,6 +269,18 @@ func wantedPackFiles(targets map[string]packTarget, selections []Selection) (map
 	return wanted, nil
 }
 
+// unpackDestination returns where one file goes on disk under either layout.
+//
+// The two differ in what they are allowed to be -- an archive path or a file
+// name -- so each is checked against its own claim rather than against a rule
+// wide enough to admit both.
+func unpackDestination(directory string, target packTarget, tree bool) (string, error) {
+	if tree {
+		return packDestination(directory, target.path)
+	}
+	return flatDestination(directory, target.item.Filename)
+}
+
 // packDestination joins one derived archive path onto the destination
 // directory, and refuses a result that is not inside it.
 //
@@ -260,15 +298,93 @@ func packDestination(directory, file string) (string, error) {
 	if path.IsAbs(file) || !strings.HasPrefix(file, packAssetRoot+"/") {
 		return "", fmt.Errorf("file %q is not a path DAC derived", file)
 	}
-	destination := filepath.Join(directory, filepath.FromSlash(file))
+	return containedPath(directory, file)
+}
+
+// flatDestination puts one file directly in the destination directory, under
+// the name its origin gave it.
+//
+// The name is checked against filename.Clean rather than trusted, for the
+// reason the archive path is checked against the asset root: validatePackIndex
+// proved this already -- a name that is not one safe path element could not
+// have produced the derived path the index had to match -- and this is where
+// that proof is worth having, one line from the write. A name is one path
+// element or it is not a name, and repairing it would invent a claim the origin
+// never made.
+func flatDestination(directory, name string) (string, error) {
+	if name == "" || filename.Clean(name) != name {
+		return "", fmt.Errorf("file name %q is not one safe path element", name)
+	}
+	return containedPath(directory, name)
+}
+
+// containedPath joins one checked relative path onto the destination and
+// refuses a result that is not inside it. It is the last thing standing between
+// a name that came off a network and a file DAC creates, so both layouts end
+// here whatever else they checked on the way.
+func containedPath(directory, relative string) (string, error) {
+	destination := filepath.Join(directory, filepath.FromSlash(relative))
 	inside, err := filepath.Rel(directory, destination)
 	if err != nil {
-		return "", fmt.Errorf("file %q does not resolve inside the destination: %w", file, err)
+		return "", fmt.Errorf("file %q does not resolve inside the destination: %w", relative, err)
 	}
 	if inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("file %q resolves outside the destination", file)
+		return "", fmt.Errorf("file %q resolves outside the destination", relative)
 	}
 	return destination, nil
+}
+
+// checkPackNames refuses an unpack whose files would land on one name.
+//
+// Flat, a file is its origin's name and nothing else, and two assets can carry
+// the same one -- two versions of one asset usually do, since a version is
+// rarely in the file name, and two namespaces holding a geo.bin each is
+// ordinary. The archive keeps them apart by coordinate; a destination has
+// nothing to keep them apart with.
+//
+// So it refuses rather than picking. Writing both would leave one asset's bytes
+// under a name the result says belongs to the other, which is the failure this
+// command works hardest to avoid: a file that looks like what was asked for and
+// is not. Renaming one would invent a name no origin gave. --force does not
+// reach here either, because force is permission to replace what is already on
+// disk, not permission to lose one of the two files this command was told to
+// write.
+//
+// It names every clash rather than the first, for the reason the destination
+// check does: the answer is usually to name the asset that was wanted, and
+// finding out one file at a time is worse than being told.
+func checkPackNames(wanted map[string]packTarget) error {
+	assets := make(map[string][]string, len(wanted))
+	for _, target := range wanted {
+		name := target.item.Filename
+		assets[name] = append(assets[name], target.coordinate.String())
+	}
+	files := make([]string, 0, len(assets))
+	for name, coordinates := range assets {
+		if len(coordinates) > 1 {
+			files = append(files, name)
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	// Map order is not an order, and an operator reading a refusal wants the
+	// same one every time.
+	slices.Sort(files)
+	clashing := make([]string, 0, len(files))
+	reasons := make([]string, 0, len(files))
+	for _, name := range files {
+		coordinates := assets[name]
+		slices.Sort(coordinates)
+		clashing = append(clashing, coordinates...)
+		reasons = append(reasons, fmt.Sprintf("%s: %s", name, strings.Join(coordinates, ", ")))
+	}
+	return &fault.Error{
+		Code:    "unpack_name_collision",
+		Message: "Two assets in the dacpack have the same file name, and both cannot be written to it. Name the asset you want, or use --tree.",
+		Details: map[string]any{"files": files, "assets": clashing},
+		Cause:   fmt.Errorf("%s", strings.Join(reasons, "; ")),
+	}
 }
 
 // materializer writes the files of one unpack and can undo them.
@@ -358,13 +474,13 @@ func (writer *materializer) rollback() {
 // It is given the files this unpack will write rather than every file the
 // archive holds, so an unpack narrowed to one asset is refused by what is in
 // that asset's way and not by what is in another's.
-func checkPackDestinations(directory string, wanted map[string]packTarget, force bool) error {
+func checkPackDestinations(directory string, wanted map[string]packTarget, tree, force bool) error {
 	if force {
 		return nil
 	}
 	occupied := make([]string, 0, len(wanted))
 	for _, target := range wanted {
-		destination, err := packDestination(directory, target.path)
+		destination, err := unpackDestination(directory, target, tree)
 		if err != nil {
 			return invalidPack(err)
 		}
