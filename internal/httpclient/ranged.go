@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tom/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/application"
 )
 
 // chunkSize is the span one range request asks for.
@@ -325,7 +325,10 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	}
 
 	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(requestCtx, body.insecure, credentials)}
-	response, err := httpClient.Do(request)
+	// The body is closed by the guard below, which takes ownership of it and
+	// closes it along with stopping its timer. bodyclose follows the response
+	// only as far as the wrapper, so it cannot see that.
+	response, err := httpClient.Do(request) //nolint:bodyclose // guard owns and closes it
 	if err != nil {
 		return nil, err
 	}

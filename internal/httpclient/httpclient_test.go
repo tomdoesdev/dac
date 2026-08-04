@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/credential"
-	"github.com/tom/dac/internal/rewrite"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
@@ -40,7 +40,7 @@ func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if !response.NotModified || response.ETag != "\"new\"" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
@@ -373,7 +373,7 @@ func TestFetchPrefersTheNameTheHeaderGives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Filename != "database.bin" {
 		t.Fatalf("filename is %q", response.Filename)
 	}
@@ -391,7 +391,7 @@ func TestFetchFallsBackToTheNameTheURLSpells(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Filename != "database.bin" {
 		t.Fatalf("filename is %q", response.Filename)
 	}
@@ -417,7 +417,7 @@ func TestFetchNamesTheAssetFromTheRedirectTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Filename != "database.bin" {
 		t.Fatalf("filename is %q", response.Filename)
 	}
@@ -437,7 +437,7 @@ func TestFetchReportsNoNameWhenNothingSpellsOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Filename != "" {
 		t.Fatalf("filename is %q, want none", response.Filename)
 	}
@@ -458,7 +458,7 @@ func TestFetchRefusesAHeaderNameThatEscapesItsDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Filename != "database.bin" {
 		t.Fatalf("filename is %q, want the URL name", response.Filename)
 	}

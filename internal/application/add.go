@@ -3,10 +3,10 @@ package application
 import (
 	"context"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // AddOptions defines one manifest addition.

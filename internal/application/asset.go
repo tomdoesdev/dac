@@ -1,8 +1,8 @@
 package application
 
 import (
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // AssetSummary is the part of a command result that reports the assets it

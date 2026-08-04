@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/filename"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 const (

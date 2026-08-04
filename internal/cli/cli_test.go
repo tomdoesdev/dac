@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tom/dac/internal/cache"
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/output"
-	"github.com/tom/dac/internal/project"
-	"github.com/tom/dac/internal/projecttest"
+	"github.com/tomdoesdev/dac/internal/cache"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/output"
+	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/projecttest"
 )
 
 type invocation struct {

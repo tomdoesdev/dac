@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tom/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/credential"
 )
 
 // script writes an executable helper and returns its path.

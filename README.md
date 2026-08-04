@@ -13,7 +13,7 @@ DAC requires Go 1.26 and targets Unix. The cache coordinates concurrent
 processes with `flock`, so there is no Windows build.
 
 ```bash
-go install github.com/tom/dac/cmd/dac@latest
+go install github.com/tomdoesdev/dac/cmd/dac@latest
 ```
 
 To build from a checkout instead:
@@ -142,6 +142,26 @@ that state.
 
 Use `dac --help`, `dac <command> --help`, and `dac --version` for CLI
 help. DAC has no command aliases.
+
+### Shell completion
+
+```bash
+eval "$(dac completion bash)"     # or zsh, fish, pwsh
+```
+
+Source it from your shell's startup file to keep it. Beyond command and option
+names, DAC completes the argument you actually have to get exactly right:
+
+```text
+dac path <TAB>              backend-app/geo-database@2026.08  tools/toolchain@1.4
+dac cache remove app/<TAB>  app/geo@1.0.0  app/geo@2.0.0
+```
+
+Coordinates come from the manifest for the project the shell is standing in,
+which `--manifest` selects like it does everywhere else. Completion suggests the
+whole coordinate rather than the bare `<namespace>/<name>` that `path` and `info`
+also take, drops the versions already on the command line, and answers with
+nothing outside a project — where a shell falls back to completing file names.
 
 ### What a version means
 
@@ -824,10 +844,14 @@ writes outside the directory it was pointed at.
 
 ## Non-goals
 
-DAC does not unpack, install, or run anything. It hosts no mirror or remote
+DAC does not extract, install, or run an asset. It hosts no mirror or remote
 cache, resumes no partial download, and records no signature or provenance. It
 has no registry and no plugin language. Extraction and installation belong to
 whatever consumes the path that `dac path` returns.
+
+`dac unpack` is not an exception to that. It writes the files a dacpack
+carries, which is DAC's own archive of a project's assets; what is inside those
+files stays sealed, and a tarball among them is still yours to `tar -xzf`.
 
 DAC does not order or compare versions. It has no idea whether `10` follows `9`,
 or whether either is a number, and it never chooses a version for you: there are

@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // Check reads both project files and fails the test unless they agree.

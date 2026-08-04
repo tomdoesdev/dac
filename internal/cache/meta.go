@@ -26,9 +26,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/jsonfile"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
 const (

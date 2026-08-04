@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tom/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/application"
 )
 
 // stallGuard cancels a request when body reads stop making progress.

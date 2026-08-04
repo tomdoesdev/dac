@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tom/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/config"
 )
 
 // isolate points the XDG search path at temporary directories, so a test reads

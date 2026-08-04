@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // ExportResult reports one cache bundle.

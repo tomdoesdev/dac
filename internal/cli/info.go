@@ -7,16 +7,17 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/bytesize"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/bytesize"
 )
 
 // infoCommand defines the project inspection command and its coordinate filter.
 func (runner *runner) infoCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:      "info",
-		Usage:     "Show project asset and request information.",
-		ArgsUsage: "[<namespace>/<name>[@<version>]]",
+		Name:          "info",
+		Usage:         "Show project asset and request information.",
+		ArgsUsage:     "[<namespace>/<name>[@<version>]]",
+		ShellComplete: runner.completeCoordinate(),
 		Action: runner.run("info", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			filter, err := selection(current)
 			if err != nil {

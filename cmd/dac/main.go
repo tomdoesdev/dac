@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tom/dac/internal/cli"
+	"github.com/tomdoesdev/dac/internal/cli"
 )
 
 func main() {

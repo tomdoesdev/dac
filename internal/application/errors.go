@@ -8,8 +8,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 // ErrTooLarge marks a response that exceeded its size limit.

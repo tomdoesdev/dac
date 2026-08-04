@@ -5,15 +5,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/config"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/output"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/output"
 )
 
 const (
@@ -30,7 +31,7 @@ const (
 
 // Run runs one DAC command and returns its exit status.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	runner := &runner{stdout: stdout, stderr: stderr}
+	runner := &runner{stdout: stdout, stderr: stderr, args: args}
 	err := runner.app().Run(ctx, append([]string{"dac"}, args...))
 	if err == nil {
 		return ExitOK
@@ -54,10 +55,75 @@ type runner struct {
 	commandName string
 	usage       bool
 	writeFailed bool
+	// args is the command line this run was given, which the writer decision
+	// below has to read before urfave has parsed anything.
+	args []string
 
 	settings *config.Config
 	loadOnce sync.Once
 	loadErr  error
+}
+
+// completing reports whether this run is about shell completion rather than
+// about an asset.
+//
+// Two invocations are, and they are easy to mistake for each other: the
+// completion command, which writes the script a shell sources, and the hidden
+// flag that script sends back to ask what the next word could be.
+//
+// Both have to reach standard output, and neither did. urfave sends both
+// through Root().Writer, which DAC points at standard error so that help never
+// lands on the stream carrying the output contract. So `dac completion bash`
+// wrote its script where `$(...)` could not capture it, and the suggestions
+// went where every generated script discards them -- bash asks through
+// `$(... 2>/dev/null)`, zsh and fish do the same. The feature installed
+// cleanly and did nothing, with nothing printed to say so.
+//
+// Help never prints during either one, so the two uses of Writer never collide.
+func completing(app *urfave.Command, args []string) bool {
+	if slices.Contains(args, "--"+urfave.GenerateShellCompletionFlag.Names()[0]) {
+		return true
+	}
+	return commandName(app, args) == completionCommand
+}
+
+// completionCommand is the name urfave gives the command that writes a shell
+// completion script. It builds that command itself, so this is the one place
+// DAC has to spell it.
+const completionCommand = "completion"
+
+// commandName returns the first argument naming a command, stepping over the
+// global options in front of it and the values they take.
+//
+// It reads the option set from the command rather than from a list kept beside
+// it, so a global option added later is accounted for by existing.
+func commandName(app *urfave.Command, args []string) string {
+	for index := 0; index < len(args); index++ {
+		value := args[index]
+		if !strings.HasPrefix(value, "-") {
+			return value
+		}
+		// An option spelled --name=value carries its own value; one spelled
+		// --name takes the argument after it, unless it is a boolean.
+		if !strings.Contains(value, "=") && takesValue(app.Flags, value) {
+			index++
+		}
+	}
+	return ""
+}
+
+// takesValue reports whether an option is followed by its value. Every option
+// is except a boolean one, which carries its answer in whether it is present.
+func takesValue(flags []urfave.Flag, option string) bool {
+	name := strings.TrimLeft(option, "-")
+	for _, flag := range flags {
+		if !slices.Contains(flag.Names(), name) {
+			continue
+		}
+		_, boolean := flag.(*urfave.BoolFlag)
+		return !boolean
+	}
+	return false
 }
 
 // config reads the configuration for this run, once.
@@ -116,6 +182,10 @@ func (runner *runner) app() *urfave.Command {
 		runner.unpackCommand(),
 		runner.cacheCommand(),
 		runner.configCommand(),
+	}
+	// The writer is settled once the flags exist to read it from. See completing.
+	if completing(app, runner.args) {
+		app.Writer = runner.stdout
 	}
 	_ = app.Walk(func(current *urfave.Command) error {
 		current.OnUsageError = runner.usageError

@@ -1,0 +1,25 @@
+# Linters for DAC.
+#
+# The set is small and each entry is here for a reason, because a linter nobody
+# chose is a linter somebody will eventually silence. go vet already runs in CI
+# and stays there; these are the checks it does not make.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Unchecked errors. DAC already writes its deliberate discards as an
+    # explicit `_ =`, so this reports the ones nobody decided about.
+    - errcheck
+    # The staticcheck analyses: dead code, misuse of the standard library, and
+    # the simplifications gofmt does not make.
+    - staticcheck
+    # Assignments nothing reads, which are usually an error handled into a
+    # variable and then dropped.
+    - ineffassign
+    # Unused declarations.
+    - unused
+    # A response body left unclosed leaks a connection. DAC's core is an HTTP
+    # client that fetches multi-gigabyte assets over pooled connections, and
+    # the closes are spread across retries, redirects, and range requests.
+    - bodyclose

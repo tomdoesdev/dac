@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tom/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/coord"
 )
 
 func TestParseAcceptsACompleteCoordinate(t *testing.T) {

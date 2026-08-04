@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/credential"
-	"github.com/tom/dac/internal/filename"
-	"github.com/tom/dac/internal/rewrite"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 const maxRedirects = 10

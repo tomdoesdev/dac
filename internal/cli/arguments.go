@@ -5,9 +5,9 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // coordinate reads the one complete coordinate a command acts on.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
 )
 
 func TestWritePairRoundTrip(t *testing.T) {

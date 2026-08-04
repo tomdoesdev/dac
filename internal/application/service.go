@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 const Version = "7.0.0"

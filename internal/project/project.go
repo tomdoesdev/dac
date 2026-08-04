@@ -10,11 +10,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/filename"
-	"github.com/tom/dac/internal/jsonfile"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/jsonfile"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 const (

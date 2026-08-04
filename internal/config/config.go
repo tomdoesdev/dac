@@ -25,8 +25,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/tom/dac/internal/bytesize"
-	"github.com/tom/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/bytesize"
+	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
 // FileName is the config file every search location looks for.

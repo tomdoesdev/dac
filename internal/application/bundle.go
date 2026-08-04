@@ -3,8 +3,8 @@ package application
 import (
 	"fmt"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
 )
 
 const (

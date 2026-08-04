@@ -10,9 +10,9 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/bytesize"
-	"github.com/tom/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/bytesize"
+	"github.com/tomdoesdev/dac/internal/coord"
 )
 
 func (runner *runner) initCommand() *urfave.Command {
@@ -32,9 +32,10 @@ func (runner *runner) initCommand() *urfave.Command {
 
 func (runner *runner) removeCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:      "remove",
-		Usage:     "Remove one asset version and update the lock file.",
-		ArgsUsage: "<namespace>/<name>@<version>",
+		Name:          "remove",
+		Usage:         "Remove one asset version and update the lock file.",
+		ArgsUsage:     "<namespace>/<name>@<version>",
+		ShellComplete: runner.completeCoordinate(),
 		Action: runner.run("remove", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			name, err := coordinate(current)
 			if err != nil {
@@ -74,7 +75,8 @@ func (runner *runner) pathCommand() *urfave.Command {
 		// The version can be left off when the project carries one, which is
 		// what makes this usable inside a shell substitution without repeating
 		// a version that is already in the manifest.
-		ArgsUsage: "<namespace>/<name>[@<version>]",
+		ArgsUsage:     "<namespace>/<name>[@<version>]",
+		ShellComplete: runner.completeCoordinate(),
 		Action: runner.run("path", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			choice, err := asset(current)
 			if err != nil {

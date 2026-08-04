@@ -3,8 +3,8 @@ package application
 import (
 	"context"
 
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // VerifyResult reports matching project files.

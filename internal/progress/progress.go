@@ -10,7 +10,7 @@ import (
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
 
-	"github.com/tom/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/application"
 )
 
 // New selects bars for a terminal and lines for other writers.

@@ -6,7 +6,7 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/application"
 )
 
 // configCommand builds the configuration inspection commands.
