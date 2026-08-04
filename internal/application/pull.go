@@ -2,12 +2,8 @@ package application
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 
 	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/project"
 )
@@ -74,17 +70,6 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 			service.Reporter.Done(name, status)
 			return nil
 		}
-		if options.DistDir != "" {
-			found, err := service.installDist(ctx, options.DistDir, locked)
-			if err != nil {
-				return err
-			}
-			if found {
-				status = "distdir"
-				service.Reporter.Done(name, status)
-				return nil
-			}
-		}
 		if options.Offline {
 			// A corrupt object offline is a different problem from a missing
 			// one: there is damage to report and no way to repair it here.
@@ -125,30 +110,4 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 		return Asset{}, err
 	}
 	return service.assetView(coordinate, source, locked, status)
-}
-
-// installDist installs one locked asset from a distribution directory. The
-// caller holds the digest lock.
-//
-// A distribution directory holds objects named by digest. This is the only
-// name that a consumer can check. DAC used to accept the final URL element.
-// That name was a guess, so DAC could not report a mismatch correctly.
-func (service *Service) installDist(ctx context.Context, directory string, locked project.LockAsset) (bool, error) {
-	hexValue, err := digest.Hex(locked.Digest)
-	if err != nil {
-		return false, fault.Wrap("lock_invalid", "The lock file has an invalid digest.", err)
-	}
-	file, err := os.Open(filepath.Join(directory, hexValue))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fault.Wrap("distdir_read_failed", "DAC could not read the distribution directory.", err)
-	}
-	_, err = service.Store.Put(ctx, file, PutExact(Object{Digest: locked.Digest, Size: locked.Size}))
-	_ = file.Close()
-	if err != nil {
-		return false, contentError(err)
-	}
-	return true, nil
 }

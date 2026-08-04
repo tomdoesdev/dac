@@ -17,8 +17,11 @@ import (
 // left behind. It became 4 when the lock operations moved off pull onto their
 // own command: pull dropped the locked array it could no longer populate, and
 // lock arrived reporting that array along with whether the file it writes
-// actually moved.
-const Version = 4
+// actually moved. It became 5 when the transfer options moved into a config
+// file: cache verify became cache scrub, so the command name in a result
+// changed, and pull dropped both the distdir asset status and the
+// distdir_read_failed code along with the flag that produced them.
+const Version = 5
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`

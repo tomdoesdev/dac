@@ -102,6 +102,13 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	result := application.GCResult{Digests: []string{}, DryRun: options.DryRun}
 	cutoff := time.Now().Add(-options.MaxAge)
+	if options.All {
+		// Everything is older than a cutoff in the far future. Clearing the
+		// cache therefore reuses the whole of collection -- the digest locks,
+		// the sidecar pairing, and the abandoned-download sweep -- rather than
+		// reimplementing removal beside it and having the two drift.
+		cutoff = time.Now().Add(farFuture)
+	}
 	// collected names the objects this run took, so the sidecar sweep can tell
 	// the pairs it removed itself from the sidecars that were already alone. The
 	// sweep reads a directory listing taken before any of this, where the two
@@ -160,6 +167,35 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	result.SidecarCount = sidecars
 	result.TempCount += abandoned
 	return result, nil
+}
+
+// farFuture is the cutoff an unconditional collection uses. A century is not a
+// magic number so much as a statement that no object's timestamp is after it.
+const farFuture = 100 * 365 * 24 * time.Hour
+
+// Describe reports an object's size and when a project last used it.
+//
+// It touches nothing. Stat refreshes the liveness timestamp, because reaching
+// an object is the signal collection runs on -- so a listing built from Stat
+// would make every object look freshly used and quietly defeat the next
+// collection. Asking what is in the cache is not using what is in the cache.
+func (store *Store) Describe(value string) (application.ObjectDescription, bool, error) {
+	path, err := store.Path(value)
+	if err != nil {
+		return application.ObjectDescription{}, false, err
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return application.ObjectDescription{}, false, nil
+	}
+	if err != nil {
+		return application.ObjectDescription{}, false, err
+	}
+	used, err := store.lastUsed(path)
+	if err != nil {
+		return application.ObjectDescription{}, false, err
+	}
+	return application.ObjectDescription{Digest: value, Size: info.Size(), LastUsed: used}, true, nil
 }
 
 // lastUsed reports when a project last referenced an object. The sidecar

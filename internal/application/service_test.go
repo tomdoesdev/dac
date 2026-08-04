@@ -98,6 +98,18 @@ func (store *fakeStore) Verify(_ context.Context, value string) (application.Obj
 	return store.inspect(value)
 }
 
+// Describe reports an object without touching its liveness timestamp. The fake
+// keeps no timestamps, so every object reports the zero time.
+func (store *fakeStore) Describe(value string) (application.ObjectDescription, bool, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	content, exists := store.objects[value]
+	if !exists {
+		return application.ObjectDescription{}, false, nil
+	}
+	return application.ObjectDescription{Digest: value, Size: int64(len(content))}, true, nil
+}
+
 func (store *fakeStore) List(context.Context) ([]string, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
@@ -851,7 +863,11 @@ func writeDist(t *testing.T, directory, name string, content []byte) {
 	}
 }
 
-func TestPullInstallsFromADistributionDirectory(t *testing.T) {
+// A distribution directory is a cache bundle with the tar taken off: the same
+// objects under the same digest names. Import reads both, so the cold-cache
+// path for an isolated machine is one command rather than a command and a flag
+// on an unrelated one.
+func TestImportInstallsFromADistributionDirectory(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	distdir := t.TempDir()
@@ -859,82 +875,70 @@ func TestPullInstallsFromADistributionDirectory(t *testing.T) {
 
 	store := newFakeStore()
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Pull(context.Background(), application.NetworkOptions{
-		Concurrency: 1, Offline: true, DistDir: distdir,
-	})
+	result, err := service.Import(context.Background(), distdir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Assets) != 1 || result.Assets[0].Status != "distdir" {
-		t.Fatalf("unexpected pull result: %#v", result.Assets)
+	if result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
+		t.Fatalf("unexpected import result: %#v", result)
 	}
 	if !store.has(application.Object{Digest: digest.Bytes(content), Size: int64(len(content))}) {
 		t.Fatal("the object was not installed")
 	}
+	// The objects are in the cache, so a pull that cannot reach the network
+	// finds everything it needs.
+	pulled, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, Offline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pulled.Assets) != 1 || pulled.Assets[0].Status != "cached" {
+		t.Fatalf("unexpected pull result: %#v", pulled.Assets)
+	}
 }
 
-// TestPullIgnoresADistributionFileNamedAfterTheURL fixes the naming rule at one
-// option. DAC used to also accept the last element of the asset URL, which
-// meant a bundle could satisfy a pull with a file whose name proved nothing.
-func TestPullIgnoresADistributionFileNamedAfterTheURL(t *testing.T) {
+// A digest is the only name a consumer can check. DAC used to also accept the
+// last element of the asset URL, which meant a directory could satisfy a pull
+// with a file whose name proved nothing.
+func TestImportSkipsFilesThatAreNotNamedByDigest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	distdir := t.TempDir()
 	writeDist(t, distdir, "asset", content)
+	writeDist(t, distdir, "README", []byte("what this share holds"))
 
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	_, err := service.Pull(context.Background(), application.NetworkOptions{
-		Concurrency: 1, Offline: true, DistDir: distdir,
-	})
-	if fault.As(err).Code != "offline_cache_miss" {
-		t.Fatalf("expected an offline cache miss, got %v", err)
+	result, err := service.Import(context.Background(), distdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ObjectCount != 0 || result.ItemCount != 0 {
+		t.Fatalf("unexpected import result: %#v", result)
 	}
 }
 
-func TestPullRefusesADistributionFileThatNamesTheWrongDigest(t *testing.T) {
+func TestImportRefusesAFileThatNamesTheWrongDigest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	distdir := t.TempDir()
 	writeDist(t, distdir, strings.TrimPrefix(digest.Bytes(content), digest.Prefix), []byte("other bytes"))
 
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	_, err := service.Pull(context.Background(), application.NetworkOptions{
-		Concurrency: 1, Offline: true, DistDir: distdir,
-	})
-	if fault.As(err).Code != "content_mismatch" {
-		t.Fatalf("expected content_mismatch, got %v", err)
+	_, err := service.Import(context.Background(), distdir)
+	if fault.As(err).Code != "import_content_mismatch" {
+		t.Fatalf("expected import_content_mismatch, got %v", err)
 	}
 }
 
-func TestPullFallsPastAURLNamedFileThatDoesNotMatch(t *testing.T) {
+func TestImportAcceptsAnEmptyDirectory(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	distdir := t.TempDir()
-	writeDist(t, distdir, "asset", []byte("a different asset that happens to share a name"))
-
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	_, err := service.Pull(context.Background(), application.NetworkOptions{
-		Concurrency: 1, Offline: true, DistDir: distdir,
-	})
-	if fault.As(err).Code != "offline_cache_miss" {
-		t.Fatalf("expected offline_cache_miss, got %v", err)
-	}
-}
-
-func TestPullIgnoresAnEmptyDistributionDirectory(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	store := newFakeStore()
-	fetcher := staticFetcher(content)
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	result, err := service.Pull(context.Background(), application.NetworkOptions{
-		Concurrency: 1, DistDir: t.TempDir(),
-	})
+	result, err := service.Import(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Assets[0].Status != "downloaded" || fetcher.count() != 1 {
-		t.Fatalf("unexpected result %#v after %d requests", result.Assets[0], fetcher.count())
+	if result.ObjectCount != 0 {
+		t.Fatalf("unexpected import result: %#v", result)
 	}
 }
 

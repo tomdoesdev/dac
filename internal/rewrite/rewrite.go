@@ -100,6 +100,54 @@ func Parse(reader io.Reader) (*Config, error) {
 	return config, nil
 }
 
+// Rule is one rewrite rule in the form a config file states it.
+type Rule struct {
+	Pattern     string
+	Replacement string
+}
+
+// Options describe a rewrite config built from structured input rather than
+// from directives.
+type Options struct {
+	Rewrites          []Rule
+	Allow             []string
+	Block             []string
+	AllowInsecureHTTP bool
+}
+
+// Build creates a config from structured rules.
+//
+// It exists so that a TOML config file and a directive file produce the same
+// Config, checked the same way. The two spell the rules differently and agree
+// on every question about what they mean, which is the only arrangement under
+// which a site can move from one to the other without re-reading its policy.
+func Build(options Options) (*Config, error) {
+	config := &Config{allowInsecure: options.AllowInsecureHTTP}
+	for _, rule := range options.Rewrites {
+		if rule.Pattern == "" || rule.Replacement == "" {
+			return nil, errors.New("a rewrite rule needs a pattern and a replacement")
+		}
+		pattern, err := regexp.Compile(rule.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite pattern is not valid: %w", err)
+		}
+		config.rewrites = append(config.rewrites, rewriteRule{pattern: pattern, replacement: rule.Replacement})
+	}
+	for _, host := range options.Allow {
+		if host == "" {
+			return nil, errors.New("an allowed host is empty")
+		}
+		config.allows = append(config.allows, strings.ToLower(host))
+	}
+	for _, host := range options.Block {
+		if host == "" {
+			return nil, errors.New("a blocked host is empty")
+		}
+		config.blocks = append(config.blocks, strings.ToLower(host))
+	}
+	return config, nil
+}
+
 func (config *Config) add(fields []string) error {
 	switch directive := fields[0]; directive {
 	case "allow_insecure_http":

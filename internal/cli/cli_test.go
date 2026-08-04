@@ -29,6 +29,35 @@ type invocation struct {
 	value  map[string]any
 }
 
+// TestMain points the config search path at an empty directory.
+//
+// DAC reads a config file from the XDG base directories, so without this every
+// test in this package would read whatever the machine running it has
+// installed, and a developer with a config would get different results from
+// CI. Setting it once for the process rather than per test keeps t.Setenv out
+// of tests that would otherwise be free to run in parallel.
+func TestMain(main *testing.M) {
+	root, err := os.MkdirTemp("", "dac-cli-test")
+	if err != nil {
+		panic(err)
+	}
+	for name, value := range map[string]string{
+		"XDG_CONFIG_HOME": filepath.Join(root, "config"),
+		"XDG_CONFIG_DIRS": filepath.Join(root, "system"),
+		"HOME":            root,
+	} {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
+		}
+	}
+	if err := os.Unsetenv("DAC_CONFIG"); err != nil {
+		panic(err)
+	}
+	code := main.Run()
+	_ = os.RemoveAll(root)
+	os.Exit(code)
+}
+
 func TestCommandLifecycle(t *testing.T) {
 	content := []byte("mini dac asset")
 	var requests atomic.Int32
@@ -53,7 +82,7 @@ func TestCommandLifecycle(t *testing.T) {
 	assertSuccess(t, result, "init")
 	projecttest.Check(t, manifestPath, lockPath)
 
-	result = runJSON(t, appendArgs(base, "add", "app/geo@2026.08", server.URL, "--progress=false"))
+	result = runJSON(t, appendArgs(base, "add", "app/geo@2026.08", server.URL, "--no-progress"))
 	assertSuccess(t, result, "add")
 	if strings.Contains(result.stdout, "Added") || strings.Contains(result.stdout, "start ") {
 		t.Fatalf("human output reached stdout: %q", result.stdout)
@@ -87,9 +116,9 @@ func TestCommandLifecycle(t *testing.T) {
 	}
 	result = runJSON(t, appendArgs(base, "verify"))
 	assertSuccess(t, result, "verify")
-	result = runJSON(t, appendArgs(base, "lock", "--progress=false", "--concurrency", "1"))
+	result = runJSON(t, appendArgs(base, "lock", "--no-progress", "--concurrency", "1"))
 	assertSuccess(t, result, "lock")
-	result = runJSON(t, appendArgs(base, "pull", "--progress=false", "--concurrency", "1"))
+	result = runJSON(t, appendArgs(base, "pull", "--no-progress", "--concurrency", "1"))
 	assertSuccess(t, result, "pull")
 
 	lock, err := project.ReadLock(lockPath)
@@ -225,7 +254,6 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		// A version is not optional where a command writes: an add that picked
 		// one for itself would rewrite whichever version it guessed.
 		appendArgs(base, "add", "app/asset", "https://example.com/asset"),
-		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--timeout", "0"),
 		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
 		appendArgs(base, "info", "asset"),
 		appendArgs(base, "info", "app/asset@1", "app/other@1"),
@@ -236,14 +264,15 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		// one and leaving the file as it found it.
 		appendArgs(base, "lock", "--offline"),
 		appendArgs(base, "lock", "--refresh", "--offline"),
-		// Every spelling of a size limit that is not a positive count. Each of
-		// these used to leave the guard against a runaway stream switched off
-		// without saying so, and the first two are what a shell writes for a
-		// variable nobody set.
-		appendArgs(base, "pull", "--max-size", "0"),
-		appendArgs(base, "pull", "--max-size", ""),
-		appendArgs(base, "pull", "--max-size", "99999999TiB"),
-		appendArgs(base, "pull", "--max-size", "NaNB"),
+		// The transfer tuning options moved into the config file, so the
+		// command line no longer answers to them at all.
+		appendArgs(base, "pull", "--max-size", "1GiB"),
+		appendArgs(base, "pull", "--timeout", "1m"),
+		appendArgs(base, "pull", "--retries", "1"),
+		appendArgs(base, "pull", "--download-parts", "2"),
+		appendArgs(base, "pull", "--credential-helper", "helper"),
+		appendArgs(base, "pull", "--distdir", directory),
+		appendArgs(base, "pull", "--progress=false"),
 		// Every lock operation lives on the lock command, so pull no longer
 		// answers to the flags that used to spell them.
 		appendArgs(base, "pull", "--update-lock"),
@@ -255,7 +284,7 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 	} {
 		result := runJSON(t, args)
 		if result.status != ExitUsage {
-			t.Fatalf("status=%d stdout=%s stderr=%s", result.status, result.stdout, result.stderr)
+			t.Fatalf("args=%v status=%d stdout=%s stderr=%s", args, result.status, result.stdout, result.stderr)
 		}
 		assertError(t, result, "invalid_arguments")
 		if result.stderr != "" {
@@ -364,8 +393,8 @@ func TestNetworkFlagsReadEnvironmentSources(t *testing.T) {
 	t.Setenv("DAC_CONCURRENCY", "1")
 	t.Setenv("DAC_MAX_SIZE", "1MiB")
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--progress=false")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(base, "lock", "--progress=false")), "lock")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--no-progress")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "lock", "--no-progress")), "lock")
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -430,6 +459,20 @@ func appendArgs(base []string, values ...string) []string {
 	return append(result, values...)
 }
 
+// configFlags writes a config file and returns the flags that select it.
+//
+// The transfer settings live in a file now, so a test that needs one goes
+// through the same --config path a deployment does rather than through a
+// command line that no longer accepts them.
+func configFlags(t *testing.T, text string) []string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"--config", path}
+}
+
 func assertSuccess(t *testing.T, result invocation, name string) {
 	t.Helper()
 	if result.status != ExitOK || result.value["ok"] != true || result.value["command"] != name || result.value["outputVersion"] != float64(output.Version) {
@@ -442,36 +485,6 @@ func assertError(t *testing.T, result invocation, code string) {
 	errorValue, ok := result.value["error"].(map[string]any)
 	if !ok || result.value["ok"] != false || errorValue["code"] != code {
 		t.Fatalf("unexpected error result: %#v", result.value)
-	}
-}
-
-func TestParseAgeAcceptsDaysWeeksAndDurations(t *testing.T) {
-	for _, testCase := range []struct {
-		value    string
-		expected time.Duration
-	}{
-		{"30d", 30 * 24 * time.Hour},
-		{"2w", 14 * 24 * time.Hour},
-		{"0d", 0},
-		{"1.5d", 36 * time.Hour},
-		{"12h", 12 * time.Hour},
-		{"90m", 90 * time.Minute},
-	} {
-		got, err := parseAge(testCase.value)
-		if err != nil {
-			t.Fatalf("%q: %v", testCase.value, err)
-		}
-		if got != testCase.expected {
-			t.Fatalf("parseAge(%q) = %s, want %s", testCase.value, got, testCase.expected)
-		}
-	}
-}
-
-func TestParseAgeRejectsInvalidValues(t *testing.T) {
-	for _, value := range []string{"", "   ", "-1d", "-2h", "d", "seven days", "10x"} {
-		if _, err := parseAge(value); err == nil {
-			t.Fatalf("%q was accepted", value)
-		}
 	}
 }
 
@@ -516,7 +529,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@11",
-		server.URL+"/jdk11.tar.gz", "--progress=false")), "add")
+		server.URL+"/jdk11.tar.gz", "--no-progress")), "add")
 
 	objectPath := objectPathFor(t, paths, coord.MustParse("java/sdk@11"))
 	bare := run(t, appendArgs(paths.base, "path", "java/sdk"))
@@ -536,7 +549,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	}
 
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@17",
-		server.URL+"/jdk17.tar.gz", "--progress=false")), "add")
+		server.URL+"/jdk17.tar.gz", "--no-progress")), "add")
 
 	ambiguous := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
 	assertError(t, ambiguous, "asset_ambiguous")
@@ -568,7 +581,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 
 	// A dry run at zero age reports the object without removing it.
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "0d", "--dry-run"))
@@ -628,7 +641,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 
 	bundle := filepath.Join(t.TempDir(), "cache.tar")
 	result := runJSON(t, appendArgs(paths.base, "export", bundle))
@@ -678,7 +691,7 @@ func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		server.URL+"/geo.bin", "--progress=false")), "add")
+		server.URL+"/geo.bin", "--no-progress")), "add")
 
 	// Both defaults are relative, so they land where the command was run, which
 	// is what a script controls by choosing where it runs. t.Chdir restores the
@@ -883,7 +896,7 @@ func TestRewriteConfigRedirectsRequests(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"https://upstream.invalid/geo/database.bin",
-		"--progress=false"))
+		"--no-progress"))
 	assertSuccess(t, result, "add")
 	if mirrored.Load() != 1 {
 		t.Fatalf("the mirror received %d requests, want 1", mirrored.Load())
@@ -918,12 +931,12 @@ func TestRewriteConfigAppliesToLockAndPull(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"https://upstream.invalid/geo/database.bin", "--offline")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "lock",
-		"--concurrency", "1", "--progress=false")), "lock")
+		"--concurrency", "1", "--no-progress")), "lock")
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull",
-		"--concurrency", "1", "--progress=false")), "pull")
+		"--concurrency", "1", "--no-progress")), "pull")
 	if requests.Load() != 2 {
 		t.Fatalf("the mirror received %d requests, want 2", requests.Load())
 	}
@@ -943,42 +956,78 @@ func TestNoRewriteBypassesAllConfigSources(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("not-a-directive\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("DAC_REWRITE_CONFIG", filepath.Join(t.TempDir(), "absent"))
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		server.URL, "--no-rewrite", "--progress=false")), "add")
+		server.URL, "--no-rewrite", "--no-progress")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "lock", "--refresh",
-		"--no-rewrite", "--concurrency", "1", "--progress=false")), "lock")
+		"--no-rewrite", "--concurrency", "1", "--no-progress")), "lock")
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
 	}
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--no-rewrite",
-		"--concurrency", "1", "--progress=false")), "pull")
+		"--concurrency", "1", "--no-progress")), "pull")
 	if requests.Load() != 3 {
 		t.Fatalf("the canonical server received %d requests, want 3", requests.Load())
 	}
 }
 
-func TestRewriteConfigEnvironmentOverridesTheProjectConfig(t *testing.T) {
+// Host policy belongs to the site, so the config file is where it lives. A
+// project that carries its own dac-rewrite.cfg is saying something about itself
+// rather than adding to what the site said, so it replaces the config file's
+// rules outright instead of merging with them.
+func TestProjectRewriteConfigOverridesTheConfigFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write([]byte("asset"))
 	}))
 	defer server.Close()
 
 	paths := newProject(t)
+	base := append(configFlags(t, "[hosts]\nblock = [\"*\"]\n"), paths.base...)
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+
+	// The config file blocks everything, so the add is refused.
+	blocked := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
+	assertError(t, blocked, "url_not_permitted")
+
+	// A project config that permits the host wins over it.
 	projectConfig := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	if err := os.WriteFile(projectConfig, []byte("block *\n"), 0o644); err != nil {
+	if err := os.WriteFile(projectConfig, []byte("# no rules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	override := filepath.Join(t.TempDir(), "rewrite")
-	if err := os.WriteFile(override, []byte("# no rules\n"), 0o644); err != nil {
-		t.Fatal(err)
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+}
+
+// The config file is the site-wide home for rewriting, which is the scope the
+// feature was always for: a site that proxies its downloads should not have to
+// edit every repository that uses them.
+func TestConfigFileRewritesRequestURLs(t *testing.T) {
+	var requests atomic.Int32
+	mirror := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = writer.Write([]byte("mirrored asset"))
+	}))
+	defer mirror.Close()
+
+	paths := newProject(t)
+	settings := "[[rewrite]]\npattern = '^canonical\\.example\\.com/(.*)$'\nreplacement = \"" + mirror.URL + "/$1\"\n"
+	base := append(configFlags(t, settings), paths.base...)
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
+		"https://canonical.example.com/geo/db.bin", "--no-progress")), "add")
+	if requests.Load() != 1 {
+		t.Fatalf("the mirror received %d requests, want 1", requests.Load())
 	}
-	t.Setenv("DAC_REWRITE_CONFIG", override)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		server.URL, "--progress=false"))
-	assertSuccess(t, result, "add")
+
+	// The manifest and lock keep the canonical URL, and info reports both.
+	result := runJSON(t, appendArgs(base, "info"))
+	assertSuccess(t, result, "info")
+	asset := result.value["data"].(map[string]any)["assets"].([]any)[0].(map[string]any)
+	if asset["sourceUrl"] != "https://canonical.example.com/geo/db.bin" {
+		t.Fatalf("the source URL was rewritten: %v", asset["sourceUrl"])
+	}
+	if request, _ := asset["requestUrl"].(string); !strings.HasPrefix(request, mirror.URL) {
+		t.Fatalf("the request URL was not rewritten: %v", asset["requestUrl"])
+	}
 }
 
 func TestInvalidProjectRewriteConfigIsAnError(t *testing.T) {
@@ -991,7 +1040,7 @@ func TestInvalidProjectRewriteConfigIsAnError(t *testing.T) {
 	infoResult := runJSON(t, appendArgs(paths.base, "info"))
 	assertError(t, infoResult, "rewrite_config_invalid")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://example.com/one", "--progress=false"))
+		"https://example.com/one", "--no-progress"))
 	assertError(t, result, "rewrite_config_invalid")
 }
 
@@ -1004,7 +1053,7 @@ func TestRewriteConfigCanBlockAllHosts(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		"https://files.example.com/one",
-		"--progress=false"))
+		"--no-progress"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
 	}
@@ -1013,15 +1062,49 @@ func TestRewriteConfigCanBlockAllHosts(t *testing.T) {
 	}
 }
 
-func TestMissingRewriteConfigOverrideIsAnError(t *testing.T) {
-	t.Setenv("DAC_REWRITE_CONFIG", filepath.Join(t.TempDir(), "absent"))
+// A search path that finds nothing means a machine that wants the defaults. A
+// --config naming a file that is not there is a deployment that thinks it
+// configured something, so the two answer differently.
+func TestMissingConfigFileIsAnError(t *testing.T) {
+	base := append([]string{"--config", filepath.Join(t.TempDir(), "absent.toml")}, newProject(t).base...)
+	result := runJSON(t, appendArgs(base, "pull"))
+	assertError(t, result, "config_invalid")
+	if cause, _ := result.value["error"].(map[string]any)["cause"].(string); !strings.Contains(cause, "absent.toml") {
+		t.Fatalf("the cause did not name the file: %v", result.value)
+	}
+}
+
+func TestInvalidConfigFileIsAnError(t *testing.T) {
+	base := append(configFlags(t, "[transfer]\ntimeuot = \"5m\"\n"), newProject(t).base...)
+	result := runJSON(t, appendArgs(base, "pull"))
+	assertError(t, result, "config_invalid")
+}
+
+// Every option version 7 took off the command line says where it went. "That is
+// not a flag" would be true and useless to somebody with it in a script.
+func TestRetiredFlagsNameTheirConfigKey(t *testing.T) {
 	base := newProject(t).base
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"https://example.com/one",
-		"--progress=false"))
-	if code := result.value["error"].(map[string]any)["code"]; code != "rewrite_config_missing" {
-		t.Fatalf("unexpected error code %v", code)
+	for flag, want := range map[string]string{
+		"--timeout":           "transfer.timeout",
+		"--retries":           "transfer.retries",
+		"--download-parts":    "transfer.download-parts",
+		"--max-size":          "transfer.max-size",
+		"--credential-helper": "credentials",
+		"--progress":          "transfer.progress",
+	} {
+		result := run(t, appendArgs(base, "pull", flag, "1"))
+		if result.status != ExitUsage {
+			t.Errorf("%s: status = %d, want %d", flag, result.status, ExitUsage)
+			continue
+		}
+		if !strings.Contains(result.stderr, want) {
+			t.Errorf("%s: stderr does not name %s: %q", flag, want, result.stderr)
+		}
+	}
+	// A surviving flag whose name starts the same way must not be mistaken for
+	// a retired one.
+	if result := run(t, appendArgs(base, "cache", "gc", "--max-age", "1s")); result.status != ExitOK {
+		t.Errorf("cache gc --max-age: status = %d, stderr = %q", result.status, result.stderr)
 	}
 }
 
@@ -1040,10 +1123,9 @@ func TestCredentialHelperSuppliesRequestHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base := newProject(t).base
+	base := append(configFlags(t, "[credentials]\ndefault = \""+helper+"\"\n"), newProject(t).base...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL,
-		"--credential-helper", helper, "--progress=false"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
 	assertSuccess(t, result, "add")
 	if got := seen.Load(); got != "Bearer helper-token" {
 		t.Fatalf("the server saw Authorization %q", got)
@@ -1060,10 +1142,9 @@ func TestFailingCredentialHelperFailsTheCommand(t *testing.T) {
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	base := newProject(t).base
+	base := append(configFlags(t, "[credentials]\ndefault = \""+helper+"\"\n"), newProject(t).base...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL,
-		"--credential-helper", helper, "--progress=false"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
 	}
@@ -1078,7 +1159,7 @@ func TestAddReportsTheResolvedDigest(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false"))
+	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
 	if human.status != ExitOK {
 		t.Fatalf("unexpected status %d: %q", human.status, human.stderr)
 	}
@@ -1102,7 +1183,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
@@ -1110,7 +1191,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 	swapped.Store(true)
 
 	base := paths.base
-	result := runJSON(t, appendArgs(base, "pull", "--concurrency", "1", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "pull", "--concurrency", "1", "--no-progress"))
 	if result.status != ExitFailure {
 		t.Fatalf("unexpected status %d", result.status)
 	}
@@ -1128,7 +1209,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 		t.Fatalf("the details lost the asset name: %v", details)
 	}
 
-	human := run(t, appendArgs(base, "pull", "--concurrency", "1", "--progress=false"))
+	human := run(t, appendArgs(base, "pull", "--concurrency", "1", "--no-progress"))
 	if !strings.Contains(human.stderr, digest.Bytes(served)) {
 		t.Fatalf("the human error hides the digest DAC received: %q", human.stderr)
 	}
@@ -1196,14 +1277,14 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	// path used to return this object, and every script downstream would have
 	// read the wrong bytes without ever being told.
 	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "export", filepath.Join(directory, "bundle.tar"))), "cache_object_corrupt")
-	assertError(t, runJSON(t, appendArgs(base, "cache", "verify")), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "cache", "scrub")), "cache_object_corrupt")
 
 	info := runJSON(t, appendArgs(base, "info"))
 	assertSuccess(t, info, "info")
@@ -1213,10 +1294,10 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	}
 
 	// pull replaces the object, and the whole project comes back clean.
-	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--progress=false")), "pull")
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
 	assertSuccess(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "path")
-	verified := runJSON(t, appendArgs(base, "cache", "verify"))
-	assertSuccess(t, verified, "cache.verify")
+	verified := runJSON(t, appendArgs(base, "cache", "scrub"))
+	assertSuccess(t, verified, "cache.scrub")
 	if verified.value["data"].(map[string]any)["corruptCount"] != float64(0) {
 		t.Fatalf("the cache did not come back clean: %#v", verified.value["data"])
 	}
@@ -1237,11 +1318,11 @@ func TestCacheVerifyRepairRemovesTheDamage(t *testing.T) {
 		"--cache-dir", cacheRoot,
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
-	repaired := runJSON(t, appendArgs(base, "cache", "verify", "--repair"))
-	assertSuccess(t, repaired, "cache.verify")
+	repaired := runJSON(t, appendArgs(base, "cache", "scrub", "--repair"))
+	assertSuccess(t, repaired, "cache.scrub")
 	data := repaired.value["data"].(map[string]any)
 	if data["corruptCount"] != float64(1) || data["repaired"] != float64(1) {
 		t.Fatalf("unexpected repair result: %#v", data)
@@ -1285,7 +1366,7 @@ func TestJSONErrorsCarryTheirCause(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--retries", "0", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
 	assertError(t, result, "network_error")
 	errorValue := result.value["error"].(map[string]any)
 	cause, _ := errorValue["cause"].(string)
@@ -1313,7 +1394,7 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 	if status := run(t, appendArgs(base, "init")).status; status != ExitOK {
 		t.Fatalf("init failed with status %d", status)
 	}
-	result := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--retries", "0", "--progress=false"))
+	result := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
 	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
@@ -1350,31 +1431,31 @@ func TestLockWritesAMissingLockFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missing := run(t, appendArgs(base, "pull", "--progress=false"))
+	missing := run(t, appendArgs(base, "pull", "--no-progress"))
 	if missing.status != ExitFailure || !strings.Contains(missing.stderr, "Run dac lock.") {
 		t.Fatalf("a missing lock file did not name the command that writes it: %#v", missing)
 	}
-	human := run(t, appendArgs(base, "lock", "--progress=false"))
+	human := run(t, appendArgs(base, "lock", "--no-progress"))
 	if human.status != ExitOK || human.stdout != "Locked app/geo@1.\n" {
 		t.Fatalf("unexpected human lock: %#v", human)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
 	// Locking resolves, and resolving installs, so the pull behind it has
 	// nothing left to fetch.
-	pulled := run(t, appendArgs(base, "pull", "--progress=false"))
+	pulled := run(t, appendArgs(base, "pull", "--no-progress"))
 	if pulled.status != ExitOK || pulled.stdout != "Pulled 1 asset.\n" {
 		t.Fatalf("unexpected human pull: %#v", pulled)
 	}
 	// A second lock over an unchanged project resolves nothing and leaves the
 	// file alone, which is the run a CI check makes.
-	again := run(t, appendArgs(base, "lock", "--progress=false"))
+	again := run(t, appendArgs(base, "lock", "--no-progress"))
 	if again.status != ExitOK || again.stdout != "The lock file already describes 1 asset.\n" {
 		t.Fatalf("unexpected repeated lock: %#v", again)
 	}
 	// A refresh reaches the origin for every asset whatever it finds there, so it
 	// reports what it resolved and that the file did not move. Announcing a lock
 	// would describe a diff nobody is going to find.
-	refreshed := run(t, appendArgs(base, "lock", "--refresh", "--progress=false"))
+	refreshed := run(t, appendArgs(base, "lock", "--refresh", "--no-progress"))
 	if refreshed.status != ExitOK || refreshed.stdout != "Resolved app/geo@1. The lock file is unchanged.\n" {
 		t.Fatalf("unexpected refresh: %#v", refreshed)
 	}
@@ -1396,12 +1477,12 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 		"--cache-dir", filepath.Join(directory, "cache"),
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress"))
 	assertError(t, result, "lock_drift")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("--refresh rewrote the lock file")
@@ -1409,11 +1490,11 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	// The command that writes refuses the same drift, because a locked version
 	// names one set of bytes. Accepting the change is a decision, and --rebind is
 	// where an operator makes it.
-	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--progress=false")), "version_rebind")
+	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress")), "version_rebind")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("a refused rebind rewrote the lock file")
 	}
-	rebound := runJSON(t, appendArgs(base, "lock", "--refresh", "--rebind", "--progress=false"))
+	rebound := runJSON(t, appendArgs(base, "lock", "--refresh", "--rebind", "--no-progress"))
 	assertSuccess(t, rebound, "lock")
 	if rebound.value["data"].(map[string]any)["changed"] != true {
 		t.Fatalf("the rebind did not report a changed lock file: %#v", rebound.value)
@@ -1434,16 +1515,17 @@ func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	defer server.Close()
 
 	directory := t.TempDir()
-	base := []string{
+	project := []string{
 		"--manifest", filepath.Join(directory, "dac.json"),
 		"--lock", filepath.Join(directory, "dac-lock.json"),
 		"--cache-dir", filepath.Join(directory, "cache"),
 	}
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertError(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		server.URL, "--max-size", "1KiB", "--progress=false")), "asset_too_large")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		server.URL, "--max-size", noSizeLimit, "--progress=false")), "add")
+	bounded := append(configFlags(t, "[transfer]\nmax-size = \"1KiB\"\n"), project...)
+	unbounded := append(configFlags(t, "[transfer]\nmax-size = \"none\"\n"), project...)
+
+	assertSuccess(t, runJSON(t, appendArgs(project, "init")), "init")
+	assertError(t, runJSON(t, appendArgs(bounded, "add", "app/geo@1", server.URL, "--no-progress")), "asset_too_large")
+	assertSuccess(t, runJSON(t, appendArgs(unbounded, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 }
 
 // TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check
@@ -1469,12 +1551,12 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		server.URL, "--pin", "--progress=false")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false")), "verify")
+		server.URL, "--pin", "--no-progress")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--progress=false"))
+	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress"))
 	assertError(t, result, "lock_drift")
 	if !bytes.Contains([]byte(result.stdout), []byte(`"app/geo@1"`)) {
 		t.Fatalf("lock_drift did not name the drifted asset: %s", result.stdout)
@@ -1484,7 +1566,7 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	}
 	// The same origin against the same pin, from the command that writes: a pin
 	// is a rule there, and bytes that fail it must not reach the lock file.
-	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--progress=false")), "content_mismatch")
+	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress")), "content_mismatch")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("a failed lock --refresh rewrote the lock file")
 	}
@@ -1502,10 +1584,279 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--progress=false")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--no-progress")), "add")
 
 	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
 	if manifest.Assets[coord.MustParse("app/geo@1")].Integrity != digest.Bytes(content) {
 		t.Fatalf("add --pin did not write the integrity value: %#v", manifest.Assets[coord.MustParse("app/geo@1")])
+	}
+}
+
+// A project is its two files together. Pointing --manifest at another directory
+// used to leave the lock behind in the working directory, which produced a pair
+// that did not describe each other and no message saying so. The rewrite config
+// already resolved beside the manifest; the lock file now agrees.
+func TestLockFileFollowsTheManifest(t *testing.T) {
+	directory := t.TempDir()
+	nested := filepath.Join(directory, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(nested, "dac.json")
+	base := []string{"--manifest", manifestPath, "--cache-dir", filepath.Join(directory, "cache")}
+
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	projecttest.Check(t, manifestPath, filepath.Join(nested, "dac-lock.json"))
+	if _, err := os.Stat(filepath.Join(directory, "dac-lock.json")); !os.IsNotExist(err) {
+		t.Fatal("the lock file was written beside the working directory rather than the manifest")
+	}
+	// Every later command finds the same pair without being told where it is.
+	assertSuccess(t, runJSON(t, appendArgs(base, "verify")), "verify")
+}
+
+// Naming the lock file explicitly still puts it exactly where it was asked for,
+// which is what lets a caller keep the two apart on purpose.
+func TestExplicitLockFlagWins(t *testing.T) {
+	directory := t.TempDir()
+	nested := filepath.Join(directory, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(nested, "dac.json")
+	lockPath := filepath.Join(directory, "elsewhere.json")
+	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
+
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	projecttest.Check(t, manifestPath, lockPath)
+}
+
+// The cache had no management surface: collection removed objects by an age
+// nobody could inspect, emptying it meant a collection with an age short enough
+// that everything fell outside it, and dropping one asset was not possible at
+// all.
+func TestCacheListReportsWhatTheCacheHolds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write(bytes.Repeat([]byte(request.URL.Path), 100))
+	}))
+	defer server.Close()
+
+	paths := newProject(t)
+	base := paths.base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL+"/a", "--no-progress")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/two@1", server.URL+"/b", "--no-progress")), "add")
+
+	result := runJSON(t, appendArgs(base, "cache", "list"))
+	assertSuccess(t, result, "cache.list")
+	data := result.value["data"].(map[string]any)
+	if data["objectCount"] != float64(2) || data["missingCount"] != float64(0) {
+		t.Fatalf("unexpected listing: %#v", data)
+	}
+	objects := data["objects"].([]any)
+	owned := map[string]bool{}
+	for _, entry := range objects {
+		object := entry.(map[string]any)
+		if object["size"].(float64) <= 0 || object["digest"] == "" {
+			t.Fatalf("an object is missing its size or digest: %#v", object)
+		}
+		for _, name := range object["coordinates"].([]any) {
+			owned[name.(string)] = true
+		}
+	}
+	if !owned["app/one@1"] || !owned["app/two@1"] {
+		t.Fatalf("the listing did not name the assets: %#v", objects)
+	}
+
+	// A listing must not count as using the cache. Reaching an object refreshes
+	// the liveness timestamp collection runs on, so a listing built that way
+	// would quietly keep everything alive.
+	before := lastUsedTimes(t, paths)
+	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "list")), "cache.list")
+	for value, when := range lastUsedTimes(t, paths) {
+		if !when.Equal(before[value]) {
+			t.Fatalf("listing refreshed the liveness timestamp for %s", value)
+		}
+	}
+}
+
+// lastUsedTimes reads each cached object's sidecar timestamp.
+func lastUsedTimes(t *testing.T, paths projectFlags) map[string]time.Time {
+	t.Helper()
+	store := cache.New(paths.cacheRoot)
+	digests, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	times := map[string]time.Time{}
+	for _, value := range digests {
+		described, found, err := store.Describe(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found {
+			times[value] = described.LastUsed
+		}
+	}
+	return times
+}
+
+func TestCacheClearEmptiesTheCache(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("asset bytes"))
+	}))
+	defer server.Close()
+
+	base := newProject(t).base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL, "--no-progress")), "add")
+
+	// A dry run reports the same objects and removes none of them.
+	dry := runJSON(t, appendArgs(base, "cache", "clear", "--dry-run"))
+	assertSuccess(t, dry, "cache.clear")
+	if dry.value["data"].(map[string]any)["objectCount"] != float64(1) {
+		t.Fatalf("the dry run found nothing: %#v", dry.value)
+	}
+	if listed := runJSON(t, appendArgs(base, "cache", "list")); listed.value["data"].(map[string]any)["objectCount"] != float64(1) {
+		t.Fatal("the dry run removed the object")
+	}
+
+	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "clear")), "cache.clear")
+	empty := runJSON(t, appendArgs(base, "cache", "list"))
+	assertSuccess(t, empty, "cache.list")
+	data := empty.value["data"].(map[string]any)
+	if data["objectCount"] != float64(0) || data["missingCount"] != float64(1) {
+		t.Fatalf("the cache was not cleared: %#v", data)
+	}
+	// A cleared cache costs a pull and nothing more.
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
+}
+
+// Two coordinates that resolved to the same bytes share one object, so removing
+// one can uncache the other. The cache is the one place DAC deletes data, so
+// that needs saying out loud rather than discovering afterwards.
+func TestCacheRemoveRefusesToUncacheAnUnnamedAsset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("shared" + request.URL.Path))
+	}))
+	defer server.Close()
+
+	base := newProject(t).base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL+"/a", "--no-progress")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/alone@1", server.URL+"/b", "--no-progress")), "add")
+	// Two coordinates, one source, so one object between them.
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/two@1", server.URL+"/a", "--no-progress")), "add")
+
+	refused := runJSON(t, appendArgs(base, "cache", "remove", "app/one@1"))
+	assertError(t, refused, "cache_object_shared")
+	shared := refused.value["error"].(map[string]any)["details"].(map[string]any)["shared"].([]any)
+	if len(shared) != 1 || shared[0] != "app/two@1" {
+		t.Fatalf("the refusal did not name the sharer: %#v", shared)
+	}
+	if listed := runJSON(t, appendArgs(base, "cache", "list")); listed.value["data"].(map[string]any)["objectCount"] != float64(2) {
+		t.Fatal("the refused removal took an object anyway")
+	}
+
+	forced := runJSON(t, appendArgs(base, "cache", "remove", "app/one@1", "--force"))
+	assertSuccess(t, forced, "cache.remove")
+	if names := forced.value["data"].(map[string]any)["shared"].([]any); len(names) != 1 || names[0] != "app/two@1" {
+		t.Fatalf("the removal did not report what it cost: %#v", forced.value)
+	}
+
+	// Naming both is not sharing, so it needs no --force.
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
+	both := runJSON(t, appendArgs(base, "cache", "remove", "app/one@1", "app/two@1"))
+	assertSuccess(t, both, "cache.remove")
+	if count := both.value["data"].(map[string]any)["objectCount"]; count != float64(1) {
+		t.Fatalf("removing both coordinates removed %v objects, want 1", count)
+	}
+	// The asset that shared nothing keeps its bytes.
+	if listed := runJSON(t, appendArgs(base, "cache", "list")); listed.value["data"].(map[string]any)["objectCount"] != float64(1) {
+		t.Fatal("an unrelated asset lost its object")
+	}
+}
+
+func TestCacheRemoveRejectsAssetsTheProjectDoesNotHave(t *testing.T) {
+	base := newProject(t).base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	assertError(t, runJSON(t, appendArgs(base, "cache", "remove", "app/absent@1")), "asset_not_found")
+	if result := runJSON(t, appendArgs(base, "cache", "remove")); result.status != ExitUsage {
+		t.Fatalf("a removal with no coordinate exited %d", result.status)
+	}
+}
+
+// Config merged across the XDG search path raises two questions a person cannot
+// answer by looking: which files was it, and what did they settle on.
+func TestConfigReportsItsFilesAndEffectiveValues(t *testing.T) {
+	settings := configFlags(t, "[transfer]\nretries = 5\nconcurrency = 2\n")
+	base := append(settings, newProject(t).base...)
+
+	paths := runJSON(t, appendArgs(base, "config", "path"))
+	assertSuccess(t, paths, "config.path")
+	files := paths.value["data"].(map[string]any)["files"].([]any)
+	if len(files) != 1 || files[0] != settings[1] {
+		t.Fatalf("config path did not name the file: %#v", files)
+	}
+
+	shown := runJSON(t, appendArgs(base, "config", "show"))
+	assertSuccess(t, shown, "config.show")
+	sources := map[string]string{}
+	values := map[string]string{}
+	for _, entry := range shown.value["data"].(map[string]any)["settings"].([]any) {
+		setting := entry.(map[string]any)
+		values[setting["key"].(string)] = setting["value"].(string)
+		sources[setting["key"].(string)] = setting["source"].(string)
+	}
+	if values["transfer.retries"] != "5" || sources["transfer.retries"] != settings[1] {
+		t.Fatalf("retries reported as %q from %q", values["transfer.retries"], sources["transfer.retries"])
+	}
+	if values["transfer.timeout"] != "5m0s" || sources["transfer.timeout"] != "default" {
+		t.Fatalf("timeout reported as %q from %q", values["transfer.timeout"], sources["transfer.timeout"])
+	}
+}
+
+// A flag beats the config file, which is the whole point of leaving one on the
+// command line.
+func TestConcurrencyFlagBeatsTheConfigFile(t *testing.T) {
+	var peak, current atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		running := current.Add(1)
+		for {
+			seen := peak.Load()
+			if running <= seen || peak.CompareAndSwap(seen, running) {
+				break
+			}
+		}
+		<-release
+		current.Add(-1)
+		_, _ = writer.Write([]byte("asset bytes"))
+	}))
+	defer server.Close()
+
+	base := append(configFlags(t, "[transfer]\nconcurrency = 1\n"), newProject(t).base...)
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	close(release)
+	for _, name := range []string{"app/one@1", "app/two@1", "app/three@1"} {
+		assertSuccess(t, runJSON(t, appendArgs(base, "add", name, server.URL+"/"+name, "--no-progress")), "add")
+	}
+	// The config says one asset at a time; the flag says three. Both spellings
+	// have to reach the same place, and the flag has to win.
+	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "clear")), "cache.clear")
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--concurrency", "3", "--no-progress")), "pull")
+}
+
+// The credentials table is a list of programs DAC runs, so a config file
+// anybody can write is a way to choose them.
+func TestWritableConfigIsRefused(t *testing.T) {
+	settings := configFlags(t, "[transfer]\nretries = 1\n")
+	if err := os.Chmod(settings[1], 0o666); err != nil {
+		t.Fatal(err)
+	}
+	base := append(settings, newProject(t).base...)
+	result := runJSON(t, appendArgs(base, "pull"))
+	assertError(t, result, "config_invalid")
+	if cause, _ := result.value["error"].(map[string]any)["cause"].(string); !strings.Contains(cause, "writable") {
+		t.Fatalf("the cause did not explain the refusal: %v", result.value)
 	}
 }

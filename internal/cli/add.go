@@ -13,7 +13,7 @@ import (
 )
 
 func (runner *runner) addCommand() *urfave.Command {
-	flags := append(runner.networkFlags(false, true),
+	flags := append(runner.networkFlags(false),
 		&urfave.StringFlag{Name: "integrity", Usage: "Require this sha256 digest."},
 		&urfave.BoolFlag{Name: "pin", Usage: "Record the resolved digest as the asset integrity value."},
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
@@ -40,7 +40,7 @@ func (runner *runner) addCommand() *urfave.Command {
 					return nil, "", err
 				}
 				defer client.Close()
-				maxSize, err = maximumSize(current)
+				maxSize, err = runner.maximumSize(current)
 				if err != nil {
 					return nil, "", err
 				}

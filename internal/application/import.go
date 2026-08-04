@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/jsonfile"
 )
@@ -21,12 +22,30 @@ type ImportResult struct {
 	ByteCount   int64  `json:"byteCount"`
 }
 
-// Import validates one cache bundle and installs its objects in the local cache.
-func (service *Service) Import(ctx context.Context, bundlePath string) (ImportResult, error) {
-	absolute, err := filepath.Abs(bundlePath)
+// Import installs objects into the local cache from a cache bundle or from a
+// directory of digest-named files.
+//
+// The two are the same delivery in different wrappers -- a tar of objects named
+// by digest, or those objects loose on a mounted share -- so they are one
+// command rather than a command and a flag on an unrelated one. A digest is the
+// only name a consumer can check, which is why both forms use it.
+func (service *Service) Import(ctx context.Context, sourcePath string) (ImportResult, error) {
+	absolute, err := filepath.Abs(sourcePath)
 	if err != nil {
-		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not resolve the bundle path.", err)
+		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not resolve the import path.", err)
 	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the import source.", err)
+	}
+	if info.IsDir() {
+		return service.importDirectory(ctx, absolute)
+	}
+	return service.importBundle(ctx, absolute)
+}
+
+// importBundle installs the objects one cache bundle carries.
+func (service *Service) importBundle(ctx context.Context, absolute string) (ImportResult, error) {
 	file, err := os.Open(absolute)
 	if err != nil {
 		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the cache bundle.", err)
@@ -92,6 +111,71 @@ func (service *Service) Import(ctx context.Context, bundlePath string) (ImportRe
 		}
 	}
 	return result, nil
+}
+
+// importDirectory installs every digest-named file in a directory.
+//
+// A distribution directory carries no index, so the file name is the whole
+// claim about what is in it, and Put checks each object against the digest its
+// name gives. A file DAC cannot read as a digest is skipped rather than
+// refused: a share holding a README beside the objects is a share, not a
+// damaged bundle.
+func (service *Service) importDirectory(ctx context.Context, absolute string) (ImportResult, error) {
+	entries, err := os.ReadDir(absolute)
+	if err != nil {
+		return ImportResult{}, fault.Wrap("import_read_failed", "DAC could not read the import directory.", err)
+	}
+	result := ImportResult{Bundle: absolute}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return ImportResult{}, networkError(err)
+		}
+		if entry.IsDir() {
+			continue
+		}
+		value := digest.Prefix + entry.Name()
+		if _, err := digest.Hex(value); err != nil {
+			continue
+		}
+		result.ItemCount++
+		size, err := service.importFile(ctx, filepath.Join(absolute, entry.Name()), value)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		result.ObjectCount++
+		result.ByteCount += size
+	}
+	return result, nil
+}
+
+// importFile installs one digest-named file and reports the bytes it held.
+func (service *Service) importFile(ctx context.Context, path, value string) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fault.Wrap("import_read_failed", "DAC could not read an import file.", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return 0, fault.Wrap("import_read_failed", "DAC could not read an import file.", err)
+	}
+	object := Object{Digest: value, Size: info.Size()}
+	err = service.Store.WithLock(ctx, value, func() error {
+		_, putErr := service.Store.Put(ctx, file, PutExact(object))
+		return putErr
+	})
+	if err != nil {
+		var content *ContentError
+		switch {
+		case errors.As(err, &content), errors.Is(err, io.ErrUnexpectedEOF):
+			return 0, fault.Wrap("import_content_mismatch", "An import file does not match the digest its name gives.", err)
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return 0, networkError(err)
+		default:
+			return 0, fault.Wrap("cache_write_failed", "DAC could not write the cache object.", err)
+		}
+	}
+	return object.Size, nil
 }
 
 // readBundleIndex reads and checks the first tar entry.

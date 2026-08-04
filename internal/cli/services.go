@@ -5,14 +5,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"time"
 
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/bytesize"
 	"github.com/tom/dac/internal/cache"
+	"github.com/tom/dac/internal/config"
 	"github.com/tom/dac/internal/credential"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/httpclient"
@@ -20,16 +20,51 @@ import (
 	"github.com/tom/dac/internal/rewrite"
 )
 
+// projectPaths returns the manifest and lock file this run acts on.
+//
+// The lock file follows the manifest unless it was named. A project is its two
+// files together, and pointing --manifest at another directory used to leave
+// the lock behind in the working directory, which produced a pair that did not
+// describe each other and no message saying so. The rewrite config already
+// resolves beside the manifest; this makes the lock agree.
+func projectPaths(current *urfave.Command) (string, string) {
+	manifest := current.String("manifest")
+	if current.IsSet("lock") {
+		return manifest, current.String("lock")
+	}
+	return manifest, filepath.Join(filepath.Dir(manifest), DefaultLock)
+}
+
 func (runner *runner) projectService(current *urfave.Command) *application.Service {
-	return application.New(current.String("manifest"), current.String("lock"), nil, nil, nil)
+	manifest, lock := projectPaths(current)
+	return application.New(manifest, lock, nil, nil, nil)
 }
 
 func (runner *runner) storeService(current *urfave.Command) (*application.Service, error) {
-	root, err := cache.ResolveRoot(current.String("cache-dir"))
+	root, err := runner.cacheRoot(current)
 	if err != nil {
-		return nil, fault.Wrap("cache_root_unresolved", "DAC could not resolve the cache directory.", err)
+		return nil, err
 	}
-	return application.New(current.String("manifest"), current.String("lock"), cache.New(root), nil, nil), nil
+	manifest, lock := projectPaths(current)
+	return application.New(manifest, lock, cache.New(root), nil, nil), nil
+}
+
+// cacheRoot resolves the cache directory from the flag, then the config file,
+// then the XDG cache location.
+func (runner *runner) cacheRoot(current *urfave.Command) (string, error) {
+	selected := current.String("cache-dir")
+	if selected == "" {
+		settings, err := runner.config(current)
+		if err != nil {
+			return "", err
+		}
+		selected = settings.CacheDir
+	}
+	root, err := cache.ResolveRoot(selected)
+	if err != nil {
+		return "", fault.Wrap("cache_root_unresolved", "DAC could not resolve the cache directory.", err)
+	}
+	return root, nil
 }
 
 // networkService builds one application service for a network command.
@@ -40,39 +75,31 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 // the transfers: an interrupt has to end the display along with the downloads
 // it was following.
 func (runner *runner) networkService(ctx context.Context, current *urfave.Command, suppressProgress bool) (*application.Service, *httpclient.Client, error) {
+	settings, err := runner.config(current)
+	if err != nil {
+		return nil, nil, err
+	}
 	service, err := runner.storeService(current)
 	if err != nil {
 		return nil, nil, err
 	}
-	retries := current.Int("retries")
-	if retries < 0 {
-		return nil, nil, fault.New("invalid_arguments", "The retry count must not be negative.")
-	}
-	timeout := current.Duration("timeout")
-	if timeout <= 0 {
-		return nil, nil, fault.New("invalid_arguments", "The timeout must be positive.")
-	}
-	rewriter, err := loadRewriteConfig(service.ManifestPath, current.Bool("no-rewrite"))
+	rewriter, err := loadRewriteConfig(settings, service.ManifestPath, current.Bool("no-rewrite"))
 	if err != nil {
 		return nil, nil, err
 	}
-	credentials, err := credential.New(current.StringSlice("credential-helper"), credentialTimeout)
+	credentials, err := credential.New(settings.Credentials, credentialTimeout)
 	if err != nil {
-		return nil, nil, fault.Wrap("invalid_arguments", "A credential helper is invalid.", err)
-	}
-	parts := current.Int("download-parts")
-	if parts < 1 {
-		return nil, nil, fault.New("invalid_arguments", "The download part count must be at least 1.")
+		return nil, nil, fault.Wrap("config_invalid", "A credential helper is invalid.", err)
 	}
 	client := httpclient.New(httpclient.Options{
-		Timeout:     timeout,
-		Retries:     retries,
-		Parallelism: parts,
+		Timeout:     settings.Timeout,
+		Retries:     settings.Retries,
+		Parallelism: settings.DownloadParts,
 		Rewriter:    rewriter,
 		Credentials: credentials,
 	})
 	service.Fetcher = client
-	progressEnabled := current.Bool("progress") && !suppressProgress
+	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress
 	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled)
 	return service, client, nil
 }
@@ -84,84 +111,83 @@ const credentialTimeout = 30 * time.Second
 
 const rewriteConfigName = "dac-rewrite.cfg"
 
-// loadRewriteConfig loads an environment override or the config beside the
-// manifest. A missing project config is optional.
-func loadRewriteConfig(manifestPath string, disabled bool) (*rewrite.Config, error) {
+// loadRewriteConfig chooses the rewrite rules for one run.
+//
+// A rewrite config answers "where does this site actually send its downloads",
+// which is a property of the machine and not of the project -- it exists so a
+// site that proxies its downloads does not have to edit every repository that
+// uses them. So the config file is where it belongs, and DAC finds it through
+// the XDG search path like everything else.
+//
+// A dac-rewrite.cfg beside the manifest still wins outright. A project that
+// carries its own rules is saying something about itself rather than adding to
+// what the site said, and merging the two would produce a policy neither
+// wrote.
+func loadRewriteConfig(settings *config.Config, manifestPath string, disabled bool) (*rewrite.Config, error) {
 	if disabled {
 		return nil, nil
 	}
 	path := filepath.Join(filepath.Dir(manifestPath), rewriteConfigName)
-	required := false
-	if override := os.Getenv("DAC_REWRITE_CONFIG"); override != "" {
-		path, required = override, true
-	}
-	config, err := rewrite.Load(path)
+	project, err := rewrite.Load(path)
 	if err != nil {
 		return nil, fault.Wrap("rewrite_config_invalid", "The rewrite config is invalid.", err)
 	}
-	if config == nil && required {
-		return nil, fault.New("rewrite_config_missing", "The rewrite config does not exist.")
+	if project != nil {
+		return project, nil
 	}
-	return config, nil
+	return settings.Rewrite, nil
 }
 
-func (runner *runner) networkFlags(withConcurrency, withMaxSize bool) []urfave.Flag {
+// networkFlags returns the options a command that makes requests still carries.
+//
+// What is left is what a person decides for one run. How long to wait, how hard
+// to retry, how many pieces a download may be split into, how large a response
+// may get, and which helper answers for which host are properties of the
+// machine, so they moved into the config file: they were on the command line
+// because there was nowhere else to put them, and the cost was that four
+// commands each had to carry all six.
+func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 	flags := []urfave.Flag{
-		&urfave.DurationFlag{Name: "timeout", Value: 5 * time.Minute, Sources: urfave.EnvVars("DAC_TIMEOUT"), Usage: "Set the transfer inactivity limit."},
-		&urfave.IntFlag{Name: "retries", Value: 2, Sources: urfave.EnvVars("DAC_RETRIES"), Usage: "Set the retry count."},
-		// The part count is a budget for the whole command rather than a
-		// per-asset multiplier, so raising it speeds up a project of one large
-		// asset without opening --concurrency times as many connections for a
-		// project of many.
-		&urfave.IntFlag{Name: "download-parts", Value: 4, Sources: urfave.EnvVars("DAC_DOWNLOAD_PARTS"), Usage: "Set the number of ranged requests one download may be split across."},
-		&urfave.BoolFlag{Name: "progress", Value: true, Usage: "Write transfer progress to standard error."},
+		&urfave.BoolFlag{Name: "no-progress", Usage: "Do not write transfer progress to standard error."},
 		&urfave.BoolFlag{Name: "no-rewrite", Usage: "Disable URL rewrite and host policy rules."},
-		&urfave.StringSliceFlag{Name: "credential-helper", Sources: urfave.EnvVars("DAC_CREDENTIAL_HELPER"), Usage: "Ask this helper for request headers, as <command> or <host>=<command>."},
 	}
 	if withConcurrency {
-		flags = append(flags, &urfave.IntFlag{Name: "concurrency", Value: 4, Sources: urfave.EnvVars("DAC_CONCURRENCY"), Usage: "Set the number of concurrent assets."})
-	}
-	if withMaxSize {
-		// The limit only ever applies to a response whose size DAC does not know
-		// ahead of time, so it exists to stop a runaway stream rather than to
-		// express a policy about asset sizes. The old 32GiB default never fired
-		// in practice, which made it a knob that generated questions instead of
-		// protection. A project with genuinely larger assets raises it.
-		flags = append(flags, &urfave.StringFlag{Name: "max-size", Value: "2GiB", Sources: urfave.EnvVars("DAC_MAX_SIZE"), Usage: "Bound a download whose size the lock file does not already give, or none for no bound."})
+		flags = append(flags, &urfave.IntFlag{
+			Name:    "concurrency",
+			Sources: urfave.EnvVars("DAC_CONCURRENCY"),
+			Usage:   "Set the number of concurrent assets.",
+			// The flag carries no value of its own, so urfave would advertise
+			// the zero one. What it actually falls back to is the config file,
+			// and saying so is the only way somebody finds out where to set it.
+			DefaultText: "transfer.concurrency, or " + strconv.Itoa(config.DefaultConcurrency),
+		})
 	}
 	return flags
 }
 
-// noSizeLimit is the only value that turns the size limit off.
-//
-// An empty value and a zero used to do it too, and neither said so. Both are
-// what a shell produces from a variable nobody set, so the guard against a
-// runaway stream could end up disabled by a deployment script that thought it
-// was leaving the default in place. Switching it off is a decision, so it needs
-// a word.
-const noSizeLimit = "none"
-
-func maximumSize(current *urfave.Command) (int64, error) {
-	value := strings.TrimSpace(current.String("max-size"))
-	if strings.EqualFold(value, noSizeLimit) {
-		return 0, nil
+// concurrency reads the asset parallelism, preferring the flag over the config.
+func (runner *runner) concurrency(current *urfave.Command) (int, error) {
+	if current.IsSet("concurrency") {
+		value := current.Int("concurrency")
+		if value < 1 {
+			return 0, fault.New("invalid_arguments", "The concurrency must be at least 1.")
+		}
+		return value, nil
 	}
-	size, err := bytesize.Parse(value)
+	settings, err := runner.config(current)
 	if err != nil {
-		return 0, fault.Wrap("invalid_arguments", "The maximum size is invalid.", err)
+		return 0, err
 	}
-	if size <= 0 {
-		return 0, fault.New("invalid_arguments", "The maximum size must be positive. Use --max-size none to download without a limit.")
-	}
-	return size, nil
+	return settings.Concurrency, nil
 }
 
-func concurrency(current *urfave.Command) (int, error) {
-	value := current.Int("concurrency")
-	if value < 1 {
-		return 0, fault.New("invalid_arguments", "The concurrency must be at least 1.")
+// maximumSize reads the download bound from the config.
+func (runner *runner) maximumSize(current *urfave.Command) (int64, error) {
+	settings, err := runner.config(current)
+	if err != nil {
+		return 0, err
 	}
-	return value, nil
+	return settings.MaxSize, nil
 }
 
 func isTerminal(writer io.Writer) bool {

@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +10,7 @@ import (
 
 	"github.com/tom/dac/internal/application"
 	"github.com/tom/dac/internal/bytesize"
-	"github.com/tom/dac/internal/cache"
+	"github.com/tom/dac/internal/config"
 	"github.com/tom/dac/internal/fault"
 )
 
@@ -21,10 +19,18 @@ func (runner *runner) cacheCommand() *urfave.Command {
 		Name:            "cache",
 		Usage:           "Inspect, check, and collect the object cache.",
 		HideHelpCommand: true,
+		// The cache is a noun with a complete set of verbs: where it is, what
+		// is in it, collect it by age, empty it, drop one asset, check it.
+		// Emptying it used to be spelled as a collection with an age short
+		// enough that everything fell outside it, and seeing into it at all was
+		// not possible.
 		Commands: []*urfave.Command{
-			runner.cacheGCCommand(),
-			runner.cacheVerifyCommand(),
 			runner.cacheDirCommand(),
+			runner.cacheListCommand(),
+			runner.cacheGCCommand(),
+			runner.cacheClearCommand(),
+			runner.cacheRemoveCommand(),
+			runner.cacheScrubCommand(),
 		},
 		Action: runner.helpOrInvalid,
 	}
@@ -35,16 +41,24 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 		Name:  "gc",
 		Usage: "Remove cache objects that nothing has used recently.",
 		Flags: []urfave.Flag{
-			&urfave.StringFlag{Name: "max-age", Value: "30d", Sources: urfave.EnvVars("DAC_MAX_AGE"), Usage: "Keep objects used within this period."},
+			// The age is the parameter of the operation rather than a tuning
+			// knob, so it stays a flag: a collection without one is not a
+			// meaningful command. The config file supplies the default a site
+			// runs on, and the flag overrides it for one run.
+			&urfave.StringFlag{
+				Name:        "max-age",
+				Usage:       "Keep objects used within this period.",
+				DefaultText: "cache.max-age, or " + config.DefaultMaxAge,
+			},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what collection would remove."},
 		},
 		Action: runner.run("cache.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			if err := noArguments(current); err != nil {
 				return nil, "", err
 			}
-			maxAge, err := parseAge(current.String("max-age"))
+			maxAge, err := runner.maximumAge(current)
 			if err != nil {
-				return nil, "", fault.Wrap("invalid_arguments", "The maximum age is invalid.", err)
+				return nil, "", err
 			}
 			service, err := runner.storeService(current)
 			if err != nil {
@@ -59,15 +73,23 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 	}
 }
 
-func (runner *runner) cacheVerifyCommand() *urfave.Command {
+// cacheScrubCommand builds the object integrity check.
+//
+// It is called scrub rather than verify because dac verify already means
+// something, and the two cost wildly different amounts: dac verify reads two
+// JSON files, dac verify --refresh downloads every asset again, and this reads
+// every byte in the cache. One word covering all three told an operator nothing
+// about which one they were about to run. Scrub is what storage systems call
+// reading everything to check it, and it carries the cost in the name.
+func (runner *runner) cacheScrubCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:  "verify",
+		Name:  "scrub",
 		Usage: "Hash cache objects and report the ones that no longer match their digest.",
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "all", Usage: "Check every object in the cache instead of this project's."},
 			&urfave.BoolFlag{Name: "repair", Usage: "Remove the objects that fail."},
 		},
-		Action: runner.run("cache.verify", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+		Action: runner.run("cache.scrub", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			if err := noArguments(current); err != nil {
 				return nil, "", err
 			}
@@ -88,11 +110,11 @@ func (runner *runner) cacheVerifyCommand() *urfave.Command {
 			if result.CorruptCount > 0 && !current.Bool("repair") {
 				return nil, "", &fault.Error{
 					Code:    "cache_object_corrupt",
-					Message: verifyText(result) + " Run dac cache verify --repair, then dac pull.",
+					Message: scrubText(result) + " Run dac cache scrub --repair, then dac pull.",
 					Details: map[string]any{"corrupt": result.Corrupt},
 				}
 			}
-			return result, verifyText(result), nil
+			return result, scrubText(result), nil
 		}),
 	}
 }
@@ -105,17 +127,140 @@ func (runner *runner) cacheDirCommand() *urfave.Command {
 			if err := noArguments(current); err != nil {
 				return nil, "", err
 			}
-			root, err := cache.ResolveRoot(current.String("cache-dir"))
+			root, err := runner.cacheRoot(current)
 			if err != nil {
-				return nil, "", fault.Wrap("cache_root_unresolved", "DAC could not resolve the cache directory.", err)
+				return nil, "", err
 			}
 			return application.CacheDirResult{Path: root}, root, nil
 		}),
 	}
 }
 
-// verifyText summarizes one explicit cache check.
-func verifyText(result application.VerifyCacheResult) string {
+func (runner *runner) cacheListCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "list",
+		Usage: "List the objects in the cache, newest use first.",
+		Flags: []urfave.Flag{
+			&urfave.BoolFlag{Name: "all", Usage: "List every object in the cache instead of this project's."},
+		},
+		Action: runner.run("cache.list", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			if err := noArguments(current); err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.CacheList(ctx, application.CacheListOptions{All: current.Bool("all")})
+			if err != nil {
+				return nil, "", err
+			}
+			return result, listText(result), nil
+		}),
+	}
+}
+
+func (runner *runner) cacheClearCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "clear",
+		Usage: "Remove every object in the cache.",
+		Flags: []urfave.Flag{
+			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what clearing would remove."},
+		},
+		Action: runner.run("cache.clear", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			if err := noArguments(current); err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			// No confirmation prompt: DAC has none anywhere, a cleared cache
+			// costs a pull rather than anything that cannot be got back, and
+			// --dry-run is already the careful path.
+			result, err := service.CacheClear(ctx, current.Bool("dry-run"))
+			if err != nil {
+				return nil, "", err
+			}
+			return result, gcText(result), nil
+		}),
+	}
+}
+
+// cacheRemoveCommand builds the targeted removal.
+//
+// It takes coordinates rather than digests because a coordinate is what a
+// person has: the cache is keyed by digest, and looking one up to forget it is
+// the sort of errand a tool should run for you.
+func (runner *runner) cacheRemoveCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:      "remove",
+		Usage:     "Remove the objects specific asset versions resolved to.",
+		ArgsUsage: "<namespace>/<name>@<version>...",
+		Flags: []urfave.Flag{
+			&urfave.BoolFlag{Name: "force", Usage: "Accept uncaching an asset that shares an object with one being removed."},
+		},
+		Action: runner.run("cache.remove", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			names, err := coordinates(current)
+			if err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.CacheRemove(ctx, application.CacheRemoveOptions{
+				Coordinates: names,
+				Force:       current.Bool("force"),
+			})
+			if err != nil {
+				return nil, "", err
+			}
+			return result, removeObjectsText(result), nil
+		}),
+	}
+}
+
+// listText summarizes one cache listing.
+func listText(result application.CacheListResult) string {
+	if result.ObjectCount == 0 {
+		if result.MissingCount > 0 {
+			return fmt.Sprintf("No objects. %s not cached. Run dac pull.", plural(result.MissingCount, "asset"))
+		}
+		return "No objects."
+	}
+	var text strings.Builder
+	for _, object := range result.Objects {
+		_, _ = fmt.Fprintf(&text, "%s  %10s  %s", object.Digest, bytesize.Format(object.Size), object.LastUsed.Format(time.RFC3339))
+		if len(object.Coordinates) > 0 {
+			_, _ = fmt.Fprintf(&text, "  %s", strings.Join(object.Coordinates, ", "))
+		}
+		text.WriteByte('\n')
+	}
+	_, _ = fmt.Fprintf(&text, "%s (%s)", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount))
+	if result.MissingCount > 0 {
+		_, _ = fmt.Fprintf(&text, ". %s not cached.", plural(result.MissingCount, "asset"))
+	} else {
+		text.WriteByte('.')
+	}
+	return text.String()
+}
+
+// removeObjectsText summarizes one targeted removal.
+func removeObjectsText(result application.CacheRemoveResult) string {
+	var text strings.Builder
+	_, _ = fmt.Fprintf(&text, "Removed %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount))
+	if len(result.Shared) > 0 {
+		_, _ = fmt.Fprintf(&text, " %s also lost cached bytes.", strings.Join(result.Shared, ", "))
+	}
+	if len(result.Missing) > 0 {
+		_, _ = fmt.Fprintf(&text, " %s was not cached.", plural(len(result.Missing), "object"))
+	}
+	return text.String()
+}
+
+// scrubText summarizes one explicit cache check.
+func scrubText(result application.VerifyCacheResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Checked %s (%s).", plural(result.Checked, "object"), bytesize.Format(result.ByteCount))
 	if result.MissingCount > 0 {
@@ -151,31 +296,18 @@ func gcText(result application.GCResult) string {
 	return text.String()
 }
 
-// ageUnits extends Go durations with the periods a cache lifetime is actually
-// written in. Nobody sets a cache policy in hours.
-var ageUnits = map[string]time.Duration{"d": 24 * time.Hour, "w": 7 * 24 * time.Hour}
-
-func parseAge(value string) (time.Duration, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, errors.New("the maximum age is empty")
-	}
-	if unit, exists := ageUnits[trimmed[len(trimmed)-1:]]; exists {
-		count, err := strconv.ParseFloat(trimmed[:len(trimmed)-1], 64)
+// maximumAge reads the collection age, preferring the flag over the config.
+func (runner *runner) maximumAge(current *urfave.Command) (time.Duration, error) {
+	if current.IsSet("max-age") {
+		age, err := config.ParseDuration(current.String("max-age"))
 		if err != nil {
-			return 0, fmt.Errorf("age %q is invalid", value)
+			return 0, fault.Wrap("invalid_arguments", "The maximum age is invalid.", err)
 		}
-		if count < 0 {
-			return 0, fmt.Errorf("age %q must not be negative", value)
-		}
-		return time.Duration(count * float64(unit)), nil
+		return age, nil
 	}
-	age, err := time.ParseDuration(trimmed)
+	settings, err := runner.config(current)
 	if err != nil {
-		return 0, fmt.Errorf("age %q is invalid", value)
+		return 0, err
 	}
-	if age < 0 {
-		return 0, fmt.Errorf("age %q must not be negative", value)
-	}
-	return age, nil
+	return settings.MaxAge, nil
 }

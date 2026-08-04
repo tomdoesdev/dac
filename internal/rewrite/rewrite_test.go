@@ -233,3 +233,69 @@ func TestLoadReadsAFile(t *testing.T) {
 		t.Fatalf("expected ErrBlocked, got %v", err)
 	}
 }
+
+// Build is the entry a TOML config file uses. It has to agree with the
+// directive parser about every question, because a site moving from one to the
+// other is not expecting its policy to change meaning on the way.
+func TestBuildAgreesWithTheDirectiveParser(t *testing.T) {
+	built, err := rewrite.Build(rewrite.Options{
+		Rewrites: []rewrite.Rule{{
+			Pattern:     `^example\.com/(.*)$`,
+			Replacement: "mirror.internal/upstream/$1",
+		}},
+		Allow: []string{"Mirror.Internal"},
+		Block: []string{"*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directives := parse(t, "rewrite ^example\\.com/(.*)$ mirror.internal/upstream/$1\nallow mirror.internal\nblock *\n")
+	for _, value := range []string{"https://example.com/geo/db.bin", "https://mirror.internal/x", "https://elsewhere.example/y"} {
+		wantResult, wantErr := directives.Apply(value)
+		gotResult, gotErr := built.Apply(value)
+		if (wantErr == nil) != (gotErr == nil) {
+			t.Errorf("Apply(%q): built err = %v, directives err = %v", value, gotErr, wantErr)
+			continue
+		}
+		if gotResult.URL != wantResult.URL || gotResult.Rewritten != wantResult.Rewritten {
+			t.Errorf("Apply(%q) = %+v, want %+v", value, gotResult, wantResult)
+		}
+	}
+}
+
+func TestBuildAllowsInsecureHTTP(t *testing.T) {
+	built, err := rewrite.Build(rewrite.Options{
+		Rewrites:          []rewrite.Rule{{Pattern: `^example\.com/(.*)$`, Replacement: "http://mirror.internal/$1"}},
+		AllowInsecureHTTP: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := built.Apply("https://example.com/db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AllowInsecureHTTP {
+		t.Error("the result does not permit insecure HTTP")
+	}
+}
+
+func TestBuildRejectsInvalidRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		options rewrite.Options
+	}{
+		{"bad pattern", rewrite.Options{Rewrites: []rewrite.Rule{{Pattern: "([", Replacement: "x"}}}},
+		{"no pattern", rewrite.Options{Rewrites: []rewrite.Rule{{Replacement: "x"}}}},
+		{"no replacement", rewrite.Options{Rewrites: []rewrite.Rule{{Pattern: "x"}}}},
+		{"empty allow", rewrite.Options{Allow: []string{""}}},
+		{"empty block", rewrite.Options{Block: []string{""}}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if config, err := rewrite.Build(test.options); err == nil {
+				t.Errorf("Build succeeded: %+v", config)
+			}
+		})
+	}
+}
