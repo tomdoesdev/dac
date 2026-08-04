@@ -90,22 +90,28 @@ func (runner *runner) pathCommand() *urfave.Command {
 	}
 }
 
+// exportCommand builds the cache bundle export command.
+//
+// The bundle is a required argument rather than a required flag. A required
+// flag is a flag in name only: an export is "write this cache to here", and the
+// destination is half of what the command says rather than a setting attached
+// to it. That the path has no default is why it is required; it is not a reason
+// to make every script that writes a bundle spell --file first.
 func (runner *runner) exportCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:  "export",
-		Usage: "Write locked objects to a cache bundle.",
-		Flags: []urfave.Flag{
-			&urfave.StringFlag{Name: "file", Required: true, Usage: "Write the tar bundle to this file."},
-		},
+		Name:      "export",
+		Usage:     "Write locked objects to a cache bundle.",
+		ArgsUsage: "<bundle>",
 		Action: runner.run("export", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
+			bundle, err := requiredPath(current, "Specify one bundle path to write, as <bundle>.")
+			if err != nil {
 				return nil, "", err
 			}
 			service, err := runner.storeService(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Export(ctx, current.String("file"))
+			result, err := service.Export(ctx, bundle)
 			if err != nil {
 				return nil, "", err
 			}
@@ -115,22 +121,24 @@ func (runner *runner) exportCommand() *urfave.Command {
 }
 
 // importCommand builds the local cache bundle import command.
+//
+// It takes the bundle as an argument for the same reason export does, and the
+// pair reads as one round trip because both spell it the same way.
 func (runner *runner) importCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:  "import",
-		Usage: "Install objects from a cache bundle.",
-		Flags: []urfave.Flag{
-			&urfave.StringFlag{Name: "file", Required: true, Usage: "Read the tar bundle from this file."},
-		},
+		Name:      "import",
+		Usage:     "Install objects from a cache bundle.",
+		ArgsUsage: "<bundle>",
 		Action: runner.run("import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
+			bundle, err := requiredPath(current, "Specify one bundle path to read, as <bundle>.")
+			if err != nil {
 				return nil, "", err
 			}
 			service, err := runner.storeService(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Import(ctx, current.String("file"))
+			result, err := service.Import(ctx, bundle)
 			if err != nil {
 				return nil, "", err
 			}

@@ -526,8 +526,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
-      <tr><td class="mono">dac export --file &lt;tar&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
-      <tr><td class="mono">dac import --file &lt;tar&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
+      <tr><td class="mono">dac export &lt;bundle&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
+      <tr><td class="mono">dac import &lt;bundle&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
       <tr><td class="mono">dac pack [&lt;archive&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
       <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;directory&gt;]] [--force]</td><td>Write the assets a dacpack carries into a directory. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
       <tr><td class="mono">dac cache verify [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
@@ -821,14 +821,14 @@ exit 1</code></pre></div>
 <div class="codeblock"><div class="codebar"><span class="name">shell — connected side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># From a checkout of the exact commit the isolated machine will build.
 git checkout v1.8.0
 dac pull
-dac export --file dac-cache.tar
+dac export dac-cache.tar
 
 # The bundle carries every locked object plus an index naming each coordinate,
 # source URL, digest, and size. Two assets that resolved to the same bytes
 # share one blob, so the bundle is no larger than the object set.
 sha256sum dac-cache.tar</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac import --file dac-cache.tar   # validates index, paths, sizes, and digests
+<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac import dac-cache.tar   # validates index, paths, sizes, and digests
 dac pull --offline                # installs from the cache; no requests at all
 make build</code></pre></div>
 

@@ -631,7 +631,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--progress=false")), "add")
 
 	bundle := filepath.Join(t.TempDir(), "cache.tar")
-	result := runJSON(t, appendArgs(paths.base, "export", "--file", bundle))
+	result := runJSON(t, appendArgs(paths.base, "export", bundle))
 	assertSuccess(t, result, "export")
 	if result.value["data"].(map[string]any)["assetCount"].(float64) != 1 {
 		t.Fatalf("unexpected export: %#v", result.value)
@@ -642,7 +642,7 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	offline := newProject(t)
 	copyInto(t, paths.manifestPath, offline.manifestPath)
 	copyInto(t, paths.lockPath, offline.lockPath)
-	result = runJSON(t, appendArgs(offline.base, "import", "--file", bundle))
+	result = runJSON(t, appendArgs(offline.base, "import", bundle))
 	assertSuccess(t, result, "import")
 	data := result.value["data"].(map[string]any)
 	if data["itemCount"] != float64(1) || data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
@@ -651,6 +651,16 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	if human := run(t, appendArgs(offline.base, "path", "app/geo@1")); human.status != ExitOK {
 		t.Fatalf("the bundle did not populate the cache: %#v", human)
 	}
+
+	// The bundle path is the argument both halves take, and neither has a
+	// default to fall back on. Leaving it off, naming two, or handing over the
+	// empty string a shell makes from a variable nobody set are all mistakes
+	// rather than requests to guess at a file name.
+	assertError(t, runJSON(t, appendArgs(paths.base, "export")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(paths.base, "export", bundle, "extra")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(paths.base, "export", "  ")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(offline.base, "import")), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(offline.base, "import", bundle, "extra")), "invalid_arguments")
 }
 
 // TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory covers the two
@@ -1192,7 +1202,7 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	// path used to return this object, and every script downstream would have
 	// read the wrong bytes without ever being told.
 	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
-	assertError(t, runJSON(t, appendArgs(base, "export", "--file", filepath.Join(directory, "bundle.tar"))), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "export", filepath.Join(directory, "bundle.tar"))), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "cache", "verify")), "cache_object_corrupt")
 
 	info := runJSON(t, appendArgs(base, "info"))

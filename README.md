@@ -104,8 +104,8 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac pull [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
-| `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
-| `dac import --file <tar>` | Install objects from a cache bundle into the local cache. |
+| `dac export <bundle>` | Write locked objects and metadata to a cache bundle. |
+| `dac import <bundle>` | Install objects from a cache bundle into the local cache. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
 | `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
 | `dac cache verify [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
@@ -563,13 +563,13 @@ process holds would let a later process take the same lock through a new inode.
 
 ### Cache bundles
 
-`dac export --file <tar>` writes every locked object to one tar bundle. `dac
-import --file <tar>` validates the bundle and installs its objects in the local
-cache. This supports a cold cache on an isolated machine.
+`dac export <bundle>` writes every locked object to one tar bundle. `dac import
+<bundle>` validates the bundle and installs its objects in the local cache. This
+supports a cold cache on an isolated machine.
 
 ```bash
-dac export --file ./cache.tar      # on a machine with network access
-dac import --file ./cache.tar      # on an isolated machine
+dac export ./cache.tar             # on a machine with network access
+dac import ./cache.tar             # on an isolated machine
 ```
 
 The format uses two ideas from the OCI image layout. The tar root contains an
@@ -609,9 +609,11 @@ DAC at all. It reads no project files and needs no cache directory, so it runs
 anywhere the archive does.
 
 The archive defaults to `dac.dacpack` and the destination to the working
-directory. Export keeps its required `--file` because a bundle is a thing you
-are moving somewhere and the destination is the point; a dacpack is a build
-output that a project makes one of.
+directory. `export` and `import` require their bundle path, because a bundle is
+a thing you are moving somewhere and the somewhere is the point, while a dacpack
+is a build output that a project makes one of. Both spell it as an argument
+either way: whether a path has a default and whether it is a flag are separate
+questions, and a required flag is a flag in name only.
 
 The layout keys each file on the coordinate it belongs to, and the name comes
 from the lock file's `filename` — falling back to the name half of the
