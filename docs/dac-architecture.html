@@ -253,7 +253,7 @@ footer.page a{color:var(--muted)}
     decisions those follow from.
   </p>
   <div class="chips">
-    <span class="chip on">application v6.0.0</span>
+    <span class="chip on">application v7.0.0</span>
     <span class="chip">schema 2</span>
     <span class="chip">output 3</span>
     <span class="chip">bundle 2</span>
@@ -593,7 +593,7 @@ type RequestDetail interface {
     <li>
       <h4>The origin sends bytes</h4>
       <p>The body is streamed through the progress reporter into <code>Store.Put</code>, with the publisher
-      digest as the expected digest when there is one and <code>--max-size</code> as the bound when there is not.
+      digest as the expected digest when there is one and <code>transfer.max-size</code> as the bound when there is not.
       The object is hashed on the way to disk; nothing is installed until every byte has been checked.</p>
       <span class="out">status: resolved</span>
     </li>
@@ -617,7 +617,7 @@ type RequestDetail interface {
     </li>
     <li>
       <h4>Try the distribution directory</h4>
-      <p>With <code>--distdir</code>, a file named by the locked digest's hexadecimal value is installed straight
+      <p>With <code>dac import &lt;dir&gt;</code>, a file named by the locked digest's hexadecimal value is installed straight
       from disk. That name is the only one a consumer can actually check — DAC used to accept the final URL
       element, which was a guess and so could not report a mismatch correctly.</p>
       <span class="out">status: distdir</span>
@@ -661,7 +661,7 @@ type RequestDetail interface {
       <tr><td class="mono">DisableCompression</td><td class="mono">true</td><td>DAC asks for <code>Accept-Encoding: identity</code> and rejects any response whose <code>Content-Encoding</code> is not identity. A digest is a claim about a specific stream of bytes; transfer coding must not be in the way of checking it.</td></tr>
       <tr><td class="mono">ForceAttemptHTTP2</td><td class="mono">true</td><td>Large parallel transfers from one host.</td></tr>
       <tr><td class="mono">MaxIdleConnsPerHost</td><td class="mono">8</td><td>Matches the concurrency a project realistically uses against one origin.</td></tr>
-      <tr><td class="mono">TLSHandshakeTimeout<br>ResponseHeaderTimeout<br>Dial timeout</td><td class="mono">--timeout</td><td>One knob for "the server is not answering", separate from the body-inactivity guard below.</td></tr>
+      <tr><td class="mono">TLSHandshakeTimeout<br>ResponseHeaderTimeout<br>Dial timeout</td><td class="mono">transfer.timeout</td><td>One knob for "the server is not answering", separate from the body-inactivity guard below.</td></tr>
       <tr><td class="mono">Proxy</td><td class="mono">from environment</td><td>Standard <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>/<code>NO_PROXY</code> behaviour.</td></tr>
     </tbody>
   </table>
@@ -679,7 +679,7 @@ type RequestDetail interface {
 
   <h3>The stall guard</h3>
   <p>
-    <code>--timeout</code> is an <em>inactivity</em> timeout, not a deadline. The response body is wrapped in a
+    <code>transfer.timeout</code> is an <em>inactivity</em> timeout, not a deadline. The response body is wrapped in a
     guard holding a <code>time.AfterFunc</code> timer: every read that returns bytes resets it, and the timer
     firing cancels the request context. A multi-hour transfer that keeps moving is fine; one that goes quiet
     for the timeout fails with <code>ErrStalled</code>, which the error layer maps to the code
@@ -757,16 +757,12 @@ type RequestDetail interface {
 
   <h3>Selection</h3>
   <p>A specification is either a bare command or <code>&lt;host&gt;=&lt;command&gt;</code>:</p>
-<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># Every host.
-dac pull --credential-helper /usr/local/bin/dac-cred
+<div class="codeblock"><div class="codebar"><span class="name">~/.config/dac/config.toml</span><button type="button" class="copy">copy</button></div><pre><code class="lang-toml">[credentials]
+# Applies to every host with no key of its own.
+default = "/usr/local/bin/dac-cred"
 
-# One host. A host-specific helper wins over a general one.
-dac pull --credential-helper files.internal=/usr/local/bin/dac-cred-internal
-
-# Both: files.internal uses its own helper, everything else uses the general one.
-dac pull \
-  --credential-helper /usr/local/bin/dac-cred \
-  --credential-helper files.internal=/usr/local/bin/dac-cred-internal</code></pre></div>
+# Applies to one host, and wins over default.
+"files.internal" = "/usr/local/bin/dac-cred-internal"</code></pre></div>
   <p>
     Host matching is exact and case-insensitive — no subdomain matching, no wildcards. A helper bound to a
     host always beats a general helper, whatever order they were given in, so a project can point one
@@ -815,14 +811,14 @@ func (client *Client) authorize(ctx context.Context, request *http.Request) erro
     <li>Helper <strong>stdout is never</strong> written to a log, an error message, or a JSON <code>cause</code>. A response that fails to parse reports only <code>credential helper "..." returned invalid JSON</code> — the malformed text, which may well contain the token, is dropped.</li>
     <li>Helper <strong>stderr <em>is</em></strong> included in the failure message when the helper exits non-zero, because that is where a helper explains itself. A helper must therefore never print a secret to stderr.</li>
     <li>Output is size-bounded before it is buffered, so a runaway helper cannot exhaust memory while DAC waits for it.</li>
-    <li>The 30-second limit is a constant, deliberately not tied to <code>--timeout</code>: that limit covers a multi-gigabyte transfer, and a helper that has not answered in half a minute is stuck.</li>
+    <li>The 30-second limit is a constant, deliberately not tied to <code>transfer.timeout</code>: that limit covers a multi-gigabyte transfer, and a helper that has not answered in half a minute is stuck.</li>
     <li>A timeout is distinguished from a cancellation — if the parent context is still live, the error says the helper timed out, naming the command and the limit.</li>
   </ul>
 
   <h3>Where helpers apply</h3>
   <p>
     <code>add</code>, <code>lock</code>, <code>pull</code>, and <code>verify --refresh</code> — every command that makes a request.
-    <code>--credential-helper</code> is repeatable, and <code>DAC_CREDENTIAL_HELPER</code> sets the same option for a
+    The credentials table is a map from host to command, and a site config sets it for a
     whole job. When no helper is configured at all, the resolver is <code>nil</code> and the header lookup returns
     immediately, so the unauthenticated path costs nothing.
   </p>
@@ -929,8 +925,9 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
 
   <p>
     The root resolves from <code>--cache-dir</code>, then <code>DAC_CACHE_DIR</code>, then
-    <code>XDG_CACHE_HOME/dac</code>, then <code>$HOME/.cache/dac</code> — and if none of those yields an absolute
-    path, the command fails saying so rather than guessing.
+    <code>cache.dir</code> in the config file, then <code>XDG_CACHE_HOME/dac</code>, then
+    <code>$HOME/.cache/dac</code> — and if none of those yields an absolute path, the command fails saying so
+    rather than guessing. <code>dac cache dir</code> prints where it landed.
   </p>
 
   <h3>The problem the sidecar solves</h3>
@@ -987,7 +984,7 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
     the function never read — and recording it would mark an unverified object as verified.
   </p>
   <p>
-    <code>Store.Verify</code>, which backs <code>dac cache verify</code>, deliberately ignores both the memo and
+    <code>Store.Verify</code>, which backs <code>dac cache scrub</code>, deliberately ignores both the memo and
     the sidecar. Those exist so ordinary commands can avoid reading an object they have reason to trust, and
     an explicit check that trusted them would only ever confirm its own bookkeeping.
   </p>
@@ -995,9 +992,9 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
   <h3>Installing an object</h3>
   <ol>
     <li>Create a temporary file under <code>&lt;cache&gt;/tmp/download-*</code>.</li>
-    <li>Wrap the reader in a limit — the expected size when known, otherwise <code>--max-size</code> — reading <strong>one extra byte</strong>, so an oversized response cannot look complete.</li>
+    <li>Wrap the reader in a limit — the expected size when known, otherwise <code>transfer.max-size</code> — reading <strong>one extra byte</strong>, so an oversized response cannot look complete.</li>
     <li>Copy through an <code>io.MultiWriter</code> into the file and a SHA-256 hasher at once.</li>
-    <li>Compare size and digest. An overrun of a <em>known</em> size is a content failure; an overrun of <code>--max-size</code> is a limit the operator chose, and gets a different error.</li>
+    <li>Compare size and digest. An overrun of a <em>known</em> size is a content failure; an overrun of <code>transfer.max-size</code> is a limit the operator chose, and gets a different error.</li>
     <li><code>Sync</code>, <code>chmod 0444</code>, close.</li>
     <li>Take the digest lock, unless the caller already holds it, and <code>rename</code> into place.</li>
     <li>Write the sidecar and record the result.</li>
@@ -1062,7 +1059,7 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
       <tr><td class="mono">dac info</td><td>Prints <code>cache: corrupt</code>.</td><td>Reporting state is its whole job.</td></tr>
       <tr><td class="mono">dac export</td><td>Refuses.</td><td>A bundle is the one artifact that would carry cache damage onto machines with no way to tell where it came from.</td></tr>
       <tr><td class="mono">resolve (add / lock)</td><td>Falls through to the origin.</td><td>It was about to fetch anyway; good bytes replace bad ones.</td></tr>
-      <tr><td class="mono">dac cache verify</td><td>Reports and exits 1; <code>--repair</code> removes.</td><td>Finding the damage is not the same as it not being there, so a scripted run gets a nonzero status.</td></tr>
+      <tr><td class="mono">dac cache scrub</td><td>Reports and exits 1; <code>--repair</code> removes.</td><td>Finding the damage is not the same as it not being there, so a scripted run gets a nonzero status.</td></tr>
     </tbody>
   </table>
   </div>
@@ -1178,7 +1175,10 @@ type Error struct {
     changing one version says what happened to the others. Version 4 moved the lock operations off
     <code>pull</code> onto <code>lock</code>: a <code>pull</code> result dropped the <code>locked</code> array it could no
     longer populate, and a <code>lock</code> result carries it alongside <code>changed</code>, which reports whether
-    the file on disk actually moved.
+    the file on disk actually moved. Version 5 came with the move to a config file:
+    <code>dac cache verify</code> became <code>dac cache scrub</code>, so that result's <code>command</code>
+    field changed, and <code>pull</code> dropped both the <code>distdir</code> asset status and the
+    <code>distdir_read_failed</code> code along with the flag that produced them.
   </p>
   <p>
     Exit status is three values: <code>0</code> success, <code>1</code> the command failed, <code>2</code> DAC rejected
@@ -1294,7 +1294,7 @@ type Error struct {
     <h4>A sidecar records the object's stat at install</h4>
     <dl>
       <dt>Because</dt><dd>A content-addressed name is a claim, and checking it means hashing gigabytes in the middle of a build. Trusting the filename gives up the guarantee; hashing every time gives up the performance.</dd>
-      <dt>Buys</dt><dd>Ordinary commands verify with one stat and catch every case that actually happens — edited in place, truncated, restored from backup. <code>dac cache verify</code> covers the rest at the cost of reading everything.</dd>
+      <dt>Buys</dt><dd>Ordinary commands verify with one stat and catch every case that actually happens — edited in place, truncated, restored from backup. <code>dac cache scrub</code> covers the rest at the cost of reading everything.</dd>
       <dt>Follows</dt><dd>The object's own timestamp becomes evidence, so liveness had to move into the sidecar — which is why a cache hit touches the sidecar and never the object.</dd>
     </dl>
   </div>
@@ -1341,7 +1341,7 @@ type Error struct {
   </div>
 
   <div class="decision">
-    <h4><code>--max-size</code> bounds only unknown-size responses</h4>
+    <h4><code>transfer.max-size</code> bounds only unknown-size responses</h4>
     <dl>
       <dt>Because</dt><dd>When the size is known, it <em>is</em> the limit. A separate ceiling then only exists to stop a runaway stream, not to express a policy about how large assets may be.</dd>
       <dt>Buys</dt><dd>A default of 2 GiB that is a real guard rather than a knob generating questions — and a distinct error for "the operator chose this limit" versus "the content is wrong".</dd>
@@ -1389,7 +1389,7 @@ type Error struct {
     <div class="card">
       <span class="tag">compatibility</span>
       <h3>Four version numbers</h3>
-      <p>Application <code>6.0.0</code>, manifest and lock schema <code>2</code>, output contract <code>3</code>, bundle schema <code>2</code>, sidecar <code>1</code>. Each moves for its own reasons and each rejects what it does not understand.</p>
+      <p>Application <code>7.0.0</code>, manifest and lock schema <code>2</code>, output contract <code>5</code>, config schema <code>1</code>, bundle schema <code>2</code>, sidecar <code>1</code>. Each moves for its own reasons and each rejects what it does not understand.</p>
     </div>
   </div>
 
@@ -1403,7 +1403,7 @@ type Error struct {
 </section>
 
 <footer class="page">
-  <p>DAC — <code>github.com/tom/dac</code> · architecture as of application version 6.0.0.</p>
+  <p>DAC — <code>github.com/tom/dac</code> · architecture as of application version 7.0.0.</p>
 </footer>
 
 </main>

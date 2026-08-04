@@ -12,7 +12,7 @@ import (
 	"github.com/tom/dac/internal/project"
 )
 
-const Version = "6.0.0"
+const Version = "7.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -60,6 +60,10 @@ type ObjectStore interface {
 	// decided about it.
 	Verify(ctx context.Context, digest string) (Object, bool, error)
 	List(ctx context.Context) ([]string, error)
+	// Describe reports an object's size and last use without refreshing its
+	// liveness timestamp, so asking what the cache holds does not count as
+	// using it.
+	Describe(digest string) (ObjectDescription, bool, error)
 	Remove(ctx context.Context, digest string) error
 	Put(ctx context.Context, reader io.Reader, options PutOptions) (Object, error)
 	WithLock(ctx context.Context, digest string, operation func() error) error
@@ -161,9 +165,6 @@ type NetworkOptions struct {
 	Concurrency int
 	MaxSize     int64
 	Offline     bool
-	// DistDir holds pre-downloaded objects that pull installs instead of
-	// making a request. It is the cold-cache path for an isolated network.
-	DistDir string
 	// Refresh contacts the origin for every asset instead of trusting an entry
 	// the lock already describes or a publisher digest the cache satisfies. It
 	// backs lock --refresh, which writes what it finds, and verify --refresh,

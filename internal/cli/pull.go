@@ -10,9 +10,8 @@ import (
 )
 
 func (runner *runner) pullCommand() *urfave.Command {
-	flags := append(runner.networkFlags(true, true),
+	flags := append(runner.networkFlags(true),
 		&urfave.BoolFlag{Name: "offline", Usage: "Disable network requests."},
-		&urfave.StringFlag{Name: "distdir", Sources: urfave.EnvVars("DAC_DISTDIR"), Usage: "Install locked assets from this directory before requesting them."},
 	)
 	return &urfave.Command{
 		Name: "pull",
@@ -31,11 +30,11 @@ func (runner *runner) pullCommand() *urfave.Command {
 				return nil, "", err
 			}
 			defer client.Close()
-			concurrency, err := concurrency(current)
+			concurrency, err := runner.concurrency(current)
 			if err != nil {
 				return nil, "", err
 			}
-			maxSize, err := maximumSize(current)
+			maxSize, err := runner.maximumSize(current)
 			if err != nil {
 				return nil, "", err
 			}
@@ -43,7 +42,6 @@ func (runner *runner) pullCommand() *urfave.Command {
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Offline:     current.Bool("offline"),
-				DistDir:     current.String("distdir"),
 			})
 			return result, fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset")), err
 		}),

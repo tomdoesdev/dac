@@ -120,17 +120,23 @@ func (runner *runner) exportCommand() *urfave.Command {
 	}
 }
 
-// importCommand builds the local cache bundle import command.
+// importCommand builds the local cache import command.
 //
-// It takes the bundle as an argument for the same reason export does, and the
+// It takes the source as an argument for the same reason export does, and the
 // pair reads as one round trip because both spell it the same way.
+//
+// It accepts a directory as well as a bundle. Both are the same delivery in
+// different wrappers -- objects named by digest, in a tar or loose on a mounted
+// share -- and having a command for one and a flag on pull for the other meant
+// two ways to say the same thing, in two places, that could not be told apart
+// by reading either.
 func (runner *runner) importCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "import",
-		Usage:     "Install objects from a cache bundle.",
-		ArgsUsage: "<bundle>",
+		Usage:     "Install objects from a cache bundle or a directory of digest-named files.",
+		ArgsUsage: "<bundle|directory>",
 		Action: runner.run("import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			bundle, err := requiredPath(current, "Specify one bundle path to read, as <bundle>.")
+			bundle, err := requiredPath(current, "Specify one bundle or directory path to read, as <bundle|directory>.")
 			if err != nil {
 				return nil, "", err
 			}

@@ -294,7 +294,7 @@ footer.page a{color:var(--muted)}
     <span class="chip">unix only</span>
     <span class="chip">sha-256 content addressed</span>
     <span class="chip">manifest + lock</span>
-    <span class="chip">v6.0.0 · output v3</span>
+    <span class="chip">v7.0.0 · output v5</span>
   </div>
 </div>
 
@@ -451,9 +451,9 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <div class="card"><span class="tag">trust</span><h3>Publisher pinning</h3><p><code>--pin</code> records the resolved digest as <code>integrity</code>. DAC also reads the SRI <code>sha256-&lt;base64&gt;</code> spelling and normalizes it.</p></div>
     <div class="card"><span class="tag">secrets</span><h3>Credential helpers</h3><p>No tokens in the manifest, the lock, or a config file. A helper program answers per request, per host, and is re-asked after every redirect.</p></div>
     <div class="card"><span class="tag">topology</span><h3>Rewrite config</h3><p>Send requests to a mirror without editing a single manifest, and allow/block hosts outright. Canonical URLs stay canonical.</p></div>
-    <div class="card"><span class="tag">isolation</span><h3>Bundles and distdir</h3><p><code>export</code>/<code>import</code> move a whole locked cache across an air gap as one tar; <code>--distdir</code> installs from a directory of digest-named files.</p></div>
+    <div class="card"><span class="tag">isolation</span><h3>Bundles and shares</h3><p><code>export</code>/<code>import</code> move a whole locked cache across an air gap as one tar; <code>dac import &lt;dir&gt;</code> installs the same objects from a mounted share of digest-named files.</p></div>
     <div class="card"><span class="tag">automation</span><h3>Machine output</h3><p><code>--json</code> writes one versioned envelope with a stable error <code>code</code>, a human <code>cause</code>, and structured <code>details</code>.</p></div>
-    <div class="card"><span class="tag">maintenance</span><h3>Cache hygiene</h3><p><code>cache gc</code> collects by last use, <code>cache verify --repair</code> hashes objects and removes the ones that no longer match.</p></div>
+    <div class="card"><span class="tag">maintenance</span><h3>Cache hygiene</h3><p><code>cache gc</code> collects by last use, <code>cache clear</code> empties it, <code>cache scrub --repair</code> hashes objects and removes the ones that no longer match.</p></div>
     <div class="card"><span class="tag">throughput</span><h3>Parallel and safe</h3><p>Assets download concurrently, and concurrent DAC processes coordinate through a per-digest lock, so shared runners cannot corrupt each other.</p></div>
   </div>
 
@@ -523,15 +523,20 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac remove &lt;coordinate&gt;</td><td>Remove one asset version without network access.</td></tr>
       <tr><td class="mono">dac info [&lt;ns&gt;/&lt;name&gt;[@&lt;version&gt;]]</td><td>Show asset, request, lock, and cache information. No network.</td></tr>
       <tr><td class="mono">dac lock</td><td>Resolve the manifest assets the lock file does not describe and write it. Flags: <code>--refresh</code>, <code>--rebind</code>, <code>--no-rewrite</code>.</td></tr>
-      <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--offline</code>, <code>--concurrency</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
       <tr><td class="mono">dac export &lt;bundle&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
       <tr><td class="mono">dac import &lt;bundle&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
       <tr><td class="mono">dac pack [&lt;archive&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
       <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;directory&gt;]] [--force]</td><td>Write the assets a dacpack carries into a directory. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
-      <tr><td class="mono">dac cache verify [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
-      <tr><td class="mono">dac cache gc [--max-age] [--dry-run]</td><td>Remove cache objects nothing has used recently. Accepts <code>30d</code>, <code>2w</code>, or any Go duration.</td></tr>
+      <tr><td class="mono">dac cache list [--all]</td><td>List cached objects with size, last use, and the assets they belong to.</td></tr>
+      <tr><td class="mono">dac cache clear [--dry-run]</td><td>Remove every cache object.</td></tr>
+      <tr><td class="mono">dac cache remove &lt;coordinate&gt;… [--force]</td><td>Remove the objects specific asset versions resolved to.</td></tr>
+      <tr><td class="mono">dac cache scrub [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
+      <tr><td class="mono">dac config path</td><td>Print the config files DAC read, most important first.</td></tr>
+      <tr><td class="mono">dac config show</td><td>Print the effective configuration as a config file.</td></tr>
+      <tr><td class="mono">dac cache gc [--max-age] [--dry-run]</td><td>Remove cache objects nothing has used recently. Accepts <code>30d</code>, <code>2w</code>, or any Go duration; defaults to <code>cache.max-age</code>.</td></tr>
       <tr><td class="mono">dac cache dir</td><td>Print the resolved cache directory.</td></tr>
       <tr><td class="mono">dac completion &lt;shell&gt;</td><td>Write a shell completion script.</td></tr>
     </tbody>
@@ -577,25 +582,61 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <tbody>
       <tr><td class="mono">--manifest</td><td></td><td class="mono">dac.json</td><td>global</td></tr>
       <tr><td class="mono">--lock</td><td></td><td class="mono">dac-lock.json</td><td>global</td></tr>
-      <tr><td class="mono">--cache-dir</td><td class="mono">DAC_CACHE_DIR</td><td>XDG cache</td><td>global</td></tr>
+      <tr><td class="mono">--cache-dir</td><td class="mono">DAC_CACHE_DIR</td><td><code>cache.dir</code>, then XDG cache</td><td>global</td></tr>
+      <tr><td class="mono">--config</td><td class="mono">DAC_CONFIG</td><td>XDG config search path</td><td>global</td></tr>
       <tr><td class="mono">--json, -j</td><td></td><td class="mono">false</td><td>global</td></tr>
-      <tr><td class="mono">--timeout</td><td class="mono">DAC_TIMEOUT</td><td class="mono">5m</td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--retries</td><td class="mono">DAC_RETRIES</td><td class="mono">2</td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--concurrency</td><td class="mono">DAC_CONCURRENCY</td><td class="mono">4</td><td>pull, verify</td></tr>
-      <tr><td class="mono">--max-size</td><td class="mono">DAC_MAX_SIZE</td><td class="mono">2GiB</td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--progress</td><td></td><td class="mono">true</td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--no-rewrite</td><td></td><td class="mono">false</td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--credential-helper</td><td class="mono">DAC_CREDENTIAL_HELPER</td><td></td><td>add, pull, verify</td></tr>
-      <tr><td class="mono">--distdir</td><td class="mono">DAC_DISTDIR</td><td></td><td>pull</td></tr>
+      <tr><td class="mono">--concurrency</td><td class="mono">DAC_CONCURRENCY</td><td class="mono">4</td><td>lock, pull, verify</td></tr>
+      <tr><td class="mono">--no-progress</td><td></td><td class="mono">false</td><td>add, lock, pull, verify</td></tr>
+      <tr><td class="mono">--no-rewrite</td><td></td><td class="mono">false</td><td>add, lock, pull, verify</td></tr>
+      <tr><td class="mono">--offline</td><td></td><td class="mono">false</td><td>add, pull</td></tr>
+      <tr><td class="mono">--refresh</td><td></td><td class="mono">false</td><td>lock, verify</td></tr>
+      <tr><td class="mono">--rebind</td><td></td><td class="mono">false</td><td>add, lock</td></tr>
     </tbody>
   </table>
   </div>
   <p>
-    <code>--timeout</code> is an <em>inactivity</em> timeout, not a total deadline — a transfer that keeps making
-    progress keeps running. <code>--max-size</code> bounds only a response whose size DAC does not know ahead of
-    time, so it exists to stop a runaway stream rather than to express a policy about asset sizes.
-    <code>--max-size none</code> removes the bound, and nothing else does: an empty value, a zero, and a count
+    Everything else lives in <code>config.toml</code>, read from the XDG base directories. How long this machine
+    waits and which helper answers for which host are properties of a deployment rather than decisions anybody
+    makes per invocation — they were flags because there was nowhere else to put them, and the price was that
+    four commands each carried all of them. Passing one of the options that moved says where it went.
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Config key</th><th>Default</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">transfer.timeout</td><td class="mono">5m</td><td>Inactivity limit for one transfer</td></tr>
+      <tr><td class="mono">transfer.retries</td><td class="mono">2</td><td>Retries for a transient failure</td></tr>
+      <tr><td class="mono">transfer.concurrency</td><td class="mono">4</td><td>Assets in flight at once</td></tr>
+      <tr><td class="mono">transfer.download-parts</td><td class="mono">4</td><td>Ranged requests one download may split across</td></tr>
+      <tr><td class="mono">transfer.max-size</td><td class="mono">2GiB</td><td>Bound on a response of unknown size, or <code>none</code></td></tr>
+      <tr><td class="mono">transfer.progress</td><td class="mono">true</td><td>Write transfer progress to standard error</td></tr>
+      <tr><td class="mono">cache.dir</td><td>XDG cache</td><td>Where objects are stored</td></tr>
+      <tr><td class="mono">cache.max-age</td><td class="mono">30d</td><td>Default age <code>dac cache gc</code> collects by</td></tr>
+      <tr><td class="mono">credentials</td><td></td><td>Host-to-helper map; <code>default</code> covers every host</td></tr>
+      <tr><td class="mono">rewrite</td><td></td><td>URL rewrite rules</td></tr>
+      <tr><td class="mono">hosts</td><td></td><td><code>allow</code>, <code>block</code>, <code>allow-insecure-http</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    Files merge <strong>per setting</strong> across the search path — <code>--config</code> or
+    <code>DAC_CONFIG</code>, then <code>$XDG_CONFIG_HOME/dac/config.toml</code>, then each
+    <code>$XDG_CONFIG_DIRS</code> entry — so a site installs one under <code>/etc/xdg</code> and a person
+    overrides one line without restating the rest. A flag beats the file; the file beats the default.
+    <code>dac config path</code> says which files were read and <code>dac config show</code> prints what they
+    settled on, as a config file that loads back to the same settings.
+  </p>
+  <p>
+    <code>transfer.timeout</code> is an <em>inactivity</em> timeout, not a total deadline — a transfer that keeps
+    making progress keeps running. <code>transfer.max-size</code> bounds only a response whose size DAC does not
+    know ahead of time, so it exists to stop a runaway stream rather than to express a policy about asset sizes.
+    <code>"none"</code> removes the bound, and nothing else does: an empty value, a zero, and a count
     too large for DAC to hold are all rejected rather than read as no limit.
+  </p>
+  <p>
+    DAC refuses a config file that group or other can write. The <code>credentials</code> table names programs
+    DAC runs, so a writable config is a way to choose them — the same reason <code>ssh</code> refuses a writable
+    <code>~/.ssh/config</code>.
   </p>
 </section>
 
@@ -666,7 +707,7 @@ COPY dac.json dac-lock.json ./
 # that changed nothing cost zero downloads. DAC takes a per-digest lock, so the
 # default sharing=shared is safe for parallel builds on one machine.
 RUN --mount=type=cache,target=/root/.cache/dac \
-    dac pull --progress=false \
+    dac pull --no-progress \
  &amp;&amp; install -D "$(dac path backend-app/geo-database@2026.08)" /out/geo/database.bin \
  &amp;&amp; mkdir -p /out/policy \
  &amp;&amp; tar -xzf "$(dac path platform/opa-bundle@1.12.0)" -C /out/policy
@@ -683,7 +724,7 @@ ENTRYPOINT ["/usr/local/bin/app"]</code></pre></div>
       <dt>plain <code>dac pull</code></dt><dd>Refuses a lock file that does not describe the manifest. Someone who edits <code>dac.json</code> without locking it breaks the image build loudly instead of shipping something nobody chose.</dd>
       <dt>cache mount</dt><dd>The cache never becomes a layer, so the image does not carry a second copy of every asset, and a rebuild reuses objects across builds of unrelated images.</dd>
       <dt><code>dac path</code></dt><dd>Returns a path only for an object that still holds the bytes DAC installed. A truncated or edited cache object fails the build here rather than inside the running container.</dd>
-      <dt><code>--progress=false</code></dt><dd>BuildKit logs are not a terminal, so DAC would emit start/finish lines per asset. Turning it off keeps the log short; leave it on if you want per-asset timing.</dd>
+      <dt><code>--no-progress</code></dt><dd>BuildKit logs are not a terminal, so DAC would emit start/finish lines per asset. Turning it off keeps the log short; leave it on if you want per-asset timing.</dd>
     </dl>
 
     <h4>Fully hermetic variant</h4>
@@ -693,7 +734,7 @@ ENTRYPOINT ["/usr/local/bin/app"]</code></pre></div>
     </p>
 <div class="codeblock"><div class="codebar"><span class="name">Dockerfile fragment</span><button type="button" class="copy">copy</button></div><pre><code class="lang-dockerfile">RUN --mount=type=cache,target=/root/.cache/dac \
     --network=none \
-    dac pull --offline --progress=false \
+    dac pull --offline --no-progress \
  &amp;&amp; install -D "$(dac path backend-app/geo-database@2026.08)" /out/geo/database.bin</code></pre></div>
     <p>
       <code>--offline</code> makes a cache miss a hard failure with the code <code>offline_cache_miss</code>, which is
@@ -740,7 +781,7 @@ jobs:
         run: dac verify
 
       - name: Fetch build inputs
-        run: dac pull --progress=false --concurrency 8
+        run: dac pull --no-progress --concurrency 8
 
       - name: Build
         run: make build GEO_DB="$(dac path backend-app/geo-database@2026.08)"</code></pre></div>
@@ -841,9 +882,10 @@ make build</code></pre></div>
 
     <h4>Variant: a distribution directory</h4>
     <p>
-      If your transfer mechanism is a mounted share rather than a tar, <code>--distdir</code> installs locked assets
-      from a directory before requesting them. Each file must be named by its SHA-256 hexadecimal digest —
-      the only name a consumer can actually check.
+      If your transfer mechanism is a mounted share rather than a tar, <code>dac import</code> takes the directory
+      directly. Each file must be named by its SHA-256 hexadecimal digest — the only name a consumer can
+      actually check. Anything else in the directory is left alone, so a <code>README</code> beside the objects
+      costs nothing, and a file whose contents do not match the name it carries is refused.
     </p>
 <div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># Populate the share, naming each file by its digest.
 for file in /staging/*; do
@@ -851,7 +893,15 @@ for file in /staging/*; do
 done
 
 # On the isolated machine:
-dac pull --distdir /mnt/dist --offline</code></pre></div>
+dac import /mnt/dist
+dac pull --offline</code></pre></div>
+
+    <p>
+      This replaces <code>dac pull --distdir</code>, which installed the same digest-named objects from the same
+      kind of directory as a flag on an unrelated command. One difference is worth knowing: the flag read only
+      the objects the lock named, where <code>import</code> installs everything in the directory — a share
+      holding more than this project needs will cost more cache than it used to.
+    </p>
 
     <h4>Variant: a dacpack, when the far side is not DAC</h4>
     <p>
@@ -925,17 +975,34 @@ token=$(vault read -field=token "secret/artifacts?uri=$uri")
 
 jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash"># One host, one helper. A host-specific helper wins over a general one.
-dac pull --credential-helper files.internal=/usr/local/bin/dac-cred-artifacts
+    <p>
+      Helpers are named in the config file, as a map from host to command. This is the clearest case for the
+      file existing at all: it is a mapping, and the flag it replaced could only say that by inventing
+      <code>&lt;host&gt;=&lt;command&gt;</code> and being repeated once per host.
+    </p>
 
-# Several hosts: repeat the flag.
-dac pull \
-  --credential-helper files.internal=/usr/local/bin/dac-cred-artifacts \
-  --credential-helper models.vendor.com=/usr/local/bin/dac-cred-vendor
+<div class="codeblock"><div class="codebar"><span class="name">~/.config/dac/config.toml</span><button type="button" class="copy">copy</button></div><pre><code class="lang-toml">[credentials]
+# A host key applies to one host and wins over default.
+"files.internal"    = "/usr/local/bin/dac-cred-artifacts"
+"models.vendor.com" = "/usr/local/bin/dac-cred-vendor"
 
-# For a whole CI job, set it once.
-export DAC_CREDENTIAL_HELPER=/usr/local/bin/dac-cred-artifacts
-dac pull</code></pre></div>
+# default applies to every host that has no key of its own.
+default = "/usr/local/bin/dac-cred"</code></pre></div>
+
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac pull
+
+# A site installs one under /etc/xdg/dac/config.toml and every project on the
+# machine picks it up. dac config show says what was actually read.
+dac config show</code></pre></div>
+
+    <div class="callout warn">
+      <span class="label">A config file names programs DAC runs</span>
+      <p>
+        So DAC refuses one that group or other can write — the same reason <code>ssh</code> refuses a writable
+        <code>~/.ssh/config</code>. Nothing secret belongs in the file itself: only the name of the helper that
+        knows the secret.
+      </p>
+    </div>
 
     <div class="callout warn">
       <span class="label">Two rules for helper authors</span>
@@ -964,28 +1031,42 @@ dac pull</code></pre></div>
     <p class="pb-goal">Send every request through an internal mirror and refuse anything else, without editing a single manifest.</p>
 
     <p>
-      A manifest records where an asset comes from <em>upstream</em>. A rewrite config decides where DAC
+      A manifest records where an asset comes from <em>upstream</em>. Rewrite rules decide where DAC
       actually sends the request. The manifest and the lock file keep the canonical URL, so the same
       repository works on a laptop with open egress and on a build fleet that can only reach one host.
     </p>
+    <p>
+      That is a statement about a site rather than about a project, so the rules live in the config file —
+      install one under <code>/etc/xdg/dac/config.toml</code> and every project on the machine picks it up,
+      which is the whole point of not having to edit a single manifest.
+    </p>
 
-<div class="codeblock"><div class="codebar"><span class="name">dac-rewrite.cfg</span><button type="button" class="copy">copy</button></div><pre><code class="lang-cfg"># Block every host that no allow rule permits.
-block *
-
-# The mirror, and the one origin allowed through directly.
-allow artifacts.internal
-allow releases.internal
+<div class="codeblock"><div class="codebar"><span class="name">/etc/xdg/dac/config.toml</span><button type="button" class="copy">copy</button></div><pre><code class="lang-toml">[hosts]
+# Block every host that no allow rule permits: the mirror, and the one
+# origin allowed through directly.
+block = ["*"]
+allow = ["artifacts.internal", "releases.internal"]
 
 # Send vendor downloads to the mirror. The pattern is a Go regular expression
 # matched against "host/path" with any query string appended.
-rewrite ^vendor\.example\.com/(.*)$   https://artifacts.internal/vendor/$1
-rewrite ^objects\.githubusercontent\.com/(.*)$ https://artifacts.internal/gh/$1</code></pre></div>
+[[rewrite]]
+pattern     = '^vendor\.example\.com/(.*)$'
+replacement = "https://artifacts.internal/vendor/$1"
+
+[[rewrite]]
+pattern     = '^objects\.githubusercontent\.com/(.*)$'
+replacement = "https://artifacts.internal/gh/$1"</code></pre></div>
 
     <p>
-      Save it as <code>dac-rewrite.cfg</code> beside the manifest and DAC loads it automatically.
-      <code>DAC_REWRITE_CONFIG</code> points at a different file, and that file must exist. <code>--no-rewrite</code>
-      disables the whole config for one command.
+      A project that means to say something about itself can still carry a <code>dac-rewrite.cfg</code> beside
+      its manifest, in the older directive form, and that file wins outright. It is a whole policy rather than
+      an addition to one, so merging it with the site's would produce rules neither wrote.
+      <code>--no-rewrite</code> disables both for one command.
     </p>
+
+<div class="codeblock"><div class="codebar"><span class="name">dac-rewrite.cfg — a project override</span><button type="button" class="copy">copy</button></div><pre><code class="lang-cfg">block *
+allow artifacts.internal
+rewrite ^vendor\.example\.com/(.*)$ https://artifacts.internal/vendor/$1</code></pre></div>
 
     <h4>Rules that matter in practice</h4>
     <ul>
@@ -1095,7 +1176,7 @@ TOOLCHAIN := tools/toolchain@1.4
 
 .PHONY: assets
 assets:
-	dac pull --progress=false
+	dac pull --no-progress
 
 # A recipe asks for the path at the moment it runs, so a stale cache object or
 # a missing pull fails here with a real message instead of a confusing one.
@@ -1119,7 +1200,7 @@ build: assets vendor/toolchain/bin/tool
 <div class="codeblock"><div class="codebar"><span class="name">build.sh</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">#!/usr/bin/env bash
 set -euo pipefail
 
-dac pull --progress=false
+dac pull --no-progress
 
 geo_database="$(dac path backend-app/geo-database@2026.08)"
 policy_bundle="$(dac path platform/opa-bundle@1.12.0)"
@@ -1156,17 +1237,17 @@ dac cache gc --max-age 14d
 # Hash every object in the shared cache and drop the ones that no longer match.
 # Without --repair this exits 1 when it finds damage, which is the scripted
 # signal to act; with --repair it removes them and a later pull replaces them.
-dac cache verify --all --repair</code></pre></div>
+dac cache scrub --all --repair</code></pre></div>
 
     <ul>
       <li><strong>Age is the only liveness signal a content-addressed store has.</strong> Every cache hit refreshes the object's sidecar timestamp, so <code>--max-age</code> means "nothing has used this in that long", not "this was downloaded that long ago".</li>
       <li><strong>Collection never removes a digest lock file.</strong> Unlinking a lock another process holds would let a later process take the same lock through a new inode.</li>
       <li><strong><code>cache gc</code> collects the whole shared cache</strong> and reads no project files. Run it on the machine, not per project.</li>
-      <li><strong>Ordinary commands already detect damage</strong> by comparing an object against the sidecar written at install. <code>cache verify</code> answers the harder question — storage that changed bytes without changing the stat — at the cost of reading everything it checks.</li>
+      <li><strong>Ordinary commands already detect damage</strong> by comparing an object against the sidecar written at install. <code>cache scrub</code> answers the harder question — storage that changed bytes without changing the stat — at the cost of reading everything it checks.</li>
     </ul>
 
     <p>Recovering a damaged cache is two commands, and no project file changes:</p>
-<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac cache verify --repair   # remove the corrupt objects this project locked
+<div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac cache scrub --repair   # remove the corrupt objects this project locked
 dac pull                    # download them again and install good bytes</code></pre></div>
 
     <p>
@@ -1187,9 +1268,9 @@ dac pull                    # download them again and install good bytes</code><
     disables progress in JSON mode so that exactly one document lands on stdout.
   </p>
 
-<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":4,"ok":true,"command":"path","data":{}}</code></pre></div>
+<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":5,"ok":true,"command":"path","data":{}}</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":4,"ok":false,"command":"pull","error":{
+<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":5,"ok":false,"command":"pull","error":{
   "code":"network_error",
   "message":"The asset request failed.",
   "cause":"https://example.com/db: unconditional request returned HTTP 404",
@@ -1224,13 +1305,13 @@ dac pull                    # download them again and install good bytes</code><
       <tr><td class="mono">version_rebind</td><td>A locked coordinate resolved to different bytes.</td><td>New version, or <code>--rebind</code></td></tr>
       <tr><td class="mono">version_collision</td><td>Two versions of one asset name the same bytes.</td><td>Fix the source URL, or drop the version</td></tr>
       <tr><td class="mono">content_mismatch</td><td>Downloaded bytes failed their digest or size check.</td><td>Retry; if it persists, the publisher or mirror changed</td></tr>
-      <tr><td class="mono">cache_object_corrupt</td><td>A cache object no longer matches its digest.</td><td><code>dac cache verify --repair</code> then <code>dac pull</code></td></tr>
+      <tr><td class="mono">cache_object_corrupt</td><td>A cache object no longer matches its digest.</td><td><code>dac cache scrub --repair</code> then <code>dac pull</code></td></tr>
       <tr><td class="mono">cache_object_invalid</td><td>The object is simply missing.</td><td><code>dac pull</code></td></tr>
       <tr><td class="mono">offline_cache_miss</td><td>Offline mode needed an object the cache lacks.</td><td>Warm the cache, import a bundle, or drop <code>--offline</code></td></tr>
       <tr><td class="mono">network_error</td><td>The request failed. <code>details.status</code> and <code>details.url</code> say how.</td><td>Depends on the status</td></tr>
-      <tr><td class="mono">timeout</td><td>The transfer stalled or the request timed out.</td><td>Raise <code>--timeout</code>, or look at the origin</td></tr>
+      <tr><td class="mono">timeout</td><td>The transfer stalled or the request timed out.</td><td>Raise <code>transfer.timeout</code>, or look at the origin</td></tr>
       <tr><td class="mono">url_not_permitted</td><td>URL policy or the rewrite config refused the host.</td><td>Fix the manifest URL or the rewrite config</td></tr>
-      <tr><td class="mono">asset_too_large</td><td>An unknown-size response exceeded <code>--max-size</code>.</td><td>Raise <code>--max-size</code> for genuinely large assets</td></tr>
+      <tr><td class="mono">asset_too_large</td><td>An unknown-size response exceeded <code>transfer.max-size</code>.</td><td>Raise <code>transfer.max-size</code> for genuinely large assets</td></tr>
       <tr><td class="mono">asset_unknown</td><td>The project has no such coordinate. <code>details.versions</code> lists the ones it does have.</td><td>Fix the coordinate</td></tr>
       <tr><td class="mono">unpack_destination_occupied</td><td>The destination already holds files the dacpack would replace. <code>details.files</code> names them.</td><td>Unpack elsewhere, or use <code>--force</code></td></tr>
       <tr><td class="mono">dacpack_invalid</td><td>The dacpack's index, layout, sizes, or digests did not check out.</td><td>Rebuild the dacpack with <code>dac pack</code></td></tr>
@@ -1250,7 +1331,7 @@ if ! out=$(dac pull --json 2&gt;/dev/null); then
     lock_stale|lock_missing)
       echo "The lock file is out of date. Commit a dac lock." &gt;&amp;2 ;;
     cache_object_corrupt)
-      dac cache verify --repair &amp;&amp; dac pull ;;
+      dac cache scrub --repair &amp;&amp; dac pull ;;
     *)
       printf '%s' "$out" | jq -r '.error.cause // .error.message' &gt;&amp;2
       exit 1 ;;
@@ -1317,7 +1398,7 @@ printf '%s' "$out" | jq -r '.assets[] | "\(.coordinate)\t\(.status)\t\(.path)"'<
 </section>
 
 <footer class="page">
-  <p>DAC — <code>github.com/tom/dac</code> · application version 6.0.0 · manifest &amp; lock schema 2 · output contract 3.</p>
+  <p>DAC — <code>github.com/tom/dac</code> · application version 7.0.0 · manifest &amp; lock schema 2 · output contract 5 · config schema 1.</p>
 </footer>
 
 </main>

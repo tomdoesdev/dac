@@ -10,7 +10,7 @@ import (
 )
 
 func (runner *runner) verifyCommand() *urfave.Command {
-	flags := append(runner.networkFlags(true, true),
+	flags := append(runner.networkFlags(true),
 		&urfave.BoolFlag{Name: "refresh", Usage: "Resolve every asset against its origin and report drift."},
 	)
 	return &urfave.Command{
@@ -33,11 +33,11 @@ func (runner *runner) verifyCommand() *urfave.Command {
 				return nil, "", err
 			}
 			defer client.Close()
-			concurrency, err := concurrency(current)
+			concurrency, err := runner.concurrency(current)
 			if err != nil {
 				return nil, "", err
 			}
-			maxSize, err := maximumSize(current)
+			maxSize, err := runner.maximumSize(current)
 			if err != nil {
 				return nil, "", err
 			}

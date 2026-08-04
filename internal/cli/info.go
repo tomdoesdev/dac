@@ -26,11 +26,19 @@ func (runner *runner) infoCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			config, err := loadRewriteConfig(service.ManifestPath, false)
+			settings, err := runner.config(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Info(application.InfoOptions{Selection: filter, Rewriter: config})
+			// Rewriting is never disabled here. Info reports the source URL and
+			// the request URL side by side, so the un-rewritten view is already
+			// on screen; a flag to suppress half of it would subtract
+			// information rather than add a choice.
+			rewriter, err := loadRewriteConfig(settings, service.ManifestPath, false)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.Info(application.InfoOptions{Selection: filter, Rewriter: rewriter})
 			return result, infoText(result), err
 		}),
 	}

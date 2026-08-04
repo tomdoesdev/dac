@@ -17,7 +17,7 @@ import (
 // command with nothing to do. Use add --offline to record a source now and
 // dac lock to resolve it later.
 func (runner *runner) lockCommand() *urfave.Command {
-	flags := append(runner.networkFlags(true, true),
+	flags := append(runner.networkFlags(true),
 		&urfave.BoolFlag{Name: "refresh", Usage: "Resolve every manifest asset against its origin instead of only the ones the lock file does not describe."},
 		&urfave.BoolFlag{Name: "rebind", Usage: "Accept origins that no longer serve the bytes a locked version names."},
 	)
@@ -34,11 +34,11 @@ func (runner *runner) lockCommand() *urfave.Command {
 				return nil, "", err
 			}
 			defer client.Close()
-			concurrency, err := concurrency(current)
+			concurrency, err := runner.concurrency(current)
 			if err != nil {
 				return nil, "", err
 			}
-			maxSize, err := maximumSize(current)
+			maxSize, err := runner.maximumSize(current)
 			if err != nil {
 				return nil, "", err
 			}

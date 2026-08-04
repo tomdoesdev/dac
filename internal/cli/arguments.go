@@ -26,6 +26,28 @@ func coordinate(current *urfave.Command) (coord.Coordinate, error) {
 	return parseCoordinate(values[0])
 }
 
+// coordinates reads the one or more complete coordinates a command acts on.
+//
+// It takes several because forgetting cached bytes is the kind of thing done to
+// a handful of assets at once, and because each one is checked against the
+// project before anything is removed -- so a list with a typo in it removes
+// nothing rather than most of what was asked for.
+func coordinates(current *urfave.Command) ([]coord.Coordinate, error) {
+	values := current.Args().Slice()
+	if len(values) == 0 {
+		return nil, fault.New("invalid_arguments", "Specify at least one asset coordinate as <namespace>/<name>@<version>.")
+	}
+	names := make([]coord.Coordinate, 0, len(values))
+	for _, value := range values {
+		name, err := parseCoordinate(value)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // coordinateAndSource reads the coordinate and the source URL that add takes.
 //
 // The URL is an argument rather than a flag because it is not optional and it

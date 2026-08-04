@@ -3,12 +3,15 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tom/dac/internal/application"
+	"github.com/tom/dac/internal/config"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/output"
 )
@@ -17,6 +20,12 @@ const (
 	ExitOK      = 0
 	ExitFailure = 1
 	ExitUsage   = 2
+)
+
+// The project file names, which are also the defaults their flags carry.
+const (
+	DefaultManifest = "dac.json"
+	DefaultLock     = "dac-lock.json"
 )
 
 // Run runs one DAC command and returns its exit status.
@@ -45,6 +54,27 @@ type runner struct {
 	commandName string
 	usage       bool
 	writeFailed bool
+
+	settings *config.Config
+	loadOnce sync.Once
+	loadErr  error
+}
+
+// config reads the configuration for this run, once.
+//
+// It is lazy because the path it reads comes from a flag, so it cannot be
+// settled before parsing, and because the commands that touch neither the
+// network nor the cache have no reason to read a file at all -- dac unpack runs
+// anywhere the archive does, and a config it never consults should not be able
+// to stop it.
+func (runner *runner) config(current *urfave.Command) (*config.Config, error) {
+	runner.loadOnce.Do(func() {
+		runner.settings, runner.loadErr = config.Load(current.String("config"))
+		if runner.loadErr != nil {
+			runner.loadErr = fault.Wrap("config_invalid", "The configuration is invalid.", runner.loadErr)
+		}
+	})
+	return runner.settings, runner.loadErr
 }
 
 type action func(context.Context, *urfave.Command) (any, string, error)
@@ -63,9 +93,10 @@ func (runner *runner) app() *urfave.Command {
 		Writer:                runner.stderr,
 		ErrWriter:             runner.stderr,
 		Flags: []urfave.Flag{
-			&urfave.StringFlag{Name: "manifest", Value: "dac.json", Usage: "Use this manifest file."},
-			&urfave.StringFlag{Name: "lock", Value: "dac-lock.json", Usage: "Use this lock file."},
+			&urfave.StringFlag{Name: "manifest", Value: DefaultManifest, Usage: "Use this manifest file."},
+			&urfave.StringFlag{Name: "lock", Value: DefaultLock, Usage: "Use this lock file. Defaults beside the manifest."},
 			&urfave.StringFlag{Name: "cache-dir", Sources: urfave.EnvVars("DAC_CACHE_DIR"), Usage: "Use this cache directory."},
+			&urfave.StringFlag{Name: "config", Sources: urfave.EnvVars("DAC_CONFIG"), Usage: "Read this config file instead of the ones the XDG search path finds."},
 			&urfave.BoolFlag{Name: "json", Aliases: []string{"j"}, Destination: &runner.json, Usage: "Write command results as JSON."},
 		},
 		Action: runner.helpOrInvalid,
@@ -84,6 +115,7 @@ func (runner *runner) app() *urfave.Command {
 		runner.packCommand(),
 		runner.unpackCommand(),
 		runner.cacheCommand(),
+		runner.configCommand(),
 	}
 	_ = app.Walk(func(current *urfave.Command) error {
 		current.OnUsageError = runner.usageError
@@ -129,5 +161,45 @@ func (runner *runner) usageError(_ context.Context, current *urfave.Command, err
 			_ = urfave.ShowSubcommandHelp(current)
 		}
 	}
+	if moved := movedFlag(err); moved != "" {
+		return fault.Wrap("invalid_arguments",
+			fmt.Sprintf("The %s option moved into the config file, as %s. Run dac config path to find it.", moved, movedFlags[moved]), err)
+	}
 	return fault.Wrap("invalid_arguments", "The command arguments are invalid.", err)
+}
+
+// movedFlags maps each option that version 7 took off the command line to the
+// config key that replaced it.
+//
+// Answering "that is not a flag" for an option somebody has in a script would
+// be true and useless. These say where the setting went, which is the one
+// question an operator hitting this actually has.
+var movedFlags = map[string]string{
+	"--timeout":           "transfer.timeout",
+	"--retries":           "transfer.retries",
+	"--download-parts":    "transfer.download-parts",
+	"--max-size":          "transfer.max-size",
+	"--credential-helper": "the credentials table",
+	"--progress":          "transfer.progress, or --no-progress for one run",
+	"--distdir":           "an argument to dac import",
+}
+
+// movedFlag reports which retired option a parse error is about, if any.
+func movedFlag(err error) string {
+	text := err.Error()
+	for name := range movedFlags {
+		// urfave spells the failure as `flag provided but not defined: -timeout`,
+		// with one dash whatever the caller wrote, so match on the bare name and
+		// require a dash before it and a boundary after -- otherwise --max-size
+		// would answer for --max-age.
+		bare := strings.TrimLeft(name, "-")
+		index := strings.Index(text, bare)
+		if index <= 0 || text[index-1] != '-' {
+			continue
+		}
+		if rest := text[index+len(bare):]; rest == "" || rest[0] == ' ' || rest[0] == '=' {
+			return name
+		}
+	}
+	return ""
 }
