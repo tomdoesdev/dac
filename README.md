@@ -100,17 +100,22 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
-| `dac lock [--refresh] [--rebind] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
-| `dac pull [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets. |
+| `dac lock [--refresh] [--rebind] [--concurrency <n>] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
+| `dac pull [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
-| `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
+| `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export <bundle>` | Write locked objects and metadata to a cache bundle. |
-| `dac import <bundle>` | Install objects from a cache bundle into the local cache. |
+| `dac import <bundle\|directory>` | Install objects from a cache bundle, or from a directory of digest-named files. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
 | `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
-| `dac cache verify [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
-| `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
 | `dac cache dir` | Print the resolved cache directory. |
+| `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
+| `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
+| `dac cache clear [--dry-run]` | Remove every cache object. |
+| `dac cache remove <coordinate>... [--force]` | Remove the objects specific asset versions resolved to. |
+| `dac cache scrub [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
+| `dac config path` | Print the config files DAC read, most important first. |
+| `dac config show` | Print the effective configuration as a config file. |
 | `dac completion <shell>` | Write a shell completion script. |
 
 A project holds as many versions of an asset as it names, so how much of a
@@ -191,8 +196,32 @@ Nothing writes the lock file without being asked: `add` and `remove` maintain it
 because they are already changing the project, `lock` because that is what it is
 for, and `pull` never.
 
-`export`, `import`, and `cache gc` do not use the network. `import` does not
-read the project files. `cache gc` collects the whole shared cache.
+`export`, `import`, and every `cache` command except `remove` do not use the
+network. `import` does not read the project files. `cache gc`, `cache clear`,
+and `cache scrub --all` cover the whole shared cache.
+
+Version 7 moved the transfer options off the command line and into a
+[config file](#config-file). `--timeout`, `--retries`, `--download-parts`,
+`--max-size`, and `--credential-helper` were not decisions anybody makes per
+invocation; they were flags because there was nowhere else to put them, and the
+price was that four commands each carried all five. `--progress` became
+`--no-progress`, which is how the flag beside it was already spelled. The
+rewrite config moved with them, because it always described a site rather than a
+project. `DAC_*` variables went from nine to three, and `dac pull` from fourteen
+options to nine.
+
+The cache gained the verbs it was missing. Emptying it used to mean
+`dac cache gc --max-age 1s` — a collection with an age short enough that
+everything fell outside it, which means something slightly different from what
+it was being used for and races with any DAC process running alongside. Seeing
+into the cache was not possible at all, and neither was dropping one asset. So
+`dac cache clear`, `dac cache list`, and `dac cache remove`. `dac cache verify`
+became `dac cache scrub`: `dac verify`, `dac verify --refresh`, and that command
+were three operations under one word, costing nothing, a full re-download, and a
+full read of the cache respectively.
+
+`dac pull --distdir` is now an argument to `dac import`, which already installed
+the same digest-named objects out of a tar.
 
 ## Project files
 
@@ -278,41 +307,109 @@ Global options:
 | Option | Environment | Default |
 |---|---|---|
 | `--manifest` | | `dac.json` |
-| `--lock` | | `dac-lock.json` |
-| `--cache-dir` | `DAC_CACHE_DIR` | Local XDG cache |
+| `--lock` | | `dac-lock.json` beside the manifest |
+| `--cache-dir` | `DAC_CACHE_DIR` | `cache.dir`, then the XDG cache |
+| `--config` | `DAC_CONFIG` | The XDG config search path |
 | `--json`, `-j` | | `false` |
 
-Request and policy options appear only on commands that use them:
+`--lock` follows `--manifest` unless it is given. A project is its two files
+together, so `dac --manifest sub/dac.json` reads `sub/dac-lock.json`.
 
-| Option | Environment | Default | Commands |
-|---|---|---|---|
-| `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `lock`, `pull`, `verify` |
-| `--retries` | `DAC_RETRIES` | `2` | `add`, `lock`, `pull`, `verify` |
-| `--concurrency` | `DAC_CONCURRENCY` | `4` | `lock`, `pull`, `verify` |
-| `--download-parts` | `DAC_DOWNLOAD_PARTS` | `4` | `add`, `lock`, `pull`, `verify` |
-| `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `lock`, `pull`, `verify` |
-| `--progress` | | `true` | `add`, `lock`, `pull`, `verify` |
-| `--no-rewrite` | | `false` | `add`, `lock`, `pull`, `verify` |
-| `--credential-helper` | `DAC_CREDENTIAL_HELPER` | | `add`, `lock`, `pull`, `verify` |
-| `--distdir` | `DAC_DISTDIR` | | `pull` |
+Per-command options are decisions about one run:
+
+| Option | Environment | Commands |
+|---|---|---|
+| `--concurrency` | `DAC_CONCURRENCY` | `lock`, `pull`, `verify` |
+| `--no-progress` | | `add`, `lock`, `pull`, `verify` |
+| `--no-rewrite` | | `add`, `lock`, `pull`, `verify` |
+| `--offline` | | `add`, `pull` |
+| `--refresh` | | `lock`, `verify` |
+| `--rebind` | | `add`, `lock` |
 
 The `verify` options apply only to `--refresh`. A plain `verify` reads the two
 project files and stops.
 
-`--timeout` is an inactivity timeout. DAC retries transient network failures.
-It requests identity encoding and checks redirects with the same URL policy.
+Everything else lives in the [config file](#config-file), because how long this
+machine waits and which helper answers for which host are not decisions anybody
+makes per invocation. Passing one of the options that moved says where it went.
 
-`--max-size` bounds a response whose size DAC does not know ahead of time, so it
-exists to stop a runaway stream rather than to express a policy about asset
-sizes. Raise it for a project with genuinely larger assets. `--max-size none`
-removes the bound, and nothing else does: an empty value, a zero, and a count
-too large for DAC to hold are all rejected rather than read as no limit.
+## Config file
 
-`--download-parts` sets how many requests one download may be split across. See
-[Split downloads](#split-downloads). It is a budget for the whole command rather
-than a per-asset multiplier, so raising it speeds up a project of one large asset
-without opening `--concurrency` times as many connections for a project of many.
-Set it to `1` to send one request per asset.
+DAC reads `config.toml` from the XDG base directories, most important first:
+
+1. `--config <path>`, or `DAC_CONFIG`. This file must exist.
+2. `$XDG_CONFIG_HOME/dac/config.toml`, or `~/.config/dac/config.toml`.
+3. `<dir>/dac/config.toml` for each `$XDG_CONFIG_DIRS` entry, or `/etc/xdg`.
+
+Files merge **per setting**, so a site can install one under `/etc/xdg` and a
+person can override one line of it without restating the rest. Tables merge by
+key; arrays replace whole, because a host policy is one policy and half of two
+of them is a policy nobody wrote. A flag beats the file, and the file beats the
+built-in default.
+
+```toml
+schema-version = 1
+
+[transfer]
+timeout        = "5m"      # inactivity limit for one transfer
+retries        = 2
+concurrency    = 4         # assets at once
+download-parts = 4         # see Split downloads
+max-size       = "2GiB"    # or "none"
+progress       = true
+
+[cache]
+dir     = "/var/cache/dac"  # absolute; unset means the XDG cache
+max-age = "30d"             # the default dac cache gc collects by
+
+[credentials]
+default             = "/usr/local/bin/dac-cred"
+"files.example.com" = "/usr/local/bin/dac-cred-artifacts"
+
+[[rewrite]]
+pattern     = '^vendor\.example\.com/(.*)$'
+replacement = "https://mirror.internal/vendor/$1"
+
+[hosts]
+block               = ["*"]
+allow               = ["releases.internal", "mirror.internal"]
+allow-insecure-http = false
+```
+
+Unknown keys, unreadable values, and a `schema-version` DAC does not know are
+all refused rather than ignored, as they are in the project files. The
+`schema-version` key is optional; a file that carries one must carry `1`.
+
+DAC refuses a config file that group or other can write. The `credentials` table
+names programs DAC runs, so a writable config is a way to choose them — the same
+reason `ssh` refuses a writable `~/.ssh/config`.
+
+Two commands answer what a merged search path settled on:
+
+```bash
+dac config path    # the files that were read, one per line
+dac config show    # the effective values, and where each came from
+```
+
+`dac config show` writes a config file. What DAC is using is therefore also the
+starting point for changing it, and saving the output loads back to the same
+settings.
+
+`transfer.timeout` is an inactivity timeout. DAC retries transient network
+failures. It requests identity encoding and checks redirects with the same URL
+policy.
+
+`transfer.max-size` bounds a response whose size DAC does not know ahead of
+time, so it exists to stop a runaway stream rather than to express a policy
+about asset sizes. Raise it for a project with genuinely larger assets.
+`"none"` removes the bound, and nothing else does: an empty value, a zero, and a
+count too large for DAC to hold are all rejected rather than read as no limit.
+
+`transfer.download-parts` sets how many requests one download may be split
+across. See [Split downloads](#split-downloads). It is a budget for the whole
+command rather than a per-asset multiplier, so raising it speeds up a project of
+one large asset without opening `concurrency` times as many connections for a
+project of many. Set it to `1` to send one request per asset.
 
 ## Split downloads
 
@@ -326,7 +423,7 @@ waits its turn in memory, and only a few are ever in flight.
 Three conditions have to hold, and DAC streams the single response it already has
 whenever one does not:
 
-- `--download-parts` is more than `1` and the command has a part to spare.
+- `transfer.download-parts` is more than `1` and the command has a part to spare.
 - The response says `Accept-Ranges: bytes` and is at least 16MiB.
 - The response carries a strong `ETag` or a `Last-Modified` date.
 
@@ -341,15 +438,24 @@ DAC also checks the `Content-Range` of every piece against the range it asked
 for. A pinned asset's digest would catch a misassembled file in the end, but it
 could only report that the bytes were wrong, and the reason they were wrong is
 worth naming. A piece that fails is retried on its own, under the same
-`--retries` and backoff as a whole request: its bytes have not reached the hash
+`transfer.retries` and backoff as a whole request: its bytes have not reached the hash
 yet, so the retry costs one piece rather than the asset.
 
 ## Credentials
 
-DAC gets request credentials only from a credential helper. Pass
-`--credential-helper <command>` for all hosts. Pass
-`--credential-helper <host>=<command>` for one host. A host-specific helper
-wins over a general helper.
+DAC gets request credentials only from a credential helper, named in the config
+file's `credentials` table:
+
+```toml
+[credentials]
+default             = "/usr/local/bin/dac-cred"
+"files.example.com" = "/usr/local/bin/dac-cred-artifacts"
+```
+
+`default` applies to every host. A host key applies to one, and wins over
+`default`. The table is where this lives because it is a map from host to
+command, and the flag it replaced could only say that by inventing
+`<host>=<command>` and being repeated once per host.
 
 DAC runs the helper as `<command> get`, writes one request to its standard
 input, and reads its headers from standard output:
@@ -373,31 +479,42 @@ each one. If an origin then answers `401` or `403`, DAC forgets what it was
 holding, asks once more, and retries the request; a second rejection fails the
 command.
 
-## Rewrite config
+## Rewriting and host policy
 
-A manifest records where an asset comes from upstream. A rewrite config decides
+A manifest records where an asset comes from upstream. Rewrite rules decide
 where DAC actually sends the request, so a site that proxies its downloads does
 not have to edit every project that uses them. The manifest and the lock file
 keep the canonical URL.
 
-```text
-# Block each host that no allow rule permits.
-block *
+Because that is a statement about a site rather than about a project, the rules
+live in the [config file](#config-file):
 
-# Permit requests to this host.
-allow releases.internal
+```toml
+[[rewrite]]
+pattern     = '^vendor\.example\.com/(.*)$'
+replacement = "https://mirror.internal/vendor/$1"
 
-# Send vendor requests to the mirror.
-rewrite ^vendor\.example\.com/(.*)$ https://mirror.internal/vendor/$1
-
-# Permit requests to the rewritten host.
-allow mirror.internal
+[hosts]
+block               = ["*"]                # refuse every host no allow permits
+allow               = ["releases.internal", "mirror.internal"]
+allow-insecure-http = false                # plain HTTP for rewritten URLs
 ```
 
-Save the config as `dac-rewrite.cfg` beside the manifest. DAC loads this file
-automatically when it exists. `DAC_REWRITE_CONFIG` can specify a different
-file, and that file must exist. Use `--no-rewrite` with `add`, `lock`, `pull`,
-or `verify --refresh` to disable the complete config.
+A project that means to say something about itself can still carry a
+`dac-rewrite.cfg` beside its manifest, in the directive form:
+
+```text
+block *
+allow releases.internal
+rewrite ^vendor\.example\.com/(.*)$ https://mirror.internal/vendor/$1
+allow mirror.internal
+allow_insecure_http
+```
+
+That file wins outright when it exists. It is a whole policy rather than an
+addition to one, and merging it with the site's would produce rules neither
+wrote. Use `--no-rewrite` with `add`, `lock`, `pull`, or `verify --refresh` to
+disable both.
 
 Run `dac info` to show each source URL, request URL, and host policy result. Add
 an asset coordinate to show only that asset.
@@ -408,12 +525,11 @@ without a scheme keeps the original URL scheme. A URL fails when multiple
 rewrite rules match it.
 
 DAC applies one rewrite before it checks `allow` and `block` rules. An `allow`
-match overrides all `block` matches. Directive order does not change this host
+match overrides all `block` matches. Rule order does not change this host
 policy. A host with no match is allowed. The `*` pattern matches every host.
 Other patterns match a host and its subdomains.
 
-Redirect targets use the same host policy, but DAC does not rewrite them. Add a
-bare `allow_insecure_http` directive to permit plain HTTP for rewritten URLs.
+Redirect targets use the same host policy, but DAC does not rewrite them.
 
 A rewrite cannot change what DAC accepts: `pull` still checks the locked digest,
 so a mirror that serves the wrong bytes fails exactly as a corrupted transfer
@@ -429,7 +545,7 @@ detailed block for each selected asset.
 Use `--json` or `-j` to write one versioned JSON document to standard output:
 
 ```json
-{"outputVersion":4,"ok":true,"command":"path","data":{}}
+{"outputVersion":5,"ok":true,"command":"path","data":{}}
 ```
 
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
@@ -447,7 +563,7 @@ because an added optional field breaks no consumer.
 JSON errors use the same stream and framing:
 
 ```json
-{"outputVersion":4,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
+{"outputVersion":5,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
 ```
 
 `code` and `message` are stable enough to branch on, which is exactly why
@@ -460,6 +576,11 @@ versions and the object they share for a `version_collision`.
 Human errors, help, and progress go to standard error. JSON mode does not write
 human summaries or error messages. The `lock` and `pull` commands also disable
 progress in JSON mode.
+
+Output version `5` came with the move to a config file. `dac cache verify`
+became `dac cache scrub`, so the `command` field of that result changed, and
+`pull` dropped both the `distdir` asset status and the `distdir_read_failed`
+code along with the flag that produced them.
 
 Output version `4` moved the lock operations off `pull` onto `dac lock`. A
 `pull` result no longer carries `locked`, because a pull no longer writes the
@@ -480,7 +601,8 @@ On an interactive terminal, DAC uses concurrent progress bars from
 [`mpb`](https://github.com/vbauerster/mpb). Each bar shows the asset name,
 bytes, percentage, speed, and completion state. An unknown response size uses a
 spinner and a byte count. A non-terminal stream gets one start line and one
-completion line for each asset. Use `--progress=false` to disable both forms.
+completion line for each asset. Use `--no-progress`, or `transfer.progress` in
+the config file, to disable both forms.
 The `lock` and `pull` commands disable both forms in JSON mode.
 
 ## Cache behavior
@@ -529,13 +651,13 @@ The object's own timestamp is the evidence, so DAC never touches it after
 install. The sidecar carries the liveness signal that collection uses instead.
 
 What this does not cover is storage that changes bytes without changing the
-stat. `dac cache verify` answers that by hashing every object it checks, in
+stat. `dac cache scrub` answers that by hashing every object it checks, in
 exchange for reading all of them:
 
 ```bash
-dac cache verify              # the objects this project locked
-dac cache verify --all        # every object in the shared cache
-dac cache verify --repair     # remove the ones that fail
+dac cache scrub               # the objects this project locked
+dac cache scrub --all         # every object in the shared cache
+dac cache scrub --repair      # remove the ones that fail
 ```
 
 A corrupt object makes the command exit `1` with the code `cache_object_corrupt`
@@ -549,17 +671,50 @@ carries cache damage onto machines that cannot tell where it came from. `dac
 info` reports `cache: corrupt`. `dac pull` downloads the asset again and
 installs good bytes over the bad ones, reporting the asset as `repaired`.
 
+### Managing the cache
+
+```bash
+dac cache dir                        # where it is
+dac cache list                       # what this project has in it
+dac cache list --all                 # everything, with sizes and last use
+dac cache gc                         # collect by age
+dac cache clear                      # empty it
+dac cache remove app/geo@2026.08     # forget one asset's bytes
+dac cache scrub --all                # read every byte and check it
+```
+
+`dac cache list` reports each object's digest, size, when a project last used
+it, and the coordinates it belongs to. It does not count as using the cache:
+reaching an object refreshes the timestamp collection runs on, so a listing built
+that way would quietly keep everything alive.
+
+`dac cache remove` takes coordinates rather than digests, because a coordinate is
+what you have. Two coordinates that resolved to the same bytes share one object,
+so removing one can uncache the other — it refuses with `cache_object_shared`
+and names what it would cost, and `--force` accepts that.
+
+Nothing here needs confirming. DAC prompts nowhere, a removed object costs a
+`dac pull` and nothing that cannot be got back, and `--dry-run` is already the
+careful path for `gc` and `clear`.
+
 ### Collection
 
 Every cache hit refreshes the object's sidecar timestamp, because age is the
 only liveness signal a content-addressed store has. `dac cache gc` removes
 objects that no project has used within `--max-age`, which accepts `30d`, `2w`,
-or any Go duration, and defaults to `30d`. It also removes temporary files left
-behind by an interrupted download, and sidecars whose object is gone. Use
-`--dry-run` to see what it would remove.
+or any Go duration, and defaults to `cache.max-age` in the config file, or `30d`
+where nothing sets it. It also removes temporary files left behind by an
+interrupted download, and sidecars whose object is gone. Use `--dry-run` to see
+what it would remove.
 
-Collection never removes a digest lock file. Unlinking a lock that another
-process holds would let a later process take the same lock through a new inode.
+`dac cache clear` removes every object regardless of age, along with the same
+temporary files and orphaned sidecars. It is what "empty the cache" means, and
+it exists because saying it as a collection with an age short enough that
+everything fell outside it meant something slightly different and raced with any
+DAC process running alongside.
+
+Neither one removes a digest lock file. Unlinking a lock that another process
+holds would let a later process take the same lock through a new inode.
 
 ### Cache bundles
 
@@ -585,8 +740,21 @@ vendors the same file under two namespaces no larger than one that does not.
 entry type, path, size, and digest. It rejects an invalid bundle before it
 installs the applicable object.
 
-`dac pull --distdir <dir>` still accepts an unpacked distribution directory.
-Each file in that directory must use its SHA-256 hexadecimal digest as its name.
+`dac import <dir>` also accepts an unpacked distribution directory, for a
+delivery that arrives on a mounted share rather than as a tar. Each file in it
+must use its SHA-256 hexadecimal digest as its name; anything else is left
+alone, so a `README` beside the objects costs nothing. Files whose contents do
+not match the name they carry are refused.
+
+```bash
+dac import /mnt/dist && dac pull --offline
+```
+
+This replaces `dac pull --distdir`, which installed the same digest-named
+objects from the same kind of directory as a flag on an unrelated command. One
+difference is worth knowing: `--distdir` read only the objects the lock named,
+where `import` installs everything in the directory. A share holding more than
+this project needs will therefore cost more cache than it used to.
 
 ### dacpacks
 
