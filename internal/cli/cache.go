@@ -200,6 +200,7 @@ func (runner *runner) cacheRemoveCommand() *urfave.Command {
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "force", Usage: "Accept uncaching an asset that shares an object with one being removed."},
 		},
+		ShellComplete: runner.completeCoordinates(),
 		Action: runner.run("cache.remove", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			names, err := coordinates(current)
 			if err != nil {

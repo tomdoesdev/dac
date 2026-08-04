@@ -143,6 +143,26 @@ that state.
 Use `dac --help`, `dac <command> --help`, and `dac --version` for CLI
 help. DAC has no command aliases.
 
+### Shell completion
+
+```bash
+eval "$(dac completion bash)"     # or zsh, fish, pwsh
+```
+
+Source it from your shell's startup file to keep it. Beyond command and option
+names, DAC completes the argument you actually have to get exactly right:
+
+```text
+dac path <TAB>              backend-app/geo-database@2026.08  tools/toolchain@1.4
+dac cache remove app/<TAB>  app/geo@1.0.0  app/geo@2.0.0
+```
+
+Coordinates come from the manifest for the project the shell is standing in,
+which `--manifest` selects like it does everywhere else. Completion suggests the
+whole coordinate rather than the bare `<namespace>/<name>` that `path` and `info`
+also take, drops the versions already on the command line, and answers with
+nothing outside a project — where a shell falls back to completing file names.
+
 ### What a version means
 
 A version is part of an asset's identity, not a field describing it. Two rules
