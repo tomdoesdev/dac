@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -212,8 +213,9 @@ func TestPackWritesSharedBytesOncePerAsset(t *testing.T) {
 }
 
 // TestUnpackMaterializesWhatPackWrote is the round trip. Unpack writes files
-// and never touches the cache, so what it leaves behind is a tree something
-// that has never heard of DAC can read.
+// and never touches the cache, so what it leaves behind is a directory of real
+// files something that has never heard of DAC can read -- the files themselves,
+// in the destination, rather than the archive's layout copied onto a disk.
 func TestUnpackMaterializesWhatPackWrote(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -237,7 +239,7 @@ func TestUnpackMaterializesWhatPackWrote(t *testing.T) {
 		result.ItemCount != 1 || result.FileCount != 1 || result.ByteCount != int64(len(content)) {
 		t.Fatalf("unexpected unpack result: %#v", result)
 	}
-	target := filepath.Join(directory, "assets/test/asset/1/asset")
+	target := filepath.Join(directory, "asset")
 	written, err := os.ReadFile(target)
 	if err != nil || !bytes.Equal(written, content) {
 		t.Fatalf("the unpack wrote %q to %s: %v", written, target, err)
@@ -246,10 +248,51 @@ func TestUnpackMaterializesWhatPackWrote(t *testing.T) {
 		result.Files[0].Coordinate != "test/asset@1" || result.Files[0].Digest != digest.Bytes(content) {
 		t.Fatalf("unexpected file report: %#v", result.Files)
 	}
+	// Nothing but the file: an archive's directories are how it keeps two assets
+	// apart inside itself, and they have no business on the far side.
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "asset" || entries[0].IsDir() {
+		t.Fatalf("the unpack left %#v", entries)
+	}
 }
 
+// TestUnpackKeepsTheArchiveLayoutWithTree covers the other layout, which is
+// what an archive holding two assets of one name has instead of a refusal.
+func TestUnpackKeepsTheArchiveLayoutWithTree(t *testing.T) {
+	archive, contents := packedArchive(t)
+	directory := t.TempDir()
+
+	result, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory, Tree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 2 {
+		t.Fatalf("--tree wrote %d files", result.FileCount)
+	}
+	// The paths are the archive's own, which is what makes this the same tree
+	// tar -xf would leave.
+	for name, content := range contents {
+		path := filepath.Join(directory, "assets/java/sdk", packedVersions[name], name)
+		if written, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(written, content) {
+			t.Fatalf("%s holds %q: %v", path, written, readErr)
+		}
+	}
+}
+
+// packedVersions maps each file packedArchive materializes to the version whose
+// directory carries it inside the archive, for a test asserting the tree.
+var packedVersions = map[string]string{"jdk-11.tar.gz": "11", "jdk-17.tar.gz": "17"}
+
 // packedArchive writes a two-version project and packs it, returning the
-// archive and the bytes each coordinate was materialized from.
+// archive and the bytes behind each file name it carries.
+//
+// The two versions carry different file names, which is what makes this archive
+// one a flat unpack can write whole. The clash is its own fixture below.
 func packedArchive(t *testing.T) (string, map[string][]byte) {
 	t.Helper()
 	eleven, seventeen := []byte("jdk eleven bytes"), []byte("jdk seventeen bytes")
@@ -271,9 +314,106 @@ func packedArchive(t *testing.T) (string, map[string][]byte) {
 		t.Fatal(err)
 	}
 	return archive, map[string][]byte{
-		"assets/java/sdk/11/jdk-11.tar.gz": eleven,
-		"assets/java/sdk/17/jdk-17.tar.gz": seventeen,
+		"jdk-11.tar.gz": eleven,
+		"jdk-17.tar.gz": seventeen,
 	}
+}
+
+// clashingArchive packs two assets that carry one file name, which is the
+// ordinary case: a version is rarely in the file name a URL spells, so two
+// versions of one asset usually share theirs.
+func clashingArchive(t *testing.T) string {
+	t.Helper()
+	first, second := []byte("geo one bytes"), []byte("geo two bytes")
+	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
+		coord.MustParse("app/geo@1"): {
+			URL: "https://example.com/v1/geo.bin", Digest: digest.Bytes(first),
+			Size: int64(len(first)), Filename: "geo.bin",
+		},
+		coord.MustParse("app/geo@2"): {
+			URL: "https://example.com/v2/geo.bin", Digest: digest.Bytes(second),
+			Size: int64(len(second)), Filename: "geo.bin",
+		},
+	})
+	store := cache.New(t.TempDir())
+	warmStore(t, store, first)
+	warmStore(t, store, second)
+	archive := filepath.Join(t.TempDir(), "clash.dacpack")
+	if _, err := application.New(manifestPath, lockPath, store, nil, nil).Pack(context.Background(), archive); err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
+// TestUnpackRefusesTwoAssetsWithOneFileName is what flat costs and what it
+// refuses to pay. Both files cannot be at one path, so writing either would
+// leave bytes under a name that says they belong to the other -- a file that
+// looks like what was asked for and is not.
+func TestUnpackRefusesTwoAssetsWithOneFileName(t *testing.T) {
+	archive := clashingArchive(t)
+	directory := t.TempDir()
+	service := application.New("", "", nil, nil, nil)
+
+	err := unpackClash(t, service, archive, directory, false)
+	value := fault.As(err)
+	if value.Code != "unpack_name_collision" {
+		t.Fatalf("expected unpack_name_collision, got %q (%v)", value.Code, err)
+	}
+	// The refusal names the file and both assets, because the answer is to pick
+	// one of them and it has to say which there are.
+	files, _ := value.Details["files"].([]string)
+	assets, _ := value.Details["assets"].([]string)
+	if !slices.Equal(files, []string{"geo.bin"}) || !slices.Equal(assets, []string{"app/geo@1", "app/geo@2"}) {
+		t.Fatalf("unexpected details: %#v", value.Details)
+	}
+	// Force is permission to replace what is on disk, not to lose one of two
+	// files this command was told to write.
+	if code := fault.As(unpackClash(t, service, archive, directory, true)).Code; code != "unpack_name_collision" {
+		t.Fatalf("--force wrote through a name collision: %q", code)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a refused unpack wrote %d entries", len(entries))
+	}
+
+	// Naming one of them is the way through, since one asset cannot collide
+	// with itself.
+	result, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.ExactSelection(coord.MustParse("app/geo@2"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written, readErr := os.ReadFile(filepath.Join(directory, "geo.bin")); readErr != nil ||
+		!bytes.Equal(written, []byte("geo two bytes")) {
+		t.Fatalf("the narrowed unpack wrote %q: %v", written, readErr)
+	}
+	if result.FileCount != 1 || result.ItemCount != 2 {
+		t.Fatalf("unexpected counts: %#v", result)
+	}
+
+	// So is --tree, which is the only way to get both with their digests
+	// checked.
+	if _, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: t.TempDir(), Tree: true,
+	}); err != nil {
+		t.Fatalf("--tree refused an archive it can lay out: %v", err)
+	}
+}
+
+// unpackClash runs the unpack the collision test refuses, so the with- and
+// without-force cases read as the one difference between them.
+func unpackClash(t *testing.T, service *application.Service, archive, directory string, force bool) error {
+	t.Helper()
+	_, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory, Force: force,
+	})
+	return err
 }
 
 // TestUnpackWritesOnlyTheAssetsSelected covers narrowing. A dacpack carries a
@@ -292,18 +432,18 @@ func TestUnpackWritesOnlyTheAssetsSelected(t *testing.T) {
 	}
 	// The counts are what tell a caller it got part of an archive rather than
 	// all of a smaller one.
-	if result.FileCount != 1 || result.ItemCount != 2 || result.ByteCount != int64(len(contents["assets/java/sdk/11/jdk-11.tar.gz"])) {
+	if result.FileCount != 1 || result.ItemCount != 2 || result.ByteCount != int64(len(contents["jdk-11.tar.gz"])) {
 		t.Fatalf("unexpected unpack result: %#v", result)
 	}
 	if len(result.Files) != 1 || result.Files[0].Coordinate != "java/sdk@11" {
 		t.Fatalf("unexpected file report: %#v", result.Files)
 	}
-	written, err := os.ReadFile(filepath.Join(directory, "assets/java/sdk/11/jdk-11.tar.gz"))
-	if err != nil || !bytes.Equal(written, contents["assets/java/sdk/11/jdk-11.tar.gz"]) {
+	written, err := os.ReadFile(filepath.Join(directory, "jdk-11.tar.gz"))
+	if err != nil || !bytes.Equal(written, contents["jdk-11.tar.gz"]) {
 		t.Fatalf("the unpack wrote %q: %v", written, err)
 	}
 	// The other version stays in the archive, which is the whole point.
-	if _, err := os.Stat(filepath.Join(directory, "assets/java/sdk/17")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(directory, "jdk-17.tar.gz")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the unpack materialized an asset nobody named: %v", err)
 	}
 }
@@ -325,9 +465,9 @@ func TestUnpackNarrowedByAssetTakesEveryVersion(t *testing.T) {
 	if result.FileCount != 2 {
 		t.Fatalf("a group selection wrote %d files", result.FileCount)
 	}
-	for path, content := range contents {
-		if written, readErr := os.ReadFile(filepath.Join(directory, path)); readErr != nil || !bytes.Equal(written, content) {
-			t.Fatalf("%s holds %q: %v", path, written, readErr)
+	for name, content := range contents {
+		if written, readErr := os.ReadFile(filepath.Join(directory, name)); readErr != nil || !bytes.Equal(written, content) {
+			t.Fatalf("%s holds %q: %v", name, written, readErr)
 		}
 	}
 }
@@ -408,10 +548,7 @@ func TestUnpackNarrowedStillChecksTheWholeArchive(t *testing.T) {
 func TestUnpackNarrowedIgnoresACollisionItWillNotCause(t *testing.T) {
 	archive, _ := packedArchive(t)
 	directory := t.TempDir()
-	occupied := filepath.Join(directory, "assets/java/sdk/17/jdk-17.tar.gz")
-	if err := os.MkdirAll(filepath.Dir(occupied), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	occupied := filepath.Join(directory, "jdk-17.tar.gz")
 	existing := []byte("something somebody was working on")
 	if err := os.WriteFile(occupied, existing, 0o644); err != nil {
 		t.Fatal(err)
@@ -456,10 +593,7 @@ func TestUnpackRefusesToReplaceWithoutForce(t *testing.T) {
 	service := application.New("", "", nil, nil, nil)
 
 	directory := t.TempDir()
-	target := filepath.Join(directory, "assets/test/asset/1/asset")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	target := filepath.Join(directory, "asset")
 	existing := []byte("something somebody was working on")
 	if err := os.WriteFile(target, existing, 0o644); err != nil {
 		t.Fatal(err)
@@ -509,10 +643,7 @@ func TestUnpackDoesNotWriteThroughASymlink(t *testing.T) {
 	if err := os.WriteFile(outside, untouched, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(directory, "assets/test/asset/1/asset")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	target := filepath.Join(directory, "asset")
 	if err := os.Symlink(outside, target); err != nil {
 		t.Fatal(err)
 	}
@@ -689,6 +820,10 @@ func TestUnpackLeavesNothingBehindWhenItFails(t *testing.T) {
 // TestUnpackKeepsWhatItDidNotCreateWhenItFails is the other half of the
 // rollback. Undoing an unpack means taking back what it added, and a directory
 // that was already there is not that -- neither is anything else in it.
+//
+// The destination here is two levels below one that exists, which is the only
+// way a flat unpack makes a directory at all: it is --dest naming somewhere
+// that is not there yet. Those two come back; the one holding them does not.
 func TestUnpackKeepsWhatItDidNotCreateWhenItFails(t *testing.T) {
 	content := []byte("the good file")
 	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
@@ -707,15 +842,13 @@ func TestUnpackKeepsWhatItDidNotCreateWhenItFails(t *testing.T) {
 		{"assets/../../../tmp/pwned", content},
 	})
 
-	directory := t.TempDir()
-	neighbour := filepath.Join(directory, "assets", "notes.txt")
-	if err := os.MkdirAll(filepath.Dir(neighbour), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	existing := t.TempDir()
+	neighbour := filepath.Join(existing, "notes.txt")
 	kept := []byte("somebody else's file")
 	if err := os.WriteFile(neighbour, kept, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	directory := filepath.Join(existing, "made", "by", "the", "unpack")
 
 	if _, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
 		Pack: archive, Directory: directory,
@@ -725,8 +858,15 @@ func TestUnpackKeepsWhatItDidNotCreateWhenItFails(t *testing.T) {
 	if survived, err := os.ReadFile(neighbour); err != nil || !bytes.Equal(survived, kept) {
 		t.Fatalf("the rollback removed a file it did not write: %q %v", survived, err)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "assets", "app")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(existing, "made")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the rollback left the directories it created: %v", err)
+	}
+	entries, err := os.ReadDir(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "notes.txt" {
+		t.Fatalf("the rollback left %#v", entries)
 	}
 }
 

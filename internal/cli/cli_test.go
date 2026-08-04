@@ -738,7 +738,9 @@ func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	result = runJSON(t, []string{"unpack"})
 	assertSuccess(t, result, "unpack")
 	data := result.value["data"].(map[string]any)
-	target := filepath.Join(working, "assets", "app", "geo", "1", "geo.bin")
+	// The file itself, in the directory the command ran in. The archive's own
+	// layout is how it keeps two assets apart inside itself, and it stops there.
+	target := filepath.Join(working, "geo.bin")
 	if data["pack"] != archive || data["directory"] != working ||
 		data["itemCount"] != float64(1) || data["fileCount"] != float64(1) ||
 		data["byteCount"] != float64(len(content)) {
@@ -764,7 +766,7 @@ func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	elsewhere := t.TempDir()
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", named)), "pack")
 	assertSuccess(t, runJSON(t, []string{"unpack", named, "--dest", elsewhere}), "unpack")
-	if _, err := os.Stat(filepath.Join(elsewhere, "assets", "app", "geo", "1", "geo.bin")); err != nil {
+	if _, err := os.Stat(filepath.Join(elsewhere, "geo.bin")); err != nil {
 		t.Fatalf("the named destination is empty: %v", err)
 	}
 	// A pack writes one archive, so a second path is a mistake rather than

@@ -132,6 +132,13 @@ func (runner *runner) packCommand() *urfave.Command {
 // directory, which is why --force exists: replacing files somebody is standing
 // in the middle of is not something to do because an archive said so.
 //
+// The files land in the destination itself. An archive keeps each one under the
+// coordinate it belongs to because it has to keep two assets with one name
+// apart, but that is the container's problem and not the caller's: somebody
+// unpacking an SDK wants the SDK, not four directories to find it in. --tree
+// hands back the archive layout for the case that needs it, which is an archive
+// whose names would collide.
+//
 // Naming assets after the archive unpacks those and leaves the rest in it, for
 // the job that wants one file out of a project's worth of them. That is the
 // argument slot the destination used to occupy: a destination is where the
@@ -144,6 +151,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 		ArgsUsage: "[<archive> [<namespace>/<name>[@<version>]...]]",
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "dest", Value: ".", Usage: "Write the files into this directory."},
+			&urfave.BoolFlag{Name: "tree", Usage: "Keep the archive's directory layout instead of writing the files themselves."},
 			&urfave.BoolFlag{Name: "force", Usage: "Replace files that are already in the destination."},
 		},
 		Action: runner.run("unpack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
@@ -159,6 +167,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 				Pack:      pack,
 				Directory: directory,
 				Assets:    assets,
+				Tree:      current.Bool("tree"),
 				Force:     current.Bool("force"),
 			})
 			if err != nil {

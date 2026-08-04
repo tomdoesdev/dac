@@ -105,7 +105,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
-| `dac unpack [<archive> [<namespace>/<name>[@<version>]...]] [--dest <directory>] [--force]` | Write the assets a dacpack carries into a directory, or the ones named. |
+| `dac unpack [<archive> [<namespace>/<name>[@<version>]...]] [--dest <directory>] [--tree] [--force]` | Write the files a dacpack carries into a directory, or the ones named. |
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
 | `dac cache import <dacpack\|directory>` | Install objects from a dacpack, or from a directory of digest-named files. |
@@ -923,12 +923,12 @@ this project needs will therefore cost more cache than it used to.
 ### dacpacks
 
 A dacpack is the project, materialized. Its files carry the names their origins
-gave them, so unpacking one — or just extracting it with `tar` — leaves a
-directory of real files with real extensions:
+gave them, so unpacking one leaves a directory of real files with real
+extensions — the files themselves, at the destination:
 
 ```bash
 dac pack                                       # writes ./dac.dacpack
-dac unpack                                     # writes ./assets/... from it
+dac unpack                                     # writes ./jdk-11.tar.gz and ./jdk-17.tar.gz
 dac unpack build.dacpack --dest /opt/in        # or name the archive and where it goes
 dac unpack build.dacpack java/sdk@11           # or take one asset out of it
 ```
@@ -967,9 +967,9 @@ everywhere else in DAC. It used to be the second argument, so `dac unpack
 <archive> <dir>` now says where the destination went rather than reporting that
 a directory is not a coordinate.
 
-The layout keys each file on the coordinate it belongs to, and the name comes
-from the lock file's `filename` — falling back to the name half of the
-coordinate for an asset that has none:
+Inside the archive, the layout keys each file on the coordinate it belongs to,
+and the name comes from the lock file's `filename` — falling back to the name
+half of the coordinate for an asset that has none:
 
 ```text
 index.json
@@ -981,21 +981,39 @@ The coordinate supplies the directories because two versions of one asset almost
 always share a file name, and two assets easily can. A layout keyed on the name
 alone would have the second file silently overwrite the first.
 
-Each file lands at the same path under the destination that it has inside the
-archive, so `dac unpack <archive> --dest <dir>` and `tar -xf <archive> -C <dir>`
-put the files in the same places. `index.json` records what each one is —
-coordinate, source URL, path, file name, digest, and size — and both readers
-check every file against its digest as they go. A file name says nothing about the bytes
-under it, so that digest is the only claim there is to check.
+**Unpacking writes the files, not that layout.** They land in the destination
+directory under the names their origins gave them, so `dac unpack build.dacpack
+--dest ./vendor` leaves `./vendor/jdk-11.tar.gz` rather than
+`./vendor/assets/java/sdk/11/jdk-11.tar.gz`. Those directories are how an
+archive keeps two assets with one name apart inside itself; that is a container's
+problem, and making whoever unpacks it walk four levels to reach a file is that
+problem leaking out. `index.json` records what each file is — coordinate, source
+URL, path, file name, digest, and size — and both readers check every file
+against its digest as they go. A file name says nothing about the bytes under it,
+so that digest is the only claim there is to check.
+
+`--tree` writes the archive's paths instead, so `dac unpack <archive> --tree
+--dest <dir>` and `tar -xf <archive> -C <dir>` put the files in the same places.
+It exists for the archive flat cannot write: when two assets carry one file
+name, an unpack that is not narrowed past the clash is refused with
+`unpack_name_collision`, naming the file and both coordinates. Writing either
+one would leave bytes under a name the result says belong to the other, and
+renaming one would invent a name no origin gave. `--force` does not decide it
+either — force is permission to replace what is already on disk, not to lose one
+of two files the command was told to write. So the answers are to name the asset
+wanted, or to take the layout that has room for both; `--tree` is also the only
+way to materialize such an archive whole with the digests checked, since `tar`
+puts the files in the same places and checks nothing.
 
 `unpack` refuses to replace anything unless `--force` is given, naming every
 file that is in the way and writing nothing. It asks that about the files it
 will write, so an unpack narrowed to one asset is not refused over what is in
 another's way. The destination defaults to the directory the command was run in,
-where a mistake costs work that was never DAC's to lose. A failed unpack leaves
-nothing behind either: an archive is not known to be sound until it has been
-read to the end, so anything already written is taken back rather than left
-looking like a complete tree.
+where a mistake costs work that was never DAC's to lose — and writing files
+straight into it is the reason that refusal matters more than it used to. A
+failed unpack leaves nothing behind either: an archive is not known to be sound
+until it has been read to the end, so anything already written is taken back,
+along with any directory the unpack had to make to get there.
 
 Two coordinates that resolved to one object are one object in the cache and two
 files in a dacpack, because each is materialized under its own name and a file
