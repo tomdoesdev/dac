@@ -101,7 +101,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
 | `dac lock [--refresh] [--rebind] [--concurrency <n>] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
-| `dac pull [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets. |
+| `dac pull [<namespace>/<name>[@<version>]...] [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets, or the ones named. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export <bundle>` | Write locked objects and metadata to a cache bundle. |
@@ -131,6 +131,22 @@ otherwise refuses with `asset_ambiguous` and the versions to choose from — DAC
 does not order versions, so there is no latest for it to fall back on. `info`
 lists every version, because answering what a project has is its job; it accepts
 nothing, one coordinate, or one `<namespace>/<name>`.
+
+`pull` takes any number of either, and no arguments means the whole project:
+
+```bash
+dac pull                              # everything the lock file names
+dac pull backend-app/geo-database     # every version of one asset
+dac pull tools/toolchain@1.4          # one version
+```
+
+A project holds every asset every job built from it needs, and a job needs the
+ones it needs. Naming them narrows what is fetched and nothing else: the whole
+project is still read, and the lock file still has to describe the manifest,
+because whether this is the project that was committed is not a question a
+command fetching half of it gets to skip. Naming an asset the project does not
+have fails with `asset_unknown` rather than fetching nothing and reporting
+success.
 
 A namespace and a name are lowercase letters, digits, and `.`, `_`, or `-`. A
 version also takes uppercase and `+`, because it is copied from whatever the
@@ -579,6 +595,12 @@ what the origin calls the asset. The cache path names the bytes, so this is the
 half a script needs to put a file somewhere a later tool will recognize. It is
 absent for an asset nothing names, and it was added without a version bump
 because an added optional field breaks no consumer.
+
+A `pull` result carries `projectCount` alongside `assetCount`, which is how
+many assets the project has rather than how many this pull took. The two differ
+only when the pull was narrowed, and the difference is what tells "there was one
+asset" from "one asset was asked for". It was added without a version bump for
+the same reason `filename` was.
 
 JSON errors use the same stream and framing:
 
