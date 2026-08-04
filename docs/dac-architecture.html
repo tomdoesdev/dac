@@ -534,7 +534,7 @@ type RequestDetail interface {
     refresh would stop at the first drifted asset, report a failed transfer instead of the drift it exists to
     find, and never reach the assets behind it. Precisely the assets somebody cared enough about to pin would
     be the ones <code>lock_drift</code> never named. Every command that <em>writes</em> a lock file still enforces
-    the pin: <code>pull --refresh-lock</code> against a moved origin is <code>content_mismatch</code>, and correctly so.
+    the pin: <code>lock --refresh</code> against a moved origin is <code>content_mismatch</code>, and correctly so.
   </p>
 
   <h3>The case DAC declines to refuse</h3>
@@ -558,8 +558,8 @@ type RequestDetail interface {
   <p>
     For each coordinate, in parallel: if this is not a refresh and the lock entry still describes the
     manifest asset, carry it through untouched at status <code>locked</code> — <strong>no request at all</strong>.
-    That is the property that makes <code>pull</code> usable in a deployment job, and it only survives if assets
-    already locked cost nothing to confirm. Otherwise, call <code>resolve</code>.
+    That is what makes locking a project that is already mostly locked cost one request per genuine change
+    rather than one per asset. Otherwise, call <code>resolve</code>.
   </p>
   <p>
     One detail hides there: an asset the manifest pins carries no ETag, so a lock entry that kept one from
@@ -572,7 +572,7 @@ type RequestDetail interface {
     <li>
       <h4>Pinned, not refreshing, and the cache holds that digest</h4>
       <p>A publisher digest already settles which bytes are correct, so the answer is on disk. This never
-      confirms the URL still serves those bytes — which is exactly what <code>--refresh-lock</code> trades away.
+      confirms the URL still serves those bytes — which is exactly what <code>lock --refresh</code> trades away.
       A corrupt object here does not stop the ladder: resolve falls through to the origin and installs good
       bytes over the bad ones.</p>
       <span class="out">status: cached</span>
@@ -641,10 +641,10 @@ type RequestDetail interface {
     <p>
       <code>locked</code> (the lock already described it) · <code>resolved</code> (reached the origin and stored
       bytes) · <code>not_modified</code> (the origin answered 304) · <code>cached</code> (answered from the cache)
-      · <code>downloaded</code> · <code>distdir</code> · <code>repaired</code>. A pull that reconciled an asset in the
-      same run reports <code>resolved</code> as <code>downloaded</code>, because this pull did transfer those bytes —
-      but keeps <code>not_modified</code> distinct from <code>cached</code>, because only the first proves the origin
-      was asked.
+      · <code>downloaded</code> · <code>distdir</code> · <code>repaired</code>. The first four come from <code>lock</code>,
+      which reports what reaching the origin cost; the last three from <code>pull</code>, which reports what
+      installing cost. <code>not_modified</code> stays distinct from <code>cached</code>, because only the first
+      proves the origin was asked.
     </p>
   </div>
 </section>
@@ -821,7 +821,7 @@ func (client *Client) authorize(ctx context.Context, request *http.Request) erro
 
   <h3>Where helpers apply</h3>
   <p>
-    <code>add</code>, <code>pull</code>, and <code>verify --refresh</code> — every command that makes a request.
+    <code>add</code>, <code>lock</code>, <code>pull</code>, and <code>verify --refresh</code> — every command that makes a request.
     <code>--credential-helper</code> is repeatable, and <code>DAC_CREDENTIAL_HELPER</code> sets the same option for a
     whole job. When no helper is configured at all, the resolver is <code>nil</code> and the header lookup returns
     immediately, so the unauthenticated path costs nothing.
@@ -1061,7 +1061,7 @@ jq -n --arg t "$token" '{headers: {Authorization: ["Bearer \($t)"]}}'</code></pr
       <tr><td class="mono">dac pull --offline</td><td>Fails with <code>cache_object_corrupt</code>.</td><td>Damage to report, and no way to repair it here.</td></tr>
       <tr><td class="mono">dac info</td><td>Prints <code>cache: corrupt</code>.</td><td>Reporting state is its whole job.</td></tr>
       <tr><td class="mono">dac export</td><td>Refuses.</td><td>A bundle is the one artifact that would carry cache damage onto machines with no way to tell where it came from.</td></tr>
-      <tr><td class="mono">resolve (add / pull --update-lock)</td><td>Falls through to the origin.</td><td>It was about to fetch anyway; good bytes replace bad ones.</td></tr>
+      <tr><td class="mono">resolve (add / lock)</td><td>Falls through to the origin.</td><td>It was about to fetch anyway; good bytes replace bad ones.</td></tr>
       <tr><td class="mono">dac cache verify</td><td>Reports and exits 1; <code>--repair</code> removes.</td><td>Finding the damage is not the same as it not being there, so a scripted run gets a nonzero status.</td></tr>
     </tbody>
   </table>
@@ -1161,7 +1161,7 @@ type Error struct {
     <tbody>
       <tr><td>Command result</td><td>stdout</td><td>One envelope, <code>ok: true</code></td></tr>
       <tr><td>Command failure</td><td>stderr (human) / stdout (JSON)</td><td>One envelope, <code>ok: false</code></td></tr>
-      <tr><td>Progress bars and lines</td><td>stderr</td><td>Suppressed for <code>pull</code>, so exactly one document lands on stdout</td></tr>
+      <tr><td>Progress bars and lines</td><td>stderr</td><td>Suppressed for <code>lock</code> and <code>pull</code>, so exactly one document lands on stdout</td></tr>
       <tr><td>Help and usage</td><td>stderr</td><td>Not written</td></tr>
       <tr><td><code>dac completion</code></td><td>stdout</td><td>Outside the output contract entirely — a shell evaluates it, nothing parses it</td></tr>
     </tbody>
@@ -1175,7 +1175,10 @@ type Error struct {
     gave every asset a <code>coordinate</code> and a <code>namespace</code> alongside its <code>name</code> and
     <code>version</code>, dropped <code>replaced</code> from an <code>add</code> result because adding a version no longer
     retires one, and added <code>siblings</code>, <code>sharedSources</code>, and <code>remaining</code> so that a command
-    changing one version says what happened to the others.
+    changing one version says what happened to the others. Version 4 moved the lock operations off
+    <code>pull</code> onto <code>lock</code>: a <code>pull</code> result dropped the <code>locked</code> array it could no
+    longer populate, and a <code>lock</code> result carries it alongside <code>changed</code>, which reports whether
+    the file on disk actually moved.
   </p>
   <p>
     Exit status is three values: <code>0</code> success, <code>1</code> the command failed, <code>2</code> DAC rejected
@@ -1354,10 +1357,11 @@ type Error struct {
   </div>
 
   <div class="decision">
-    <h4>No <code>dac lock</code> command</h4>
+    <h4>A <code>dac lock</code> command, not lock flags on <code>pull</code></h4>
     <dl>
-      <dt>Because</dt><dd>Resolving an asset stores its bytes, so the command that resolved everything and the command that installed everything were one command under two names.</dd>
-      <dt>Buys</dt><dd>One mental model: <code>pull</code> installs, and lock flags say whether it may write. Nothing writes the lock file without being asked — <code>add</code> and <code>remove</code> maintain it because they are already changing the project.</dd>
+      <dt>Because</dt><dd>Resolving an asset stores its bytes, which once argued for folding both onto one command — true of the bytes, wrong about the decision. Whether a lock file may be rewritten is the question a deployment job most needs answered "no", and it should not be one flag away from the command that job runs.</dd>
+      <dt>Buys</dt><dd>Each command has one product: <code>lock</code> writes the lock file and installs nothing else, <code>pull</code> installs and writes nothing. Nothing writes the lock file without being asked — <code>add</code> and <code>remove</code> maintain it because they are already changing the project, <code>lock</code> because that is what it is for, and <code>pull</code> never.</dd>
+      <dt>Costs</dt><dd>A cold project takes two commands where it took one. They share <code>reconcile</code>, so it is a second invocation rather than a second implementation, and the lock leaves the cache warm for the pull behind it.</dd>
     </dl>
   </div>
 </section>

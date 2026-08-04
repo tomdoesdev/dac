@@ -62,7 +62,7 @@ func removeText(name coord.Coordinate, result application.RemoveResult) string {
 		text += fmt.Sprintf(" %s still has %s.", name.Group(), strings.Join(result.Remaining, ", "))
 	}
 	if len(result.Unlocked) > 0 {
-		text += fmt.Sprintf(" The lock file does not describe %s. Run dac pull --update-lock.", strings.Join(result.Unlocked, ", "))
+		text += fmt.Sprintf(" The lock file does not describe %s. Run dac lock.", strings.Join(result.Unlocked, ", "))
 	}
 	return text
 }

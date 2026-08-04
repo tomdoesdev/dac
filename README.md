@@ -54,8 +54,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain
 ```
 
 Use `add --offline` to update only `dac.json`. The command makes no network
-request and does not change `dac-lock.json`. Run `dac pull --update-lock` later
-to update it.
+request and does not change `dac-lock.json`. Run `dac lock` later to update it.
 
 In CI or a deployment job, run:
 
@@ -71,14 +70,21 @@ Editing `dac.json` by hand is the other way in. Nothing resolves it until you
 ask:
 
 ```bash
-dac pull --update-lock
+dac lock
 ```
 
 That resolves the assets the lock file does not describe, writes it, and names
 what it locked. An asset the lock already describes costs no request at all. Use
-`dac pull --refresh-lock` to resolve every asset against its origin instead. An
-origin that has replaced the bytes a version is locked to stops that pull rather
-than rewriting the lock file: see [What a version means](#what-a-version-means).
+`dac lock --refresh` to resolve every asset against its origin instead. An
+origin that has replaced the bytes a version is locked to stops the command
+rather than rewriting the lock file: see
+[What a version means](#what-a-version-means).
+
+`dac lock` is the only command whose product is the lock file. It writes that
+file and nothing else, and `pull` installs and writes nothing at all, so the two
+halves of "what does this project use" and "fetch what it uses" stay separate
+decisions. Resolving an asset downloads it, so a lock warms the cache for the
+assets it settles; the pull behind it then has nothing left to fetch.
 
 To find out whether an origin has moved without changing what your project uses,
 run `dac verify --refresh` on a schedule. It resolves every asset, writes
@@ -94,7 +100,8 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
-| `dac pull [--update-lock] [--refresh-lock] [--rebind] [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets, updating the lock file when asked. |
+| `dac lock [--refresh] [--rebind] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
+| `dac pull [--offline] [--distdir <dir>] [--no-rewrite]` | Download missing locked assets. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
@@ -143,8 +150,8 @@ origin that replaced what it serves behind a stable URL and a manifest edited to
 point one version somewhere else both fail with `version_rebind`, which reports
 the digest the lock holds and the digest that arrived. The way forward is a new
 version. `--rebind` is for the project that genuinely tracks a rolling source
-and has decided to accept the change; it writes the lock file, so it only works
-alongside `--update-lock` or `--refresh-lock`.
+and has decided to accept the change; it belongs to the commands that write the
+lock file, which are `dac lock` and `dac add`.
 
 **Two versions of one asset never name the same bytes.** Adding
 `backend-app/database@2.0.0` with the source `backend-app/database@1.0.0`
@@ -170,13 +177,19 @@ second place to say what the key already says, and the place the two could
 disagree. There is no migration. A version 1 project file is rejected with a
 message naming the shape the new one takes.
 
-Version 5 removed `dac lock`. Resolving an asset stores its bytes in the cache,
-so the command that resolved everything and the command that installed
-everything were the same command under two names. `dac lock` is now
-`dac pull --update-lock`, `dac lock --refresh` is `dac pull --refresh-lock`, and
-`dac lock --check` is `dac verify --refresh`. Nothing writes the lock file
-without being asked: `add` and `remove` maintain it because they are already
-changing the project, and `pull` only when a lock flag says so.
+`dac lock` owns every operation that writes the lock file on purpose. Version 5
+had folded them onto `pull` as flags, on the grounds that resolving an asset
+stores its bytes and so a command that resolved everything already installed
+everything. That is true of the bytes and wrong about the decision: whether a
+lock file may be rewritten is the question a deployment job most needs answered
+"no", and it should not be a flag away from the command that job runs. So
+`dac pull --update-lock` is now `dac lock`, `dac pull --refresh-lock` is
+`dac lock --refresh`, and `--rebind` moves with them. `dac lock --check` remains
+`dac verify --refresh`, which reports drift and writes nothing.
+
+Nothing writes the lock file without being asked: `add` and `remove` maintain it
+because they are already changing the project, `lock` because that is what it is
+for, and `pull` never.
 
 `export`, `import`, and `cache gc` do not use the network. `import` does not
 read the project files. `cache gc` collects the whole shared cache.
@@ -226,7 +239,7 @@ HTTPS. It permits HTTP for loopback hosts. Use `--allow-insecure-http` on
 
 An asset with an `integrity` value that the cache already holds lets an update
 finish without a request, which also means it never confirms that the URL still
-serves those bytes. Use `dac pull --refresh-lock` to check every asset against
+serves those bytes. Use `dac lock --refresh` to check every asset against
 its origin.
 
 An asset the manifest leaves unpinned records an `etag` when the origin sends
@@ -248,7 +261,7 @@ answers instead. An asset that nothing names omits the field.
 The name is advisory. Nothing decides anything by it, and it takes no part in
 the check that asks whether a lock still describes its manifest, so a lock
 written before the field existed is not stale and does not have to re-resolve
-anything. `dac pull --update-lock` fills in what the URL spells for those
+anything. `dac lock` fills in what the URL spells for those
 entries once, without a request.
 
 It belongs to the lock rather than to the cached object because it describes the
@@ -273,14 +286,14 @@ Request and policy options appear only on commands that use them:
 
 | Option | Environment | Default | Commands |
 |---|---|---|---|
-| `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `pull`, `verify` |
-| `--retries` | `DAC_RETRIES` | `2` | `add`, `pull`, `verify` |
-| `--concurrency` | `DAC_CONCURRENCY` | `4` | `pull`, `verify` |
-| `--download-parts` | `DAC_DOWNLOAD_PARTS` | `4` | `add`, `pull`, `verify` |
-| `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `pull`, `verify` |
-| `--progress` | | `true` | `add`, `pull`, `verify` |
-| `--no-rewrite` | | `false` | `add`, `pull`, `verify` |
-| `--credential-helper` | `DAC_CREDENTIAL_HELPER` | | `add`, `pull`, `verify` |
+| `--timeout` | `DAC_TIMEOUT` | `5m` | `add`, `lock`, `pull`, `verify` |
+| `--retries` | `DAC_RETRIES` | `2` | `add`, `lock`, `pull`, `verify` |
+| `--concurrency` | `DAC_CONCURRENCY` | `4` | `lock`, `pull`, `verify` |
+| `--download-parts` | `DAC_DOWNLOAD_PARTS` | `4` | `add`, `lock`, `pull`, `verify` |
+| `--max-size` | `DAC_MAX_SIZE` | `2GiB` | `add`, `lock`, `pull`, `verify` |
+| `--progress` | | `true` | `add`, `lock`, `pull`, `verify` |
+| `--no-rewrite` | | `false` | `add`, `lock`, `pull`, `verify` |
+| `--credential-helper` | `DAC_CREDENTIAL_HELPER` | | `add`, `lock`, `pull`, `verify` |
 | `--distdir` | `DAC_DISTDIR` | | `pull` |
 
 The `verify` options apply only to `--refresh`. A plain `verify` reads the two
@@ -383,8 +396,8 @@ allow mirror.internal
 
 Save the config as `dac-rewrite.cfg` beside the manifest. DAC loads this file
 automatically when it exists. `DAC_REWRITE_CONFIG` can specify a different
-file, and that file must exist. Use `--no-rewrite` with `add`, `pull`, or
-`verify --refresh` to disable the complete config.
+file, and that file must exist. Use `--no-rewrite` with `add`, `lock`, `pull`,
+or `verify --refresh` to disable the complete config.
 
 Run `dac info` to show each source URL, request URL, and host policy result. Add
 an asset coordinate to show only that asset.
@@ -416,7 +429,7 @@ detailed block for each selected asset.
 Use `--json` or `-j` to write one versioned JSON document to standard output:
 
 ```json
-{"outputVersion":3,"ok":true,"command":"path","data":{}}
+{"outputVersion":4,"ok":true,"command":"path","data":{}}
 ```
 
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
@@ -434,7 +447,7 @@ because an added optional field breaks no consumer.
 JSON errors use the same stream and framing:
 
 ```json
-{"outputVersion":3,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
+{"outputVersion":4,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
 ```
 
 `code` and `message` are stable enough to branch on, which is exactly why
@@ -445,8 +458,13 @@ failure, the locked and resolved digests for a `version_rebind`, and the two
 versions and the object they share for a `version_collision`.
 
 Human errors, help, and progress go to standard error. JSON mode does not write
-human summaries or error messages. The `pull` command also disables progress in
-JSON mode.
+human summaries or error messages. The `lock` and `pull` commands also disable
+progress in JSON mode.
+
+Output version `4` moved the lock operations off `pull` onto `dac lock`. A
+`pull` result no longer carries `locked`, because a pull no longer writes the
+lock file; a `lock` result carries it, along with `changed` for whether the file
+on disk actually moved.
 
 Output version `3` gave every asset a `coordinate` and a `namespace` alongside
 its `name` and `version`, dropped `replaced` from an `add` result because adding
@@ -463,7 +481,7 @@ On an interactive terminal, DAC uses concurrent progress bars from
 bytes, percentage, speed, and completion state. An unknown response size uses a
 spinner and a byte count. A non-terminal stream gets one start line and one
 completion line for each asset. Use `--progress=false` to disable both forms.
-The `pull` command disables both forms in JSON mode.
+The `lock` and `pull` commands disable both forms in JSON mode.
 
 ## Cache behavior
 

@@ -1,9 +1,8 @@
 package application
 
 // This file holds the operation that brings a lock file into agreement with a
-// manifest. It replaced the lock command: resolving an asset installs its bytes
-// in the cache, so a command that resolved everything and a command that
-// installed everything were the same command wearing two names.
+// manifest. It is what dac lock runs, and what add runs over the manifest it is
+// about to write, so that both settle a hand-edited project the same way.
 
 import (
 	"bytes"
@@ -52,12 +51,12 @@ func (result reconciliation) names(order []coord.Coordinate) []string {
 // reconcile brings a lock into agreement with a manifest by resolving only the
 // assets the lock no longer describes.
 //
-// An entry the lock still describes is carried through without a request. The
-// lock command resolved every asset on every run, which for an unpinned asset
-// meant a conditional request whether or not anything had changed. Pull
-// answering from a warm cache without touching the network at all is the
-// property that makes it usable in a deployment job, and it only survives if
-// the assets already locked cost nothing to confirm.
+// An entry the lock still describes is carried through without a request, so
+// locking a project that is already mostly locked costs one request per genuine
+// change rather than one per asset. Resolving everything on every run is what
+// --refresh asks for, and it is a different question: not "what does this
+// project still not describe" but "does every origin still serve what we wrote
+// down".
 //
 // It writes nothing. A caller that changes the manifest in the same command has
 // to write both files together or neither, so the decision to write belongs to
