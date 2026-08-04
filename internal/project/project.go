@@ -35,9 +35,18 @@ type Manifest struct {
 }
 
 // Asset defines one source.
+//
+// Filename is the name the project chooses for the asset, which is the one
+// thing about a file name that is a decision rather than an observation. Every
+// other source of a name -- a Content-Disposition header, the last element of
+// the URL -- is something an origin happened to say, so those belong to the
+// lock, which records what resolution found. This is the manifest's own answer,
+// and it is optional: an asset that declares none is named by whatever the
+// origin calls it, which is what every asset did before this field existed.
 type Asset struct {
 	URL               string `json:"url"`
 	Integrity         string `json:"integrity,omitempty"`
+	Filename          string `json:"filename,omitempty"`
 	AllowInsecureHTTP bool   `json:"allowInsecureHttp,omitempty"`
 }
 
@@ -50,12 +59,13 @@ type Lock struct {
 
 // LockAsset records one resolved asset.
 //
-// Filename is the name the origin gives the asset, which a cache path cannot
-// carry: that path is a digest, and a digest is the right name for bytes and
-// the wrong name for a tool that switches on an extension. It belongs here
-// rather than beside the cached object because it describes the source and not
-// the bytes -- two coordinates that resolve to the same object share one file
-// in the cache and may well disagree about what it is called.
+// Filename is the name the asset is known by -- the one the manifest declares
+// when it declares one, and otherwise the one the origin gives -- which a cache
+// path cannot carry: that path is a digest, and a digest is the right name for
+// bytes and the wrong name for a tool that switches on an extension. It belongs
+// here rather than beside the cached object because it describes the source and
+// not the bytes -- two coordinates that resolve to the same object share one
+// file in the cache and may well disagree about what it is called.
 //
 // It is advisory. Nothing decides anything by it, no other field is checked
 // against it, and it is absent from a lock written before it existed, so it
@@ -176,6 +186,14 @@ func (manifest Manifest) Validate() error {
 			if _, err := digest.Hex(asset.Integrity); err != nil {
 				return fmt.Errorf("asset %q has invalid integrity: %w", name, err)
 			}
+		}
+		// A declared name reaches the lock file, and from there a dacpack path and
+		// whatever a script does with it, so it is checked where it is declared.
+		// Refusing it here rather than repairing it is the rule the whole filename
+		// package is written to: a repaired name is a name DAC invented, and the
+		// manifest is the one place a name is somebody's actual answer.
+		if asset.Filename != "" && filename.Clean(asset.Filename) != asset.Filename {
+			return fmt.Errorf("asset %q has an invalid filename", name)
 		}
 	}
 	return nil

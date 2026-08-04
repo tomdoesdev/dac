@@ -74,12 +74,19 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			if source.Integrity != "" {
 				locked.ETag = ""
 			}
-			// An entry from a lock written before file names were recorded has
-			// none, and it will never be resolved again while it still agrees
-			// with the manifest. The URL spells a name without asking anybody,
-			// so fill it in here: the alternative is a project that only gains
-			// names for the assets that happen to change.
-			if locked.Filename == "" {
+			// A file name is settled here as well as in resolve, because an entry
+			// that still agrees with its manifest is never resolved again and a
+			// name is not something to make anybody re-download an asset for.
+			//
+			// A declared name is applied whenever the manifest carries one, so
+			// renaming an asset is a manifest edit and a lock, with no request.
+			// Otherwise an entry from a lock written before file names were
+			// recorded has none: the URL spells one without asking anybody, so
+			// fill it in here rather than leave a project that only gains names
+			// for the assets that happen to change.
+			if declared := filename.Clean(source.Filename); declared != "" {
+				locked.Filename = declared
+			} else if locked.Filename == "" {
 				locked.Filename = filename.FromURL(source.URL)
 			}
 			return resolvedAsset{lock: locked, status: statusLocked}, nil

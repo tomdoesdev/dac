@@ -15,6 +15,7 @@ import (
 func (runner *runner) addCommand() *urfave.Command {
 	flags := append(runner.networkFlags(false),
 		&urfave.StringFlag{Name: "integrity", Usage: "Require this sha256 digest."},
+		&urfave.StringFlag{Name: "name", Usage: "Call the asset this instead of the name its origin gives."},
 		&urfave.BoolFlag{Name: "pin", Usage: "Record the resolved digest as the asset integrity value."},
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
 		&urfave.BoolFlag{Name: "force", Usage: "Replace the source of an asset version the manifest already has."},
@@ -49,6 +50,7 @@ func (runner *runner) addCommand() *urfave.Command {
 				Coordinate:        name,
 				URL:               source,
 				Integrity:         current.String("integrity"),
+				Filename:          current.String("name"),
 				AllowInsecureHTTP: current.Bool("allow-insecure-http"),
 				Force:             current.Bool("force"),
 				Pin:               current.Bool("pin"),

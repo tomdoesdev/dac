@@ -321,6 +321,15 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 		{"an integrity value that is not a digest", func(manifest *Manifest) {
 			manifest.Assets[name] = Asset{URL: "https://example.com/geo.bin", Integrity: "sha256:nope"}
 		}, "invalid integrity"},
+		{"a declared name that escapes its directory", func(manifest *Manifest) {
+			manifest.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "../../etc/passwd"}
+		}, "invalid filename"},
+		{"a declared name holding a control byte", func(manifest *Manifest) {
+			manifest.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "geo\x00.bin"}
+		}, "invalid filename"},
+		{"a declared name DAC would have to trim", func(manifest *Manifest) {
+			manifest.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "  geo.bin  "}
+		}, "invalid filename"},
 	} {
 		manifest := sound()
 		testCase.break_(&manifest)
@@ -339,6 +348,46 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 	manifest.Assets[name] = Asset{URL: "http://example.com/geo.bin", AllowInsecureHTTP: true}
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("an insecure URL that opted in was refused: %v", err)
+	}
+
+	// A declared name is optional and every asset written before the field
+	// existed has none, so an empty one is not a broken one.
+	named := sound()
+	named.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "geo.db"}
+	if err := named.Validate(); err != nil {
+		t.Fatalf("a declared name was refused: %v", err)
+	}
+}
+
+// A manifest that declares no name hashes exactly as it did before the field
+// existed, so adding it made no project's lock stale.
+func TestADeclaredNameLeavesAnUnnamedManifestUnchanged(t *testing.T) {
+	name := coord.MustParse("app/geo@1")
+	manifest := Manifest{
+		SchemaVersion: ManifestVersion,
+		Assets:        map[coord.Coordinate]Asset{name: {URL: "https://example.com/geo.bin"}},
+	}
+	data, err := Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "filename") {
+		t.Fatalf("an asset that declares no name wrote the field: %s", data)
+	}
+
+	// Declaring one does change the digest, which is what makes a rename a
+	// manifest edit that dac lock has to settle rather than a silent rewrite.
+	before, err := manifest.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "geo.db"}
+	after, err := manifest.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("declaring a name left the manifest digest unchanged")
 	}
 }
 

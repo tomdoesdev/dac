@@ -67,12 +67,17 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 		if response.ETag != "" {
 			old.ETag = response.ETag
 		}
-		// A name already recorded stands. The origin has just said these bytes
-		// are the ones the lock describes, and a 304 carries no body and rarely
-		// repeats the header that named them -- so taking the response's answer
-		// would quietly trade a name the origin once gave for whatever the URL
-		// happens to spell. Only an entry that has no name at all gains one.
-		if old.Filename == "" {
+		// A name the manifest declares is applied here too, because it is the
+		// project's own answer and a 304 says nothing about it either way.
+		// Otherwise a name already recorded stands. The origin has just said
+		// these bytes are the ones the lock describes, and a 304 carries no body
+		// and rarely repeats the header that named them -- so taking the
+		// response's answer would quietly trade a name the origin once gave for
+		// whatever the URL happens to spell. Only an entry that has no name at
+		// all gains one.
+		if declared := filename.Clean(source.Filename); declared != "" {
+			old.Filename = declared
+		} else if old.Filename == "" {
 			old.Filename = resolvedFilename(response.Filename, source, old)
 		}
 		return old, "not_modified", nil
@@ -108,21 +113,28 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 
 // resolvedFilename returns the best name known for an asset.
 //
-// A name the origin supplied wins, then the one the lock already holds for this
-// same URL, then the one the URL itself spells. Every source is optional, so
-// the answer may be empty, and nothing downstream may require it: an asset
-// answered from the cache never asked the origin anything, and it has to record
-// the same kind of value as one that did.
+// A name the manifest declares wins outright, because it is the one name here
+// that somebody chose rather than observed: a project that says what to call an
+// asset is not asking to be told. After it comes the name the origin supplied,
+// then the one the lock already holds for this same URL, then the one the URL
+// itself spells. Every source is optional, so the answer may be empty, and
+// nothing downstream may require it: an asset answered from the cache never
+// asked the origin anything, and it has to record the same kind of value as one
+// that did.
 //
 // A name is only carried over from the old entry while the URL is unchanged. A
 // manifest that repoints an asset has replaced the source the old name
 // described, and keeping it would attach a stale label to different bytes.
 //
-// The supplied name is cleaned again here rather than trusted. Fetcher is an
-// interface, so a name reaching this point has only been through whichever
-// adapter produced it, and a lock entry is the one place this value is written
-// down for other tools to use.
+// Both the declared and the supplied name are cleaned again here rather than
+// trusted. Fetcher is an interface, so a name reaching this point has only been
+// through whichever adapter produced it; a manifest is a file somebody edits;
+// and a lock entry is the one place this value is written down for other tools
+// to use.
 func resolvedFilename(supplied string, source project.Asset, old project.LockAsset) string {
+	if name := filename.Clean(source.Filename); name != "" {
+		return name
+	}
 	if name := filename.Clean(supplied); name != "" {
 		return name
 	}

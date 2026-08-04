@@ -2,10 +2,12 @@ package application
 
 import (
 	"context"
+	"strings"
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/filename"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
@@ -15,7 +17,12 @@ type AddOptions struct {
 	URL               string
 	Integrity         string
 	AllowInsecureHTTP bool
-	Force             bool
+	// Filename is the name the project chooses for this asset, which the
+	// manifest records and every later resolution uses in place of whatever the
+	// origin calls it. It is optional: an add that names nothing leaves the
+	// naming to the origin, which is what every add did before this existed.
+	Filename string
+	Force    bool
 	// Pin records the digest the asset resolves to as its integrity value, so
 	// that every later command holds the publisher to the bytes this add saw.
 	Pin     bool
@@ -85,10 +92,21 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			return AddResult{}, fault.Wrap("invalid_arguments", "The integrity value is invalid.", err)
 		}
 	}
+	// A name is refused here rather than repaired, and refused by itself rather
+	// than as part of the manifest, so that a caller who asked for a name DAC
+	// will not write is told that is what happened. Validate would catch it a few
+	// lines later and answer that the asset is invalid, which is true and does
+	// not say which part.
+	name := filename.Clean(options.Filename)
+	if strings.TrimSpace(options.Filename) != "" && name == "" {
+		return AddResult{}, fault.New("invalid_arguments",
+			"The file name is invalid. Use one path element: no separator, no control byte, no leading dash, and no more than 255 bytes.")
+	}
 	updated := manifest.Clone()
 	asset := project.Asset{
 		URL:               options.URL,
 		Integrity:         integrity,
+		Filename:          name,
 		AllowInsecureHTTP: options.AllowInsecureHTTP,
 	}
 	updated.Assets[options.Coordinate] = asset
@@ -110,7 +128,12 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			Version:    options.Coordinate.Version,
 			URL:        asset.URL,
 			Integrity:  asset.Integrity,
-			Status:     "unlocked",
+			// A declared name is the one thing about an unresolved asset that is
+			// already settled, because the manifest is where it was decided. An
+			// offline add that reports nothing here would have the same asset
+			// gain a name later for no reason anybody could see.
+			Filename: asset.Filename,
+			Status:   "unlocked",
 		}
 		return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: []string{}}, nil
 	}

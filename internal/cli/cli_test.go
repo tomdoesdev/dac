@@ -1889,3 +1889,88 @@ func TestWritableConfigIsRefused(t *testing.T) {
 		t.Fatalf("the cause did not explain the refusal: %v", result.value)
 	}
 }
+
+// TestAddNameCarriesThroughToTheUnpackedFile covers the whole reason --name
+// exists. A cache path is a digest, so the name is what decides where an asset
+// lands once anything materializes it -- and an origin that spells its name
+// with a version, a build number, or an opaque endpoint gives one that no
+// consuming script wants. The flag is where a project says otherwise, and this
+// follows that answer from the manifest to a file on disk.
+func TestAddNameCarriesThroughToTheUnpackedFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Disposition", `attachment; filename="geo-database-2026.08-final.bin"`)
+		_, _ = writer.Write([]byte("asset bytes"))
+	}))
+	defer server.Close()
+
+	paths := newProject(t)
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL+"/download?id=1234",
+		"--name", "geo.db", "--no-progress"))
+	assertSuccess(t, result, "add")
+	if data := result.value["data"].(map[string]any); data["filename"] != "geo.db" {
+		t.Fatalf("the add result reports the file name %v", data["filename"])
+	}
+
+	manifest, err := project.ReadManifest(paths.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared := manifest.Assets[coord.MustParse("app/geo@1")].Filename; declared != "geo.db" {
+		t.Fatalf("the manifest declares %q", declared)
+	}
+
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", archive)), "pack")
+	destination := t.TempDir()
+	assertSuccess(t, runJSON(t, []string{"unpack", archive, "--dest", destination}), "unpack")
+	if written := unpackedFiles(t, destination); len(written) != 1 || written[0] != "geo.db" {
+		t.Fatalf("the unpack wrote %v, want the declared name", written)
+	}
+}
+
+// An add that leaves --name off names the asset exactly as it did before the
+// flag existed, which is the flag's whole compatibility claim.
+func TestAddWithoutNameKeepsTheOriginNaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Disposition", `attachment; filename="database.bin"`)
+		_, _ = writer.Write([]byte("asset bytes"))
+	}))
+	defer server.Close()
+
+	paths := newProject(t)
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL+"/download?id=1234",
+		"--no-progress")), "add")
+
+	manifest, err := project.ReadManifest(paths.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared := manifest.Assets[coord.MustParse("app/geo@1")].Filename; declared != "" {
+		t.Fatalf("an add with no --name declared %q", declared)
+	}
+	lock, err := project.ReadLock(paths.lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name := lock.Assets[coord.MustParse("app/geo@1")].Filename; name != "database.bin" {
+		t.Fatalf("the lock recorded %q, want the name the origin gave", name)
+	}
+}
+
+// A name DAC will not write fails the add rather than being repaired into one
+// it will. The manifest is where a name is somebody's answer, so the two
+// choices are recording what was asked for or saying it will not be.
+func TestAddRefusesANameThatIsNotAFileName(t *testing.T) {
+	paths := newProject(t)
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
+	manifestBefore := projecttest.MustRead(t, paths.manifestPath)
+
+	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1", "https://example.com/geo.bin",
+		"--name", "../../etc/passwd", "--offline"))
+	assertError(t, result, "invalid_arguments")
+	if !bytes.Equal(manifestBefore, projecttest.MustRead(t, paths.manifestPath)) {
+		t.Fatal("a refused name still changed the manifest")
+	}
+}
