@@ -44,7 +44,13 @@ const (
 // should not each invent a spelling for it.
 const DefaultPackFile = "dac.dacpack"
 
-// PackItem maps one materialized file in a dacpack back to one cache object.
+// PackItem describes one materialized file in a dacpack.
+//
+// It carries the digest even though unpack writes files rather than cache
+// objects, because the digest is what makes the archive checkable: a file name
+// says nothing about the bytes under it, and this is the only claim about them
+// there is. It is also what ties the file back to the coordinate's entry in a
+// lock file, for a consumer that has one.
 //
 // File is the path inside the archive and Filename is the name at the end of
 // it. Both are recorded rather than one derived from the other, because they

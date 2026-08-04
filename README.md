@@ -99,8 +99,8 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac verify [--refresh]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export --file <tar>` | Write locked objects and metadata to a cache bundle. |
 | `dac import --file <tar>` | Install objects from a cache bundle into the local cache. |
-| `dac pack [--file <tar>]` | Write locked assets to a dacpack under the names their origins give them. |
-| `dac unpack [--file <tar>]` | Install the assets a dacpack carries into the local cache. |
+| `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
+| `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
 | `dac cache verify [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
 | `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
 | `dac cache dir` | Print the resolved cache directory. |
@@ -574,19 +574,26 @@ Each file in that directory must use its SHA-256 hexadecimal digest as its name.
 
 A cache bundle is the cache, moved: every file in it is named by its digest,
 which is all DAC needs and nothing else can read. A dacpack is the project,
-materialized. Its files carry the names their origins gave them, so extracting
-one with `tar` leaves a directory of real files with real extensions:
+materialized. Its files carry the names their origins gave them, so unpacking
+one — or just extracting it with `tar` — leaves a directory of real files with
+real extensions:
 
 ```bash
 dac pack                           # writes ./dac.dacpack
-dac unpack                         # installs it into the local cache
+dac unpack                         # writes ./assets/... from it
+dac unpack build.dacpack /opt/in   # or name both
 ```
 
-Both commands default to `dac.dacpack` and take `--file` to name another. Export
-requires `--file` because a bundle is a thing you are moving somewhere and the
-destination is the point; a dacpack is a build output that a project makes one
-of, and a required flag would have every script that touches one invent a
-spelling for the same file.
+`unpack` writes files and **never touches the cache**. That is the whole
+difference from `import`: a cache bundle is how DAC moves objects to another
+DAC, and a dacpack is how a project hands its assets to something that is not
+DAC at all. It reads no project files and needs no cache directory, so it runs
+anywhere the archive does.
+
+The archive defaults to `dac.dacpack` and the destination to the working
+directory. Export keeps its required `--file` because a bundle is a thing you
+are moving somewhere and the destination is the point; a dacpack is a build
+output that a project makes one of.
 
 The layout keys each file on the coordinate it belongs to, and the name comes
 from the lock file's `filename` — falling back to the name half of the
@@ -602,9 +609,19 @@ The coordinate supplies the directories because two versions of one asset almost
 always share a file name, and two assets easily can. A layout keyed on the name
 alone would have the second file silently overwrite the first.
 
-`index.json` maps each file back to a cache object: coordinate, source URL, path
-in the archive, file name, digest, and size. `dac unpack` installs those objects
-in the local cache, so a `dac pull` afterwards answers without a request.
+Each file lands at the same path under the destination that it has inside the
+archive, so `dac unpack <archive> <dir>` and `tar -xf <archive> -C <dir>` put the
+files in the same places. `index.json` records what each one is — coordinate,
+source URL, path, file name, digest, and size — and `unpack` checks every file
+against its digest while writing. A file name says nothing about the bytes under
+it, so that digest is the only claim there is to check.
+
+`unpack` refuses to replace anything unless `--force` is given, naming every
+file that is in the way and writing nothing. The destination defaults to the
+directory the command was run in, where a mistake costs work that was never
+DAC's to lose. A failed unpack leaves nothing behind either: an archive is not
+known to be sound until it has been read to the end, so anything already written
+is taken back rather than left looking like a complete tree.
 
 Two coordinates that resolved to one object are one blob in a bundle and two
 files in a dacpack, because each is materialized under its own name. Packing a
@@ -613,8 +630,9 @@ project whose assets overlap therefore costs more than exporting it.
 A dacpack's paths carry names that came from a remote server, so `unpack`
 recomputes every path from the coordinate it belongs to and refuses an index
 claiming anything else. A file name that is not a single safe path element is
-refused outright. Objects land under their digests in any case, so a dacpack
-never decides where anything on the filesystem is written.
+refused outright, and a symlink where a file is going counts as something
+already there rather than as empty space — following one is how an extraction
+writes outside the directory it was pointed at.
 
 ## Non-goals
 

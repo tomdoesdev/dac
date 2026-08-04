@@ -645,12 +645,12 @@ func TestExportAndImportMoveObjectsBetweenCaches(t *testing.T) {
 	}
 }
 
-// TestPackAndUnpackUseADefaultArchiveName covers the one way these commands
-// differ from export and import at the command line. A cache bundle is moved
-// somewhere and the destination is the point of writing it, so --file is
-// required; a dacpack is a build output a project makes one of, so both halves
-// agree on a name without being told.
-func TestPackAndUnpackUseADefaultArchiveName(t *testing.T) {
+// TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory covers the two
+// defaults that make the pair usable without arguments: the archive both halves
+// agree on, and the directory unpack materializes into. Neither is a flag,
+// because a dacpack is a build output a project makes one of rather than a
+// thing being moved to a destination somebody had to choose.
+func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	content := []byte("materialized asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(content)
@@ -662,8 +662,8 @@ func TestPackAndUnpackUseADefaultArchiveName(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
 		server.URL+"/geo.bin", "--progress=false")), "add")
 
-	// The default is relative, so it lands where the command was run, which is
-	// what a script controls by choosing where it runs. t.Chdir restores the
+	// Both defaults are relative, so they land where the command was run, which
+	// is what a script controls by choosing where it runs. t.Chdir restores the
 	// directory afterwards and refuses to run in a parallel test, which is the
 	// part that would otherwise make this unsafe for its neighbours.
 	working := t.TempDir()
@@ -675,31 +675,43 @@ func TestPackAndUnpackUseADefaultArchiveName(t *testing.T) {
 	if written := result.value["data"].(map[string]any)["pack"]; written != archive {
 		t.Fatalf("pack wrote %v, want the default beside the caller: %s", written, archive)
 	}
-	if _, err := os.Stat(archive); err != nil {
-		t.Fatalf("the default archive is not there: %v", err)
-	}
 
-	// A second project with a cold cache reads the same default.
-	server.Close()
-	offline := newProject(t)
-	copyInto(t, paths.manifestPath, offline.manifestPath)
-	copyInto(t, paths.lockPath, offline.lockPath)
-	assertError(t, runJSON(t, appendArgs(offline.base, "path", "app/geo@1")), "cache_object_invalid")
-
-	result = runJSON(t, appendArgs(offline.base, "unpack"))
+	// Unpack reads no project files and needs no cache, so nothing here points
+	// it at either. It answers with files on disk rather than a warm cache.
+	result = runJSON(t, []string{"unpack"})
 	assertSuccess(t, result, "unpack")
 	data := result.value["data"].(map[string]any)
-	if data["pack"] != archive || data["itemCount"] != float64(1) ||
-		data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
+	target := filepath.Join(working, "assets", "app", "geo", "1", "geo.bin")
+	if data["pack"] != archive || data["directory"] != working ||
+		data["itemCount"] != float64(1) || data["fileCount"] != float64(1) ||
+		data["byteCount"] != float64(len(content)) {
 		t.Fatalf("unexpected unpack: %#v", data)
 	}
-	if human := run(t, appendArgs(offline.base, "path", "app/geo@1")); human.status != ExitOK {
-		t.Fatalf("the dacpack did not populate the cache: %#v", human)
+	files := data["files"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["path"] != target ||
+		files[0].(map[string]any)["coordinate"] != "app/geo@1" {
+		t.Fatalf("unexpected file report: %#v", files)
 	}
-	// Named explicitly, both commands still work the way export and import do.
+	written, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("the unpack wrote %q to %s: %v", written, target, err)
+	}
+
+	// Unpacking again would replace what the first one wrote, so it stops.
+	assertError(t, runJSON(t, []string{"unpack"}), "unpack_destination_occupied")
+	assertSuccess(t, runJSON(t, []string{"unpack", "--force"}), "unpack")
+
+	// Both positionals, named explicitly.
 	named := filepath.Join(t.TempDir(), "named.dacpack")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", "--file", named)), "pack")
-	assertSuccess(t, runJSON(t, appendArgs(offline.base, "unpack", "--file", named)), "unpack")
+	elsewhere := t.TempDir()
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", named)), "pack")
+	assertSuccess(t, runJSON(t, []string{"unpack", named, elsewhere}), "unpack")
+	if _, err := os.Stat(filepath.Join(elsewhere, "assets", "app", "geo", "1", "geo.bin")); err != nil {
+		t.Fatalf("the named destination is empty: %v", err)
+	}
+	// Too many arguments is a mistake rather than something to guess at.
+	assertError(t, runJSON(t, []string{"unpack", named, elsewhere, "extra"}), "invalid_arguments")
+	assertError(t, runJSON(t, appendArgs(paths.base, "pack", named, "extra")), "invalid_arguments")
 }
 
 func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {

@@ -210,10 +210,10 @@ func TestPackWritesSharedBytesOncePerAsset(t *testing.T) {
 	}
 }
 
-// TestUnpackInstallsWhatPackWrote is the round trip. Unpack puts objects into
-// the cache rather than onto the filesystem, so what it leaves behind is a
-// cache a pull can answer from without a request.
-func TestUnpackInstallsWhatPackWrote(t *testing.T) {
+// TestUnpackMaterializesWhatPackWrote is the round trip. Unpack writes files
+// and never touches the cache, so what it leaves behind is a tree something
+// that has never heard of DAC can read.
+func TestUnpackMaterializesWhatPackWrote(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	source := cache.New(t.TempDir())
@@ -223,17 +223,124 @@ func TestUnpackInstallsWhatPackWrote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	target := cache.New(t.TempDir())
-	result, err := application.New("", "", target, nil, nil).Unpack(context.Background(), archive)
+	directory := t.TempDir()
+	// No store and no project paths: unpack needs neither, which is what lets it
+	// run on a machine that has no cache directory at all.
+	result, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Pack != archive || result.ItemCount != 1 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
+	if result.Pack != archive || result.Directory != directory ||
+		result.ItemCount != 1 || result.FileCount != 1 || result.ByteCount != int64(len(content)) {
 		t.Fatalf("unexpected unpack result: %#v", result)
 	}
-	object, found, err := target.Stat(digest.Bytes(content))
-	if err != nil || !found || object.Size != int64(len(content)) {
-		t.Fatalf("the unpack did not install the object: %#v %t %v", object, found, err)
+	target := filepath.Join(directory, "assets/test/asset/1/asset")
+	written, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("the unpack wrote %q to %s: %v", written, target, err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != target ||
+		result.Files[0].Coordinate != "test/asset@1" || result.Files[0].Digest != digest.Bytes(content) {
+		t.Fatalf("unexpected file report: %#v", result.Files)
+	}
+}
+
+// TestUnpackRefusesToReplaceWithoutForce covers the destination the command
+// defaults to. Materializing lands real files in a directory somebody is
+// standing in, and an archive is not a good enough reason to overwrite work
+// that was never DAC's to lose.
+func TestUnpackRefusesToReplaceWithoutForce(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	source := cache.New(t.TempDir())
+	warmStore(t, source, content)
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	if _, err := application.New(manifestPath, lockPath, source, nil, nil).Pack(context.Background(), archive); err != nil {
+		t.Fatal(err)
+	}
+	service := application.New("", "", nil, nil, nil)
+
+	directory := t.TempDir()
+	target := filepath.Join(directory, "assets/test/asset/1/asset")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("something somebody was working on")
+	if err := os.WriteFile(target, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Unpack(context.Background(), application.UnpackOptions{Pack: archive, Directory: directory})
+	if code := fault.As(err).Code; code != "unpack_destination_occupied" {
+		t.Fatalf("expected unpack_destination_occupied, got %q (%v)", code, err)
+	}
+	// A refusal writes nothing, including the files that would not have collided.
+	if kept, readErr := os.ReadFile(target); readErr != nil || !bytes.Equal(kept, existing) {
+		t.Fatalf("the refusal changed the file: %q %v", kept, readErr)
+	}
+
+	result, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory, Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Fatalf("--force wrote %d files", result.FileCount)
+	}
+	if written, readErr := os.ReadFile(target); readErr != nil || !bytes.Equal(written, content) {
+		t.Fatalf("--force left %q: %v", written, readErr)
+	}
+}
+
+// TestUnpackDoesNotWriteThroughASymlink is why the destination check uses
+// Lstat. A link where a file is going is something already there, and following
+// it would write outside the directory the caller named -- past every check
+// that made sure the paths stayed inside it.
+func TestUnpackDoesNotWriteThroughASymlink(t *testing.T) {
+	content := []byte("asset bytes")
+	manifestPath, lockPath := lockedProject(t, content)
+	source := cache.New(t.TempDir())
+	warmStore(t, source, content)
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	if _, err := application.New(manifestPath, lockPath, source, nil, nil).Pack(context.Background(), archive); err != nil {
+		t.Fatal(err)
+	}
+	service := application.New("", "", nil, nil, nil)
+
+	directory := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	untouched := []byte("a file the archive never named")
+	if err := os.WriteFile(outside, untouched, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, "assets/test/asset/1/asset")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without --force the link counts as occupied rather than as empty space.
+	_, err := service.Unpack(context.Background(), application.UnpackOptions{Pack: archive, Directory: directory})
+	if code := fault.As(err).Code; code != "unpack_destination_occupied" {
+		t.Fatalf("a symlink was not treated as occupied: %q (%v)", code, err)
+	}
+	// With it, the link is replaced rather than followed.
+	if _, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory, Force: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if kept, readErr := os.ReadFile(outside); readErr != nil || !bytes.Equal(kept, untouched) {
+		t.Fatalf("the unpack wrote through the link: %q %v", kept, readErr)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("the link survived the unpack: %#v %v", info, err)
 	}
 }
 
@@ -332,10 +439,101 @@ func TestUnpackRefusesAPathItDidNotDerive(t *testing.T) {
 			"items":         []any{testCase.item},
 		}, testCase.entries)
 
-		_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Unpack(context.Background(), archive)
+		_, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{Pack: archive, Directory: t.TempDir()})
 		if code := fault.As(err).Code; code != "dacpack_invalid" {
 			t.Fatalf("%s reported %q (%v)", testCase.reason, code, err)
 		}
+	}
+}
+
+// TestUnpackLeavesNothingBehindWhenItFails covers the failure that arrives too
+// late to refuse up front. An archive is only known to be sound once it has
+// been read to the end, so an entry the index never listed can turn up after
+// good files have already been written -- and a half-materialized tree is the
+// exact failure this command is built to avoid, because it looks complete to
+// whatever reads it next.
+func TestUnpackLeavesNothingBehindWhenItFails(t *testing.T) {
+	first, second := []byte("the good file"), []byte("the smuggled file")
+	value := digest.Bytes(first)
+	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
+	writePackArchive(t, archive, map[string]any{
+		"schemaVersion": 1,
+		"items": []any{map[string]any{
+			"coordinate": "app/geo@1",
+			"sourceUrl":  "https://example.com/geo.bin",
+			"file":       "assets/app/geo/1/geo.bin",
+			"filename":   "geo.bin",
+			"digest":     value,
+			"size":       len(first),
+		}},
+	}, [][2]any{
+		// A valid file, written before anything knows the archive is bad.
+		{"assets/app/geo/1/geo.bin", first},
+		// Then an entry the index never listed.
+		{"assets/../../../tmp/pwned", second},
+	})
+
+	directory := t.TempDir()
+	_, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory,
+	})
+	if code := fault.As(err).Code; code != "dacpack_invalid" {
+		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("a rejected dacpack left %v behind", names)
+	}
+}
+
+// TestUnpackKeepsWhatItDidNotCreateWhenItFails is the other half of the
+// rollback. Undoing an unpack means taking back what it added, and a directory
+// that was already there is not that -- neither is anything else in it.
+func TestUnpackKeepsWhatItDidNotCreateWhenItFails(t *testing.T) {
+	content := []byte("the good file")
+	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
+	writePackArchive(t, archive, map[string]any{
+		"schemaVersion": 1,
+		"items": []any{map[string]any{
+			"coordinate": "app/geo@1",
+			"sourceUrl":  "https://example.com/geo.bin",
+			"file":       "assets/app/geo/1/geo.bin",
+			"filename":   "geo.bin",
+			"digest":     digest.Bytes(content),
+			"size":       len(content),
+		}},
+	}, [][2]any{
+		{"assets/app/geo/1/geo.bin", content},
+		{"assets/../../../tmp/pwned", content},
+	})
+
+	directory := t.TempDir()
+	neighbour := filepath.Join(directory, "assets", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(neighbour), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kept := []byte("somebody else's file")
+	if err := os.WriteFile(neighbour, kept, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack: archive, Directory: directory,
+	}); err == nil {
+		t.Fatal("a hostile dacpack was accepted")
+	}
+	if survived, err := os.ReadFile(neighbour); err != nil || !bytes.Equal(survived, kept) {
+		t.Fatalf("the rollback removed a file it did not write: %q %v", survived, err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "assets", "app")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the rollback left the directories it created: %v", err)
 	}
 }
 
@@ -364,7 +562,7 @@ func TestUnpackRefusesContentThatDoesNotMatchTheIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = application.New("", "", cache.New(t.TempDir()), nil, nil).Unpack(context.Background(), archive)
+	_, err = application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{Pack: archive, Directory: t.TempDir()})
 	if code := fault.As(err).Code; code != "dacpack_invalid" {
 		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
 	}
@@ -376,7 +574,7 @@ func TestUnpackRefusesContentThatDoesNotMatchTheIndex(t *testing.T) {
 func TestUnpackRefusesAnUnsupportedSchemaVersion(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "future.dacpack")
 	writePackArchive(t, archive, map[string]any{"schemaVersion": 2, "items": []any{}}, nil)
-	_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Unpack(context.Background(), archive)
+	_, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{Pack: archive, Directory: t.TempDir()})
 	if code := fault.As(err).Code; code != "dacpack_invalid" {
 		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
 	}

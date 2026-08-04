@@ -30,9 +30,9 @@ type packEntry struct {
 // It is export with the files materialized. A cache bundle is for moving the
 // cache between machines that both run DAC, and names everything by digest
 // because that is all DAC needs. A dacpack is for handing a project's assets to
-// something that is not DAC: extract it and there is a directory of real files
-// with real extensions, plus the index that maps them back if DAC ever sees it
-// again.
+// something that is not DAC: unpack it, or extract it with tar, and there is a
+// directory of real files with real extensions, plus an index recording what
+// each one is and what it should hash to.
 //
 // The cost of that is duplication. Two coordinates that resolved to the same
 // bytes share one object in the cache and one blob in a bundle, but they are

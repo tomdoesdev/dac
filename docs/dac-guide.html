@@ -527,8 +527,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
       <tr><td class="mono">dac export --file &lt;tar&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
       <tr><td class="mono">dac import --file &lt;tar&gt;</td><td>Install objects from a cache bundle into the local cache.</td></tr>
-      <tr><td class="mono">dac pack [--file &lt;tar&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
-      <tr><td class="mono">dac unpack [--file &lt;tar&gt;]</td><td>Install the assets a dacpack carries into the local cache. Defaults to <code>dac.dacpack</code>.</td></tr>
+      <tr><td class="mono">dac pack [&lt;archive&gt;]</td><td>Write locked assets to a dacpack under the names their origins give them. Defaults to <code>dac.dacpack</code>.</td></tr>
+      <tr><td class="mono">dac unpack [&lt;archive&gt; [&lt;directory&gt;]] [--force]</td><td>Write the assets a dacpack carries into a directory. Defaults to <code>dac.dacpack</code> and the working directory. Never touches the cache.</td></tr>
       <tr><td class="mono">dac cache verify [--all] [--repair]</td><td>Hash cache objects and report the ones that no longer match.</td></tr>
       <tr><td class="mono">dac cache gc [--max-age] [--dry-run]</td><td>Remove cache objects nothing has used recently. Accepts <code>30d</code>, <code>2w</code>, or any Go duration.</td></tr>
       <tr><td class="mono">dac cache dir</td><td>Print the resolved cache directory.</td></tr>
@@ -860,31 +860,43 @@ dac pull --distdir /mnt/dist --offline</code></pre></div>
       gave them.
     </p>
 <div class="codeblock"><div class="codebar"><span class="name">shell — connected side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac pull
-dac pack                          # writes ./dac.dacpack; --file names another
+dac pack                          # writes ./dac.dacpack; an argument names another
 
 tar -tf dac.dacpack
 # index.json
 # assets/java/sdk/11/jdk-11.tar.gz
 # assets/java/sdk/17/jdk-17.tar.gz</code></pre></div>
-<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac unpack                        # installs the objects into the local cache
-dac pull --offline
+<div class="codeblock"><div class="codebar"><span class="name">shell — isolated side</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">dac unpack                        # writes ./assets/... — no cache, no project files
+dac unpack dac.dacpack /opt/inputs
 
 # Or, for a consumer that has never heard of DAC:
 tar -xf dac.dacpack -C /opt/inputs</code></pre></div>
     <p>
-      The coordinate supplies the directories, because two versions of one asset almost always share a file
-      name and two assets easily can — keyed on the name alone, the second file would silently overwrite the
-      first. <code>index.json</code> maps each file back to its cache object, which is what
-      <code>unpack</code> reads.
+      <code>unpack</code> writes files and never touches the cache — that is the whole difference from
+      <code>import</code>, and it is why the command reads no project files and needs no cache directory. Each
+      file lands at the same path under the destination that it has inside the archive, so
+      <code>dac unpack &lt;archive&gt; &lt;dir&gt;</code> and <code>tar -xf &lt;archive&gt; -C &lt;dir&gt;</code>
+      put the files in the same places. The coordinate supplies the directories, because two versions of one
+      asset almost always share a file name and two assets easily can — keyed on the name alone, the second
+      file would silently overwrite the first.
     </p>
     <p>
       Two costs come with materializing. Two coordinates that resolved to the same bytes are one blob in a
       bundle and two files in a dacpack, so a project whose assets overlap packs larger than it exports. And
       the paths now carry names a remote server chose, so <code>unpack</code> recomputes every path from the
       coordinate it belongs to and refuses an index that claims anything else; a file name that is not a single
-      safe path element is refused outright. Objects land under their digests in any case, so a dacpack never
-      decides where anything on the filesystem is written.
+      safe path element is refused outright, and a symlink where a file is going counts as something already
+      there rather than as empty space.
     </p>
+    <div class="callout warn">
+      <span class="label">Unpacking writes into the directory you are standing in</span>
+      <p>
+        The destination defaults to the working directory, so <code>unpack</code> refuses to replace anything
+        unless <code>--force</code> is given — it names every file in the way and writes nothing. A failed
+        unpack leaves nothing behind either: an archive is not known to be sound until it has been read to the
+        end, so anything already written is taken back rather than left looking like a complete tree.
+      </p>
+    </div>
   </div>
 </section>
 
@@ -1218,6 +1230,7 @@ dac pull                    # download them again and install good bytes</code><
       <tr><td class="mono">url_not_permitted</td><td>URL policy or the rewrite config refused the host.</td><td>Fix the manifest URL or the rewrite config</td></tr>
       <tr><td class="mono">asset_too_large</td><td>An unknown-size response exceeded <code>--max-size</code>.</td><td>Raise <code>--max-size</code> for genuinely large assets</td></tr>
       <tr><td class="mono">asset_unknown</td><td>The project has no such coordinate. <code>details.versions</code> lists the ones it does have.</td><td>Fix the coordinate</td></tr>
+      <tr><td class="mono">unpack_destination_occupied</td><td>The destination already holds files the dacpack would replace. <code>details.files</code> names them.</td><td>Unpack elsewhere, or use <code>--force</code></td></tr>
       <tr><td class="mono">dacpack_invalid</td><td>The dacpack's index, layout, sizes, or digests did not check out.</td><td>Rebuild the dacpack with <code>dac pack</code></td></tr>
       <tr><td class="mono">asset_ambiguous</td><td>A command that takes one asset was given a name without a version, and the project holds several. <code>details.versions</code> lists them.</td><td>Name the version</td></tr>
       <tr><td class="mono">invalid_arguments</td><td>Bad flags or arguments. Exits <code>2</code>.</td><td>Fix the command line</td></tr>

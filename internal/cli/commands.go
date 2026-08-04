@@ -141,31 +141,26 @@ func (runner *runner) importCommand() *urfave.Command {
 
 // packCommand builds the materialized archive command.
 //
-// The file has a default rather than being required, which is the one way its
-// flags differ from export's. A cache bundle is moved somewhere and the
-// destination is the point of writing it; a dacpack is a build output that a
-// project makes one of, and a required flag would have every script that
-// touches one invent a spelling for the same file.
+// The archive is an optional argument rather than a required flag, which is the
+// one way this differs from export at the command line. A cache bundle is a
+// thing you are moving somewhere and the destination is the point of writing
+// it; a dacpack is a build output a project makes one of, and a required flag
+// would have every script that touches one invent a spelling for the same file.
 func (runner *runner) packCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:  "pack",
-		Usage: "Write locked assets to a dacpack under the names their origins give them.",
-		Flags: []urfave.Flag{
-			&urfave.StringFlag{
-				Name:  "file",
-				Value: application.DefaultPackFile,
-				Usage: "Write the tar archive to this file.",
-			},
-		},
+		Name:      "pack",
+		Usage:     "Write locked assets to a dacpack under the names their origins give them.",
+		ArgsUsage: "[<archive>]",
 		Action: runner.run("pack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
+			paths, err := optionalPaths(current, 1, "Specify at most one archive path, or none for "+application.DefaultPackFile+".")
+			if err != nil {
 				return nil, "", err
 			}
 			service, err := runner.storeService(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Pack(ctx, current.String("file"))
+			result, err := service.Pack(ctx, pathOr(paths, 0, application.DefaultPackFile))
 			if err != nil {
 				return nil, "", err
 			}
@@ -175,31 +170,37 @@ func (runner *runner) packCommand() *urfave.Command {
 	}
 }
 
+// unpackCommand builds the materialization command.
+//
+// It writes files and never touches the cache, so it needs no cache directory
+// and reads no project files -- it runs anywhere the archive does. The
+// destination defaults to the working directory, which is why --force exists:
+// replacing files somebody is standing in the middle of is not something to do
+// because an archive said so.
 func (runner *runner) unpackCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:  "unpack",
-		Usage: "Install the assets a dacpack carries into the local cache.",
+		Name:      "unpack",
+		Usage:     "Write the assets a dacpack carries into a directory.",
+		ArgsUsage: "[<archive> [<directory>]]",
 		Flags: []urfave.Flag{
-			&urfave.StringFlag{
-				Name:  "file",
-				Value: application.DefaultPackFile,
-				Usage: "Read the tar archive from this file.",
-			},
+			&urfave.BoolFlag{Name: "force", Usage: "Replace files that are already in the destination."},
 		},
 		Action: runner.run("unpack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
+			paths, err := optionalPaths(current, 2,
+				"Specify at most an archive path and a destination directory, as [<archive> [<directory>]].")
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Unpack(ctx, current.String("file"))
+			result, err := runner.projectService(current).Unpack(ctx, application.UnpackOptions{
+				Pack:      pathOr(paths, 0, application.DefaultPackFile),
+				Directory: pathOr(paths, 1, "."),
+				Force:     current.Bool("force"),
+			})
 			if err != nil {
 				return nil, "", err
 			}
-			return result, fmt.Sprintf("Unpacked %s (%s).",
-				plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
+			return result, fmt.Sprintf("Unpacked %s (%s) into %s.",
+				plural(result.FileCount, "file"), bytesize.Format(result.ByteCount), result.Directory), nil
 		}),
 	}
 }

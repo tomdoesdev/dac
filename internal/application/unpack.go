@@ -3,43 +3,81 @@ package application
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/tom/dac/internal/digest"
 	"github.com/tom/dac/internal/fault"
 	"github.com/tom/dac/internal/jsonfile"
 )
 
-// UnpackResult reports the objects installed from one dacpack.
-type UnpackResult struct {
-	Pack        string `json:"pack"`
-	ItemCount   int    `json:"itemCount"`
-	ObjectCount int    `json:"objectCount"`
-	ByteCount   int64  `json:"byteCount"`
+// UnpackOptions controls one materialization.
+type UnpackOptions struct {
+	// Pack is the archive to read.
+	Pack string
+	// Directory is where the files go. Every file in the archive is written at
+	// the same path beneath it, so the mapping from archive to disk is the
+	// identity and the paths the index was already checked against are the paths
+	// that reach the filesystem.
+	Directory string
+	// Force replaces files that are already there. Without it an unpack that
+	// would overwrite anything writes nothing at all: the default directory is
+	// wherever the command was run, and a mistake there costs work that was not
+	// DAC's to lose.
+	Force bool
 }
 
-// Unpack validates one dacpack and installs its files in the local cache.
+// UnpackedFile reports one file an unpack wrote.
+type UnpackedFile struct {
+	Coordinate string `json:"coordinate"`
+	Path       string `json:"path"`
+	Filename   string `json:"filename"`
+	Digest     string `json:"digest"`
+	Size       int64  `json:"size"`
+}
+
+// UnpackResult reports the files materialized from one dacpack.
+type UnpackResult struct {
+	Pack      string         `json:"pack"`
+	Directory string         `json:"directory"`
+	ItemCount int            `json:"itemCount"`
+	FileCount int            `json:"fileCount"`
+	ByteCount int64          `json:"byteCount"`
+	Files     []UnpackedFile `json:"files"`
+}
+
+// Unpack writes the assets a dacpack carries into a directory.
 //
-// It writes into the cache rather than onto the filesystem, which is what the
-// index is for: the files in the archive are named the way their origins name
-// them, and the index says which cache object each one is. So a dacpack that
-// somebody extracted with tar and a dacpack DAC unpacked leave two different
-// useful things behind, and this is the second one -- a warm cache that dac
-// pull can answer from without a request.
+// It never touches the cache. That is the whole difference between this and
+// import: a cache bundle is how DAC moves objects to another DAC, and a dacpack
+// is how a project hands its assets to something that is not DAC at all. What
+// comes out is a tree of real files with real names, which is the thing the
+// cache cannot be -- a cache path is a digest, and nothing that reads an
+// extension can use one.
 //
-// A file arrives here under a name a remote server chose, so nothing in the
-// archive is trusted to say where it goes. Every path is recomputed from the
-// coordinate it belongs to before anything is read, and the objects land under
-// their digests in any case, so the worst a hostile archive can do is fail.
-func (service *Service) Unpack(ctx context.Context, packPath string) (UnpackResult, error) {
-	absolute, err := filepath.Abs(packPath)
+// It reads no project files and needs no cache directory, so it runs anywhere
+// the archive does.
+//
+// Every path in the archive came from a name a remote server chose, so none of
+// them are trusted. Each is recomputed from the coordinate it belongs to and
+// compared against what the index claims before anything is read, which is what
+// keeps the write inside the directory the caller named.
+func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (UnpackResult, error) {
+	absolutePack, err := filepath.Abs(options.Pack)
 	if err != nil {
 		return UnpackResult{}, fault.Wrap("unpack_read_failed", "DAC could not resolve the dacpack path.", err)
 	}
-	file, err := os.Open(absolute)
+	directory, err := filepath.Abs(options.Directory)
+	if err != nil {
+		return UnpackResult{}, fault.Wrap("unpack_write_failed", "DAC could not resolve the destination directory.", err)
+	}
+	file, err := os.Open(absolutePack)
 	if err != nil {
 		return UnpackResult{}, fault.Wrap("unpack_read_failed", "DAC could not read the dacpack.", err)
 	}
@@ -50,64 +88,255 @@ func (service *Service) Unpack(ctx context.Context, packPath string) (UnpackResu
 	if err != nil {
 		return UnpackResult{}, invalidPack(err)
 	}
-	result := UnpackResult{Pack: absolute, ItemCount: len(index.Items)}
+	// The index is the first entry, so every destination is known before a
+	// single file has been read. Refusing here rather than on the way past is
+	// what keeps a collision from leaving half a tree behind.
+	if err := checkPackDestinations(directory, index, options.Force); err != nil {
+		return UnpackResult{}, err
+	}
+
+	result := UnpackResult{
+		Pack:      absolutePack,
+		Directory: directory,
+		ItemCount: len(index.Items),
+		Files:     []UnpackedFile{},
+	}
+	items := make(map[string]PackItem, len(index.Items))
+	for _, item := range index.Items {
+		items[item.File] = item
+	}
+	// An archive is only known to be sound once it has been read to the end, and
+	// by then some of it has already been written. Undoing that is what keeps a
+	// rejected dacpack from leaving a tree that looks like a whole one.
+	written := &materializer{}
+	failed := func(err error) (UnpackResult, error) {
+		written.rollback()
+		return UnpackResult{}, err
+	}
 	seen := make(map[string]struct{}, len(objects))
 	for {
 		if err := ctx.Err(); err != nil {
-			return UnpackResult{}, networkError(err)
+			return failed(networkError(err))
 		}
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return UnpackResult{}, invalidPack(err)
+			return failed(invalidPack(err))
 		}
 		object, exists := objects[header.Name]
 		if !exists {
-			return UnpackResult{}, invalidPack(fmt.Errorf("dacpack has unexpected file %q", header.Name))
+			return failed(invalidPack(fmt.Errorf("dacpack has unexpected file %q", header.Name)))
 		}
 		if _, duplicate := seen[header.Name]; duplicate {
-			return UnpackResult{}, invalidPack(fmt.Errorf("dacpack has duplicate file %q", header.Name))
+			return failed(invalidPack(fmt.Errorf("dacpack has duplicate file %q", header.Name)))
 		}
 		if !regularTarFile(header) {
-			return UnpackResult{}, invalidPack(fmt.Errorf("dacpack file %q is not a regular file", header.Name))
+			return failed(invalidPack(fmt.Errorf("dacpack file %q is not a regular file", header.Name)))
 		}
 		if header.Size != object.Size {
-			return UnpackResult{}, invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", header.Name, header.Size, object.Size))
+			return failed(invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", header.Name, header.Size, object.Size)))
 		}
-		// Hold the digest lock because PutExact assumes that its caller owns it.
-		// Two files in one dacpack can carry the same object, since a project can
-		// name one set of bytes at two coordinates; the second install is the same
-		// bytes written over themselves, which the store already does on every
-		// install rather than skipping.
-		err = service.Store.WithLock(ctx, object.Digest, func() error {
-			_, putErr := service.Store.Put(ctx, reader, PutExact(object))
-			return putErr
-		})
-		if err != nil {
+		target := filepath.Join(directory, filepath.FromSlash(header.Name))
+		if err := written.write(ctx, target, reader, object); err != nil {
 			var content *ContentError
 			switch {
 			case errors.As(err, &content), errors.Is(err, io.ErrUnexpectedEOF):
-				return UnpackResult{}, invalidPack(err)
+				return failed(invalidPack(err))
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				return UnpackResult{}, networkError(err)
+				return failed(networkError(err))
 			default:
-				return UnpackResult{}, fault.Wrap("cache_write_failed", "DAC could not write the cache object.", err)
+				return failed(fault.Wrap("unpack_write_failed", "DAC could not write the asset file.", err))
 			}
 		}
+		item := items[header.Name]
+		result.Files = append(result.Files, UnpackedFile{
+			Coordinate: item.Coordinate,
+			Path:       target,
+			Filename:   item.Filename,
+			Digest:     object.Digest,
+			Size:       object.Size,
+		})
 		seen[header.Name] = struct{}{}
-		result.ObjectCount++
+		result.FileCount++
 		result.ByteCount += object.Size
 	}
 	if len(seen) != len(objects) {
 		for path := range objects {
 			if _, exists := seen[path]; !exists {
-				return UnpackResult{}, invalidPack(fmt.Errorf("dacpack file %q is missing", path))
+				return failed(invalidPack(fmt.Errorf("dacpack file %q is missing", path)))
 			}
 		}
 	}
 	return result, nil
+}
+
+// materializer writes the files of one unpack and can undo them.
+//
+// A dacpack is not known to be sound until it has been read to the end: an
+// entry the index never listed, or bytes that fail their digest, can arrive
+// after perfectly good files have already been written. Leaving those behind
+// would be the failure this command works hardest to avoid -- a tree that looks
+// complete and is not, handed to a script that has no way to tell.
+//
+// It undoes only what it created. A file that --force replaced is not restored,
+// because the thing it replaced is already gone and removing the replacement
+// would leave neither; the directories it made are removed only while empty, so
+// nothing that was already there goes with them.
+type materializer struct {
+	created     []string
+	directories []string
+}
+
+func (writer *materializer) write(ctx context.Context, target string, source io.Reader, expected Object) error {
+	existed := true
+	if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
+		existed = false
+	} else if err != nil {
+		return err
+	}
+	if err := writer.ensureDirectory(filepath.Dir(target)); err != nil {
+		return err
+	}
+	if err := writeMaterializedFile(ctx, target, source, expected); err != nil {
+		return err
+	}
+	if !existed {
+		writer.created = append(writer.created, target)
+	}
+	return nil
+}
+
+// ensureDirectory creates one directory and every missing parent, recording
+// each one it had to make so that rollback takes back exactly those.
+func (writer *materializer) ensureDirectory(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if parent := filepath.Dir(path); parent != path {
+		if err := writer.ensureDirectory(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		// Something else created it between the stat and here, which is the
+		// answer this wanted anyway.
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		return err
+	}
+	writer.directories = append(writer.directories, path)
+	return nil
+}
+
+// rollback removes what this unpack added, deepest first. Every failure here is
+// ignored: the command is already failing, and a cleanup that cannot finish is
+// not a better error than the one that caused it.
+func (writer *materializer) rollback() {
+	for index := len(writer.created) - 1; index >= 0; index-- {
+		_ = os.Remove(writer.created[index])
+	}
+	for index := len(writer.directories) - 1; index >= 0; index-- {
+		_ = os.Remove(writer.directories[index])
+	}
+}
+
+// checkPackDestinations refuses an unpack that would replace anything.
+//
+// It names every collision rather than the first, because the answer to one is
+// usually to unpack somewhere else, and finding that out a file at a time is
+// worse than being told.
+func checkPackDestinations(directory string, index packIndex, force bool) error {
+	if force {
+		return nil
+	}
+	occupied := make([]string, 0, len(index.Items))
+	for _, item := range index.Items {
+		target := filepath.Join(directory, filepath.FromSlash(item.File))
+		// Lstat rather than Stat: a symlink where a file is going is something
+		// already there, and following it is how an unpack writes somewhere it
+		// was never pointed at.
+		if _, err := os.Lstat(target); err == nil {
+			occupied = append(occupied, target)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fault.Wrap("unpack_write_failed", "DAC could not check the destination directory.", err)
+		}
+	}
+	if len(occupied) == 0 {
+		return nil
+	}
+	return &fault.Error{
+		Code:    "unpack_destination_occupied",
+		Message: "The destination already holds files this dacpack would replace. Unpack somewhere else, or use --force.",
+		Details: map[string]any{"files": occupied},
+		Cause:   fmt.Errorf("%s", strings.Join(occupied, ", ")),
+	}
+}
+
+// writeMaterializedFile writes one asset through a temporary file and one
+// rename, checking the bytes on the way.
+//
+// The digest is checked while writing rather than afterwards, because the bytes
+// are already going somewhere and reading them back to check would double the
+// work. The rename is what makes a failed check leave nothing: a file that did
+// not match never reaches the name it claimed.
+func writeMaterializedFile(ctx context.Context, target string, source io.Reader, expected Object) error {
+	directory := filepath.Dir(target)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".dac-unpack-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+
+	hashValue := sha256.New()
+	written, err := io.Copy(io.MultiWriter(temporary, hashValue), &contextReader{
+		ctx:    ctx,
+		reader: io.LimitReader(source, expected.Size),
+	})
+	if err != nil {
+		return err
+	}
+	actual := digest.Prefix + hex.EncodeToString(hashValue.Sum(nil))
+	if written != expected.Size || actual != expected.Digest {
+		return &ContentError{
+			ExpectedDigest: expected.Digest,
+			ActualDigest:   actual,
+			ExpectedSize:   expected.Size,
+			ActualSize:     written,
+		}
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	// Remove first so that a replacement lands on the name rather than through
+	// whatever is currently answering to it. Only --force reaches this with
+	// anything in the way; without it the destination check already refused.
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(temporaryPath, target)
 }
 
 // readPackIndex reads and checks the first tar entry.

@@ -102,6 +102,36 @@ func parseAsset(value string) (application.Selection, error) {
 	return application.GroupSelection(group), nil
 }
 
+// optionalPaths reads up to most positional paths, each of which has a default
+// the caller supplies when it is left off.
+//
+// A path is trimmed and refused when empty, because an empty argument is a
+// shell variable nobody set rather than a request for the current directory,
+// and the two would otherwise be the same command.
+func optionalPaths(current *urfave.Command, most int, usage string) ([]string, error) {
+	values := current.Args().Slice()
+	if len(values) > most {
+		return nil, fault.New("invalid_arguments", usage)
+	}
+	paths := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return nil, fault.New("invalid_arguments", usage)
+		}
+		paths = append(paths, trimmed)
+	}
+	return paths, nil
+}
+
+// pathOr returns the positional at position, or fallback when it was left off.
+func pathOr(paths []string, position int, fallback string) string {
+	if position < len(paths) {
+		return paths[position]
+	}
+	return fallback
+}
+
 func noArguments(current *urfave.Command) error {
 	if current.Args().Present() {
 		return fault.New("invalid_arguments", "The command has unexpected arguments.")
