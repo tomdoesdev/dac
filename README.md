@@ -844,10 +844,14 @@ writes outside the directory it was pointed at.
 
 ## Non-goals
 
-DAC does not unpack, install, or run anything. It hosts no mirror or remote
+DAC does not extract, install, or run an asset. It hosts no mirror or remote
 cache, resumes no partial download, and records no signature or provenance. It
 has no registry and no plugin language. Extraction and installation belong to
 whatever consumes the path that `dac path` returns.
+
+`dac unpack` is not an exception to that. It writes the files a dacpack
+carries, which is DAC's own archive of a project's assets; what is inside those
+files stays sealed, and a tarball among them is still yours to `tar -xzf`.
 
 DAC does not order or compare versions. It has no idea whether `10` follows `9`,
 or whether either is a number, and it never chooses a version for you: there are
