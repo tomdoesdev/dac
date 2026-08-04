@@ -15,31 +15,23 @@ import (
 // PullResult reports a pull operation.
 type PullResult struct {
 	ManifestDigest string `json:"manifestDigest"`
-	// Locked names the assets this pull resolved to bring the lock file into
-	// agreement with the manifest. It is empty without --update-lock, which is
-	// the only way a pull writes that file at all.
-	Locked []string `json:"locked"`
 	AssetSummary
 }
 
-// Pull installs every missing locked asset, updating the lock file first when
-// the command asked it to.
+// Pull installs every missing locked asset.
+//
+// It writes nothing. A pull refuses a lock file that does not describe the
+// manifest rather than settling the difference, which is what makes a pull in a
+// deployment job reproduce the project as committed rather than as the manifest
+// now reads. Bringing the two files back into agreement is dac lock.
 func (service *Service) Pull(ctx context.Context, options NetworkOptions) (PullResult, error) {
 	defer service.Reporter.Wait()
-	manifest, lock, reconciled, err := service.pullProject(ctx, options)
+	manifest, lock, err := service.readProject()
 	if err != nil {
 		return PullResult{}, err
 	}
-	names := manifest.Coordinates()
-	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
-		source, locked := manifest.Assets[name], lock.Assets[name]
-		// A reconcile that resolved this asset has already installed its bytes
-		// and already reported it. Pulling it again would print a second bar for
-		// a transfer that finished a moment ago.
-		if status, found := reconciled.resolved[name]; found {
-			return service.assetView(name, source, locked, installStatus(status))
-		}
-		value, err := service.pull(ctx, name, source, locked, options)
+	assets, err := parallel(ctx, options.Concurrency, manifest.Coordinates(), func(ctx context.Context, name coord.Coordinate) (Asset, error) {
+		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options)
 		if err != nil && ctx.Err() == nil {
 			service.Reporter.Fail(name.String(), err)
 		}
@@ -48,56 +40,7 @@ func (service *Service) Pull(ctx context.Context, options NetworkOptions) (PullR
 	if err != nil {
 		return PullResult{}, err
 	}
-	return PullResult{
-		ManifestDigest: lock.ManifestDigest,
-		Locked:         reconciled.names(names),
-		AssetSummary:   collect(assets),
-	}, nil
-}
-
-// pullProject returns the manifest and lock one pull installs from.
-//
-// Without --update-lock it reads them and refuses a lock that does not describe
-// the manifest, which is what makes a pull in a deployment job reproduce the
-// project as committed rather than as the manifest now reads. With it, the pull
-// resolves whatever the lock is missing and writes the result first.
-func (service *Service) pullProject(ctx context.Context, options NetworkOptions) (project.Manifest, project.Lock, reconciliation, error) {
-	if !options.UpdateLock {
-		manifest, lock, err := service.readProject()
-		return manifest, lock, reconciliation{}, err
-	}
-	manifest, err := service.readManifest()
-	if err != nil {
-		return project.Manifest{}, project.Lock{}, reconciliation{}, err
-	}
-	old, err := service.readLockIfPresent()
-	if err != nil {
-		return project.Manifest{}, project.Lock{}, reconciliation{}, err
-	}
-	reconciled, err := service.reconcile(ctx, manifest, old, options)
-	if err != nil {
-		return project.Manifest{}, project.Lock{}, reconciliation{}, err
-	}
-	lock, err := newLock(manifest, reconciled.assets)
-	if err != nil {
-		return project.Manifest{}, project.Lock{}, reconciliation{}, err
-	}
-	if _, err := service.writeLock(lock); err != nil {
-		return project.Manifest{}, project.Lock{}, reconciliation{}, err
-	}
-	return manifest, lock, reconciled, nil
-}
-
-// installStatus reports what a reconciled asset cost this command. Resolving one
-// stored its bytes, so this pull downloaded them whatever the reconcile called
-// it. The rest keep the status they were settled with: an asset the origin
-// answered not-modified is a different outcome from one the cache answered
-// alone, and only the first proves the origin was asked.
-func installStatus(status string) string {
-	if status == statusResolved {
-		return "downloaded"
-	}
-	return status
+	return PullResult{ManifestDigest: lock.ManifestDigest, AssetSummary: collect(assets)}, nil
 }
 
 func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, source project.Asset, locked project.LockAsset, options NetworkOptions) (Asset, error) {

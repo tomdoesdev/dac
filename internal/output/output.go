@@ -14,8 +14,11 @@ import (
 // error gained a cause field. It became 3 when assets grew a namespace and a
 // whole coordinate, add stopped reporting a retired coordinate because adding a
 // version no longer retires one, and remove started reporting the versions it
-// left behind.
-const Version = 3
+// left behind. It became 4 when the lock operations moved off pull onto their
+// own command: pull dropped the locked array it could no longer populate, and
+// lock arrived reporting that array along with whether the file it writes
+// actually moved.
+const Version = 4
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`

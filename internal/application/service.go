@@ -164,14 +164,10 @@ type NetworkOptions struct {
 	// DistDir holds pre-downloaded objects that pull installs instead of
 	// making a request. It is the cold-cache path for an isolated network.
 	DistDir string
-	// UpdateLock lets pull resolve the manifest assets its lock file does not
-	// describe and write the result. Without it a pull refuses a lock that
-	// disagrees with the manifest instead of settling the difference itself.
-	UpdateLock bool
 	// Refresh contacts the origin for every asset instead of trusting an entry
 	// the lock already describes or a publisher digest the cache satisfies. It
-	// backs pull --refresh-lock, which writes what it finds, and verify
-	// --refresh, which reports it.
+	// backs lock --refresh, which writes what it finds, and verify --refresh,
+	// which reports it.
 	Refresh bool
 	// Observe resolves a pinned asset for the digest its origin now serves
 	// instead of against the one the manifest pins.
@@ -187,7 +183,7 @@ type NetworkOptions struct {
 	// Without it a version means one thing forever, which is the whole reason
 	// to write a version down.
 	//
-	// Two commands set it. One is pull --rebind, where an operator has decided
+	// Two commands set it. One is lock --rebind, where an operator has decided
 	// to accept the change. The other is verify, which reports drift as its
 	// result and must not have a different error raised in front of that.
 	AllowRebind bool
@@ -211,13 +207,13 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	}
 	lock, err := project.ReadLock(service.LockPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac pull --update-lock.")
+		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac lock.")
 	}
 	if err != nil {
 		return project.Manifest{}, project.Lock{}, lockFault("lock_invalid", "The lock file is invalid.", err)
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
-		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --update-lock.", err)
+		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac lock.", err)
 	}
 	return manifest, lock, nil
 }

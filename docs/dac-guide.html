@@ -419,7 +419,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
   <p>
     The lock carries a <code>manifestDigest</code>, so a lock file either describes the manifest beside it or it
     does not — there is no partial agreement. Commit both. A hand edit to <code>dac.json</code> resolves nothing
-    until you ask for it with <code>dac pull --update-lock</code>.
+    until you ask for it with <code>dac lock</code>.
   </p>
 
   <h3>The cache</h3>
@@ -459,7 +459,7 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
 
   <h3>Guarantees worth stating plainly</h3>
   <ul>
-    <li>A plain <code>dac pull</code> <strong>never writes the lock file</strong> and refuses one that does not describe the manifest.</li>
+    <li><code>dac pull</code> <strong>never writes the lock file</strong> — there is no flag that makes it — and refuses one that does not describe the manifest. Writing that file is <code>dac lock</code>.</li>
     <li>A failed <code>dac add</code> changes <strong>neither</strong> project file.</li>
     <li><code>dac verify --refresh</code> writes nothing, ever — it reports and exits <code>1</code>.</li>
     <li>DAC requires HTTPS. Plain HTTP is allowed only for loopback hosts, or with an explicit opt-in per asset.</li>
@@ -483,8 +483,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       origin that replaced what it serves behind a stable URL, and a manifest edited to point one version
       somewhere else, both fail with <code>version_rebind</code>, which reports the digest the lock holds and the
       digest that arrived. The way forward is a new version. <code>--rebind</code> exists for the project that
-      genuinely tracks a rolling source and has decided to accept the change; it writes the lock file, so it
-      only works alongside <code>--update-lock</code> or <code>--refresh-lock</code>.
+      genuinely tracks a rolling source and has decided to accept the change; it belongs to the commands that
+      write the lock file, which are <code>dac lock</code> and <code>dac add</code>.
     </p>
   </div>
 
@@ -522,7 +522,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
       <tr><td class="mono">dac add &lt;coordinate&gt; &lt;url&gt;</td><td>Add one asset version and resolve it. Flags: <code>--pin</code>, <code>--integrity</code>, <code>--force</code>, <code>--rebind</code>, <code>--allow-insecure-http</code>, <code>--offline</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac remove &lt;coordinate&gt;</td><td>Remove one asset version without network access.</td></tr>
       <tr><td class="mono">dac info [&lt;ns&gt;/&lt;name&gt;[@&lt;version&gt;]]</td><td>Show asset, request, lock, and cache information. No network.</td></tr>
-      <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--update-lock</code>, <code>--refresh-lock</code>, <code>--rebind</code>, <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac lock</td><td>Resolve the manifest assets the lock file does not describe and write it. Flags: <code>--refresh</code>, <code>--rebind</code>, <code>--no-rewrite</code>.</td></tr>
+      <tr><td class="mono">dac pull</td><td>Download missing locked assets. Flags: <code>--offline</code>, <code>--distdir</code>, <code>--no-rewrite</code>.</td></tr>
       <tr><td class="mono">dac path &lt;namespace&gt;/&lt;name&gt;[@&lt;version&gt;]</td><td>Print one verified cache path. The version may be left off when the project holds one version of the asset; it is refused when the project holds several.</td></tr>
       <tr><td class="mono">dac verify [--refresh]</td><td>Check that manifest and lock agree; with <code>--refresh</code>, that the origins still serve the locked bytes.</td></tr>
       <tr><td class="mono">dac export --file &lt;tar&gt;</td><td>Write locked objects and metadata to a cache bundle.</td></tr>
@@ -557,8 +558,8 @@ tar -xzf "$(dac path tools/toolchain@1.4)" -C vendor/toolchain</code></pre></div
     <thead><tr><th>Command</th><th>Lock file</th><th>Network</th><th>Fails when</th></tr></thead>
     <tbody>
       <tr><td class="mono">pull</td><td>read; must agree</td><td>only for objects the cache lacks</td><td>the lock does not describe the manifest (<code>lock_stale</code>)</td></tr>
-      <tr><td class="mono">pull --update-lock</td><td>written</td><td>resolves only entries the lock does not describe</td><td>a locked coordinate resolves to other bytes (<code>version_rebind</code>)</td></tr>
-      <tr><td class="mono">pull --refresh-lock</td><td>written</td><td>resolves every asset against its origin</td><td>same, plus <code>version_collision</code></td></tr>
+      <tr><td class="mono">lock</td><td>written</td><td>resolves only entries the lock does not describe</td><td>a locked coordinate resolves to other bytes (<code>version_rebind</code>)</td></tr>
+      <tr><td class="mono">lock --refresh</td><td>written</td><td>resolves every asset against its origin</td><td>same, plus <code>version_collision</code></td></tr>
       <tr><td class="mono">pull --offline</td><td>read; must agree</td><td>none</td><td>a needed object is not cached (<code>offline_cache_miss</code>)</td></tr>
       <tr><td class="mono">verify</td><td>read; must agree</td><td>none</td><td>the two files disagree</td></tr>
       <tr><td class="mono">verify --refresh</td><td>read only — never written</td><td>resolves every asset</td><td>an origin no longer serves the locked bytes (<code>lock_drift</code>)</td></tr>
@@ -748,7 +749,7 @@ jobs:
       <li><strong>Key the cache on the lock file.</strong> Content-addressed objects never change under a digest, so a hit is always valid; <code>restore-keys</code> gives a partial hit when one asset changed, and <code>pull</code> fetches only that one.</li>
       <li><strong>Run <code>dac verify</code> first.</strong> It reads two files, makes no requests, and separates "somebody forgot to lock" from "the download failed" before a single byte moves.</li>
       <li><strong>Raise <code>--concurrency</code> on a big project.</strong> The default is 4; runners with real bandwidth do better at 8–16. The first failure cancels the rest, so a broken origin does not cost you the whole timeout.</li>
-      <li><strong>Never run <code>--update-lock</code> in a normal CI job.</strong> A job that rewrites the lock is a job that decides what your build uses. Keep that on a human's branch, or on a deliberate, separate workflow.</li>
+      <li><strong>Never run <code>dac lock</code> in a normal CI job.</strong> A job that rewrites the lock is a job that decides what your build uses. Keep that on a human's branch, or on a deliberate, separate workflow. This is why the lock operations are their own command rather than flags on <code>pull</code>: the job that installs cannot reach them by accident.</li>
     </ol>
 
     <div class="callout warn">
@@ -800,7 +801,7 @@ exit 1</code></pre></div>
       <p>
         Drift is a decision, not a defect, which is why <code>verify</code> refuses to fix it. Either the publisher
         released something new — add a new version and retire the old one (<a href="#pb-bump">playbook 7</a>) —
-        or the URL is genuinely rolling, in which case <code>dac pull --refresh-lock --rebind</code> accepts the new
+        or the URL is genuinely rolling, in which case <code>dac lock --refresh --rebind</code> accepts the new
         bytes under the same coordinate and records them in a lock diff a human can review.
       </p>
     </div>
@@ -1053,7 +1054,7 @@ git add dac.json dac-lock.json</code></pre></div>
         <tr>
           <td class="mono">version_rebind</td>
           <td>A coordinate the lock already binds resolved to different bytes — the origin replaced them behind a stable URL, or the manifest was edited to point that version somewhere else.</td>
-          <td>Add a new version. If the source is genuinely rolling and you accept the change, <code>dac pull --refresh-lock --rebind</code>.</td>
+          <td>Add a new version. If the source is genuinely rolling and you accept the change, <code>dac lock --refresh --rebind</code>.</td>
         </tr>
         <tr>
           <td class="mono">version_collision</td>
@@ -1073,11 +1074,12 @@ git add dac.json dac-lock.json</code></pre></div>
     <h4>Editing the manifest by hand</h4>
     <p>Nothing resolves a hand edit until you ask:</p>
 <div class="codeblock"><div class="codebar"><span class="name">shell</span><button type="button" class="copy">copy</button></div><pre><code class="lang-bash">$EDITOR dac.json
-dac pull --update-lock    # resolves only what the lock does not describe
+dac lock                  # resolves only what the lock does not describe
+dac pull                  # install anything the lock still names and the cache lacks
 dac verify                # confirm the two files agree before committing</code></pre></div>
     <p>
       <code>dac add --offline</code> is the same idea from the other direction: it updates only <code>dac.json</code>,
-      makes no request, and leaves <code>dac-lock.json</code> alone for a later <code>pull --update-lock</code>. Useful
+      makes no request, and leaves <code>dac-lock.json</code> alone for a later <code>dac lock</code>. Useful
       when you are adding ten assets on a plane.
     </p>
   </div>
@@ -1185,9 +1187,9 @@ dac pull                    # download them again and install good bytes</code><
     disables progress in JSON mode so that exactly one document lands on stdout.
   </p>
 
-<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":3,"ok":true,"command":"path","data":{}}</code></pre></div>
+<div class="codeblock"><div class="codebar"><span class="name">success envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":4,"ok":true,"command":"path","data":{}}</code></pre></div>
 
-<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":3,"ok":false,"command":"pull","error":{
+<div class="codeblock"><div class="codebar"><span class="name">error envelope</span><button type="button" class="copy">copy</button></div><pre><code class="lang-json">{"outputVersion":4,"ok":false,"command":"pull","error":{
   "code":"network_error",
   "message":"The asset request failed.",
   "cause":"https://example.com/db: unconditional request returned HTTP 404",
@@ -1216,8 +1218,8 @@ dac pull                    # download them again and install good bytes</code><
   <table>
     <thead><tr><th>Code</th><th>Means</th><th>Usual fix</th></tr></thead>
     <tbody>
-      <tr><td class="mono">lock_stale</td><td>The lock file does not describe the manifest.</td><td><code>dac pull --update-lock</code></td></tr>
-      <tr><td class="mono">lock_missing</td><td>There is no lock file.</td><td><code>dac pull --update-lock</code></td></tr>
+      <tr><td class="mono">lock_stale</td><td>The lock file does not describe the manifest.</td><td><code>dac lock</code></td></tr>
+      <tr><td class="mono">lock_missing</td><td>There is no lock file.</td><td><code>dac lock</code></td></tr>
       <tr><td class="mono">lock_drift</td><td>An origin no longer serves the locked bytes.</td><td>A decision: new version, or <code>--rebind</code></td></tr>
       <tr><td class="mono">version_rebind</td><td>A locked coordinate resolved to different bytes.</td><td>New version, or <code>--rebind</code></td></tr>
       <tr><td class="mono">version_collision</td><td>Two versions of one asset name the same bytes.</td><td>Fix the source URL, or drop the version</td></tr>
@@ -1246,7 +1248,7 @@ if ! out=$(dac pull --json 2&gt;/dev/null); then
   code=$(printf '%s' "$out" | jq -r '.error.code // "unknown"')
   case "$code" in
     lock_stale|lock_missing)
-      echo "The lock file is out of date. Commit a pull --update-lock." &gt;&amp;2 ;;
+      echo "The lock file is out of date. Commit a dac lock." &gt;&amp;2 ;;
     cache_object_corrupt)
       dac cache verify --repair &amp;&amp; dac pull ;;
     *)
