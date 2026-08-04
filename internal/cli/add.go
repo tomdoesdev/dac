@@ -10,6 +10,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/httpclient"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 func (runner *runner) addCommand() *urfave.Command {
@@ -59,7 +60,7 @@ func (runner *runner) addCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, addText(name, result), nil
+			return result, addText(runner.stdoutPalette, name, result), nil
 		}),
 	}
 }
@@ -76,25 +77,30 @@ func (runner *runner) addCommand() *urfave.Command {
 // asset to a project whose manifest someone hand edited settles the rest too,
 // and an operator reviewing the lock file diff should read about that here
 // rather than infer it from the diff.
-func addText(name coord.Coordinate, result application.AddResult) string {
+func addText(palette style.Palette, name coord.Coordinate, result application.AddResult) string {
 	var text strings.Builder
-	_, _ = fmt.Fprintf(&text, "Added %s", name)
+	_, _ = fmt.Fprintf(&text, "Added %s", palette.Name(name.String()))
 	if result.Digest != "" {
-		_, _ = fmt.Fprintf(&text, " (%s)", result.Digest)
+		// The digest is what somebody came here for only when they are about to
+		// paste it into a manifest, and it is sixty-four characters of hex in
+		// front of everything else either way.
+		_, _ = fmt.Fprintf(&text, " (%s)", palette.Detail(result.Digest))
 	}
 	if result.Integrity != "" {
 		text.WriteString(", pinned")
 	}
 	text.WriteByte('.')
 	if len(result.Siblings) > 0 {
-		_, _ = fmt.Fprintf(&text, " %s also has %s.", name.Group(), strings.Join(result.Siblings, ", "))
+		_, _ = fmt.Fprintf(&text, " %s also has %s.",
+			palette.Name(name.Group().String()), palette.Name(strings.Join(result.Siblings, ", ")))
 	}
 	if len(result.SharedSources) > 0 {
-		_, _ = fmt.Fprintf(&text, " Warning: %s shares this source URL, and one URL serves one set of bytes.",
-			strings.Join(result.SharedSources, ", "))
+		_, _ = fmt.Fprintf(&text, " %s",
+			palette.Warn(fmt.Sprintf("Warning: %s shares this source URL, and one URL serves one set of bytes.",
+				strings.Join(result.SharedSources, ", "))))
 	}
 	if len(result.Locked) > 0 {
-		_, _ = fmt.Fprintf(&text, " Locked %s.", strings.Join(result.Locked, ", "))
+		_, _ = fmt.Fprintf(&text, " Locked %s.", palette.Name(strings.Join(result.Locked, ", ")))
 	}
 	return text.String()
 }

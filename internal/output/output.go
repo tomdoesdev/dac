@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 // Version is the output contract version. It became 2 when info moved its
@@ -53,11 +54,17 @@ type Writer struct {
 	stdout io.Writer
 	stderr io.Writer
 	json   bool
+	// palette styles standard error, which is the only stream this writer
+	// composes text for. A summary arrives already styled, because the command
+	// that built it is the one that knows which words in it are a coordinate
+	// and which are a warning.
+	palette style.Palette
 }
 
-// New creates a command writer for the selected output mode.
-func New(stdout, stderr io.Writer, jsonOutput bool) *Writer {
-	return &Writer{stdout: stdout, stderr: stderr, json: jsonOutput}
+// New creates a command writer for the selected output mode. The palette is
+// the one built for stderr: see Failure.
+func New(stdout, stderr io.Writer, jsonOutput bool, palette style.Palette) *Writer {
+	return &Writer{stdout: stdout, stderr: stderr, json: jsonOutput, palette: palette}
 }
 
 // Success writes one command result.
@@ -76,7 +83,12 @@ func (writer *Writer) Failure(command string, err error) error {
 		// Error() appends the cause to the message. A bare message reads well
 		// and diagnoses nothing: "The asset request failed" is true of a refused
 		// connection, a 404, and an expired certificate alike.
-		_, writeErr := fmt.Fprintf(writer.stderr, "Error: %s\n", value.Error())
+		//
+		// Only the label is coloured. It is what somebody scrolling back is
+		// looking for, and the sentence after it is the part they then have to
+		// read -- so the colour marks where the failure starts rather than
+		// painting the explanation of it.
+		_, writeErr := fmt.Fprintf(writer.stderr, "%s %s\n", writer.palette.Bad("Error:"), value.Error())
 		return writeErr
 	}
 	details := value.Details

@@ -13,6 +13,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 func (runner *runner) initCommand() *urfave.Command {
@@ -45,7 +46,7 @@ func (runner *runner) removeCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, removeText(name, result), nil
+			return result, removeText(runner.stdoutPalette, name, result), nil
 		}),
 	}
 }
@@ -57,13 +58,15 @@ func (runner *runner) removeCommand() *urfave.Command {
 // A removal makes no request, so it can leave the lock file describing less
 // than the manifest does, and the summary says which assets rather than letting
 // the next command be the one to mention it.
-func removeText(name coord.Coordinate, result application.RemoveResult) string {
-	text := fmt.Sprintf("Removed %s.", name)
+func removeText(palette style.Palette, name coord.Coordinate, result application.RemoveResult) string {
+	text := fmt.Sprintf("Removed %s.", palette.Name(name.String()))
 	if len(result.Remaining) > 0 {
-		text += fmt.Sprintf(" %s still has %s.", name.Group(), strings.Join(result.Remaining, ", "))
+		text += fmt.Sprintf(" %s still has %s.",
+			palette.Name(name.Group().String()), palette.Name(strings.Join(result.Remaining, ", ")))
 	}
 	if len(result.Unlocked) > 0 {
-		text += fmt.Sprintf(" The lock file does not describe %s. Run dac lock.", strings.Join(result.Unlocked, ", "))
+		text += fmt.Sprintf(" The lock file does not describe %s. %s",
+			palette.Name(strings.Join(result.Unlocked, ", ")), palette.Warn("Run dac lock."))
 	}
 	return text
 }
@@ -118,7 +121,8 @@ func (runner *runner) packCommand() *urfave.Command {
 				return nil, "", err
 			}
 			return result, fmt.Sprintf("Packed %s (%s) into %s.",
-				plural(result.AssetCount, "asset"), bytesize.Format(result.ByteCount), result.Pack), nil
+				runner.stdoutPalette.Strong(plural(result.AssetCount, "asset")),
+				bytesize.Format(result.ByteCount), result.Pack), nil
 		}),
 	}
 }
@@ -173,7 +177,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, unpackText(result), nil
+			return result, unpackText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
@@ -184,13 +188,14 @@ func (runner *runner) unpackCommand() *urfave.Command {
 // pull says what it left in the project: "Unpacked 1 file" is true of a dacpack
 // carrying one asset and of a job that wanted one of twenty, and telling those
 // apart is the point of naming assets at all.
-func unpackText(result application.UnpackResult) string {
+func unpackText(palette style.Palette, result application.UnpackResult) string {
 	size := bytesize.Format(result.ByteCount)
 	if result.FileCount < result.ItemCount {
 		return fmt.Sprintf("Unpacked %s of %d (%s) into %s.",
-			plural(result.FileCount, "file"), result.ItemCount, size, result.Directory)
+			palette.Strong(plural(result.FileCount, "file")), result.ItemCount, size, result.Directory)
 	}
-	return fmt.Sprintf("Unpacked %s (%s) into %s.", plural(result.FileCount, "file"), size, result.Directory)
+	return fmt.Sprintf("Unpacked %s (%s) into %s.",
+		palette.Strong(plural(result.FileCount, "file")), size, result.Directory)
 }
 
 // plural writes a count with its noun, because "1 objects" reads as a bug in

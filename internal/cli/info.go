@@ -9,6 +9,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/bytesize"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 // infoCommand defines the project inspection command and its coordinate filter.
@@ -40,13 +41,17 @@ func (runner *runner) infoCommand() *urfave.Command {
 				return nil, "", err
 			}
 			result, err := service.Info(application.InfoOptions{Selection: filter, Rewriter: rewriter})
-			return result, infoText(result), err
+			return result, infoText(runner.stdoutPalette, result), err
 		}),
 	}
 }
 
 // infoText formats each asset as one detailed information block.
-func infoText(result application.InfoResult) string {
+//
+// The keys recede and the values do not. A block is eleven lines of which two
+// are usually the reason it was run, and a column of labels down the left is
+// how somebody finds the line they want without reading the ones they do not.
+func infoText(palette style.Palette, result application.InfoResult) string {
 	if len(result.Assets) == 0 {
 		return "No assets."
 	}
@@ -55,25 +60,54 @@ func infoText(result application.InfoResult) string {
 		if index > 0 {
 			text.WriteByte('\n')
 		}
-		_, _ = fmt.Fprintf(&text,
-			"%s\nsource: %s\nrequest: %s\npolicy: %s\nlock: %s\ncache: %s\n",
-			asset.Coordinate, asset.SourceURL, asset.RequestURL,
-			asset.RequestStatus, result.Summary.LockStatus, asset.CacheStatus)
+		_, _ = fmt.Fprintf(&text, "%s\n", palette.Strong(asset.Coordinate))
+		field := func(label, value string) {
+			_, _ = fmt.Fprintf(&text, "%s %s\n", palette.Detail(label+":"), value)
+		}
+		field("source", asset.SourceURL)
+		field("request", asset.RequestURL)
+		field("policy", statusText(palette, asset.RequestStatus))
+		field("lock", statusText(palette, result.Summary.LockStatus))
+		field("cache", statusText(palette, asset.CacheStatus))
 		if asset.Filename != "" {
-			_, _ = fmt.Fprintf(&text, "filename: %s\n", asset.Filename)
+			field("filename", asset.Filename)
 		}
 		if asset.Integrity != "" {
-			_, _ = fmt.Fprintf(&text, "integrity: %s\n", asset.Integrity)
+			field("integrity", palette.Detail(asset.Integrity))
 		}
 		if asset.Digest != "" {
-			_, _ = fmt.Fprintf(&text, "digest: %s\n", asset.Digest)
+			field("digest", palette.Detail(asset.Digest))
 		}
 		if asset.Size != nil {
-			_, _ = fmt.Fprintf(&text, "size: %s\n", bytesize.Format(*asset.Size))
+			field("size", bytesize.Format(*asset.Size))
 		}
 		if asset.Path != "" {
-			_, _ = fmt.Fprintf(&text, "path: %s\n", asset.Path)
+			field("path", asset.Path)
 		}
 	}
 	return strings.TrimSuffix(text.String(), "\n")
+}
+
+// statusText colours one of the state words info reports.
+//
+// The words are the ones the JSON contract carries, and this changes none of
+// them -- it says which of three things each one means. A cache that holds the
+// object and a lock file that describes the manifest need nothing from anybody;
+// a missing object costs a pull and a stale lock costs a lock; a corrupt object
+// and a blocked host are somebody's afternoon.
+//
+// An unrecognized word is left alone rather than guessed at, so a state added
+// later reads plainly here instead of reading as good news. A lock and a cache
+// both spell an absent thing "missing", so one case covers both -- naming the
+// other constant beside it would be the same value twice.
+func statusText(palette style.Palette, status string) string {
+	switch status {
+	case application.CacheCached, application.LockCurrent, application.RequestAllowed:
+		return palette.Good(status)
+	case application.CacheMissing, application.LockStale, application.CacheUnavailable:
+		return palette.Warn(status)
+	case application.CacheCorrupt, application.RequestBlocked:
+		return palette.Bad(status)
+	}
+	return status
 }

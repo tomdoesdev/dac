@@ -15,6 +15,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 const (
@@ -39,7 +40,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if runner.writeFailed {
 		return ExitFailure
 	}
-	if writeErr := output.New(stdout, stderr, runner.json).Failure(runner.commandName, err); writeErr != nil {
+	// A failure that never reached a command action -- an unknown command, an
+	// argument the parser refused -- has had no palette settled for it, and it
+	// still has to be legible.
+	runner.styles()
+	if writeErr := output.New(stdout, stderr, runner.json, runner.stderrPalette).Failure(runner.commandName, err); writeErr != nil {
 		return ExitFailure
 	}
 	if runner.usage || fault.As(err).Code == "invalid_arguments" {
@@ -58,10 +63,51 @@ type runner struct {
 	// args is the command line this run was given, which the writer decision
 	// below has to read before urfave has parsed anything.
 	args []string
+	// colour is the --color value as it was written. It is checked where a bad
+	// argument is reported rather than where it is read: see styles.
+	colour string
+	// The palettes for this run's two streams: command summaries go to standard
+	// output, and error messages, help, and progress go to standard error.
+	stdoutPalette style.Palette
+	stderrPalette style.Palette
 
 	settings *config.Config
 	loadOnce sync.Once
 	loadErr  error
+}
+
+// styles settles how this run colours each of its two streams.
+//
+// They are settled separately because they are separate destinations, and
+// routinely different kinds of destination: `dac pull > log` leaves a terminal
+// on standard error and a file on standard output, so one decision for the
+// process would fill the file with sequences to match the terminal.
+//
+// JSON mode colours neither. Standard output carries a parsed contract, and the
+// human error message that would have carried the colour on standard error is
+// not written at all.
+//
+// A value neither this nor style.ParseMode understands falls back to auto here
+// rather than failing, because this runs on the path that reports the failure.
+// checkColor is where a bad one is refused.
+func (runner *runner) styles() {
+	if runner.json {
+		runner.stdoutPalette, runner.stderrPalette = style.Palette{}, style.Palette{}
+		return
+	}
+	mode, _ := style.ParseMode(runner.colour)
+	runner.stdoutPalette = style.New(runner.stdout, mode)
+	runner.stderrPalette = style.New(runner.stderr, mode)
+}
+
+// checkColor refuses a --color value DAC does not understand, rather than
+// leaving somebody who typed --color=alwyas to conclude their terminal is at
+// fault.
+func (runner *runner) checkColor() error {
+	if _, err := style.ParseMode(runner.colour); err != nil {
+		return fault.Wrap("invalid_arguments", "The color option is invalid.", err)
+	}
+	return nil
 }
 
 // completing reports whether this run is about shell completion rather than
@@ -164,6 +210,20 @@ func (runner *runner) app() *urfave.Command {
 			&urfave.StringFlag{Name: "cache-dir", Sources: urfave.EnvVars("DAC_CACHE_DIR"), Usage: "Use this cache directory."},
 			&urfave.StringFlag{Name: "config", Sources: urfave.EnvVars("DAC_CONFIG"), Usage: "Read this config file instead of the ones the XDG search path finds."},
 			&urfave.BoolFlag{Name: "json", Aliases: []string{"j"}, Destination: &runner.json, Usage: "Write command results as JSON."},
+			// Colour is a global flag for the reason --json is one: it says how
+			// a result is written rather than what it says, so every command
+			// answers to it. The alias is there because the option is spelled
+			// color everywhere a script would expect to find it -- git, ls,
+			// grep, NO_COLOR itself -- and this project is written in the other
+			// English.
+			&urfave.StringFlag{
+				Name:        "color",
+				Aliases:     []string{"colour"},
+				Sources:     urfave.EnvVars("DAC_COLOR"),
+				Value:       "auto",
+				Destination: &runner.colour,
+				Usage:       "Colour human-readable output: auto, always, or never.",
+			},
 			// Tracing is a global flag because the question it answers -- what
 			// did this actually do -- is asked of whichever command just
 			// surprised somebody, and having to find out which of them carries
@@ -204,11 +264,15 @@ func (runner *runner) app() *urfave.Command {
 func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 	return func(ctx context.Context, current *urfave.Command) error {
 		runner.commandName = name
+		runner.styles()
+		if err := runner.checkColor(); err != nil {
+			return err
+		}
 		result, summary, err := operation(ctx, current)
 		if err != nil {
 			return err
 		}
-		if err := output.New(runner.stdout, runner.stderr, runner.json).Success(name, result, summary); err != nil {
+		if err := output.New(runner.stdout, runner.stderr, runner.json, runner.stderrPalette).Success(name, result, summary); err != nil {
 			runner.writeFailed = true
 			return err
 		}
