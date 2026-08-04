@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/tom/dac/internal/digest"
@@ -65,9 +67,11 @@ type UnpackResult struct {
 // the archive does.
 //
 // Every path in the archive came from a name a remote server chose, so none of
-// them are trusted. Each is recomputed from the coordinate it belongs to and
-// compared against what the index claims before anything is read, which is what
-// keeps the write inside the directory the caller named.
+// them are trusted. Each is recomputed from the coordinate it belongs to before
+// anything is read, an index that claims a different one is rejected, and the
+// path that reaches the filesystem is the one DAC derived rather than the one
+// the archive carried. An entry's own name is a key for finding that, never a
+// place to write.
 func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (UnpackResult, error) {
 	absolutePack, err := filepath.Abs(options.Pack)
 	if err != nil {
@@ -84,14 +88,14 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 	defer func() { _ = file.Close() }()
 
 	reader := tar.NewReader(file)
-	index, objects, err := readPackIndex(reader)
+	index, targets, err := readPackIndex(reader)
 	if err != nil {
 		return UnpackResult{}, invalidPack(err)
 	}
 	// The index is the first entry, so every destination is known before a
 	// single file has been read. Refusing here rather than on the way past is
 	// what keeps a collision from leaving half a tree behind.
-	if err := checkPackDestinations(directory, index, options.Force); err != nil {
+	if err := checkPackDestinations(directory, targets, options.Force); err != nil {
 		return UnpackResult{}, err
 	}
 
@@ -101,10 +105,6 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		ItemCount: len(index.Items),
 		Files:     []UnpackedFile{},
 	}
-	items := make(map[string]PackItem, len(index.Items))
-	for _, item := range index.Items {
-		items[item.File] = item
-	}
 	// An archive is only known to be sound once it has been read to the end, and
 	// by then some of it has already been written. Undoing that is what keeps a
 	// rejected dacpack from leaving a tree that looks like a whole one.
@@ -113,7 +113,7 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		written.rollback()
 		return UnpackResult{}, err
 	}
-	seen := make(map[string]struct{}, len(objects))
+	seen := make(map[string]struct{}, len(targets))
 	for {
 		if err := ctx.Err(); err != nil {
 			return failed(networkError(err))
@@ -125,21 +125,26 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		if err != nil {
 			return failed(invalidPack(err))
 		}
-		object, exists := objects[header.Name]
+		// The entry's name is a lookup key and never a path. What it finds
+		// carries the path DAC derived, which is what gets written to.
+		target, exists := targets[header.Name]
 		if !exists {
 			return failed(invalidPack(fmt.Errorf("dacpack has unexpected file %q", header.Name)))
 		}
-		if _, duplicate := seen[header.Name]; duplicate {
-			return failed(invalidPack(fmt.Errorf("dacpack has duplicate file %q", header.Name)))
+		if _, duplicate := seen[target.path]; duplicate {
+			return failed(invalidPack(fmt.Errorf("dacpack has duplicate file %q", target.path)))
 		}
 		if !regularTarFile(header) {
-			return failed(invalidPack(fmt.Errorf("dacpack file %q is not a regular file", header.Name)))
+			return failed(invalidPack(fmt.Errorf("dacpack file %q is not a regular file", target.path)))
 		}
-		if header.Size != object.Size {
-			return failed(invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", header.Name, header.Size, object.Size)))
+		if header.Size != target.object.Size {
+			return failed(invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", target.path, header.Size, target.object.Size)))
 		}
-		target := filepath.Join(directory, filepath.FromSlash(header.Name))
-		if err := written.write(ctx, target, reader, object); err != nil {
+		destination, err := packDestination(directory, target.path)
+		if err != nil {
+			return failed(invalidPack(err))
+		}
+		if err := written.write(ctx, destination, reader, target.object); err != nil {
 			var content *ContentError
 			switch {
 			case errors.As(err, &content), errors.Is(err, io.ErrUnexpectedEOF):
@@ -150,26 +155,53 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 				return failed(fault.Wrap("unpack_write_failed", "DAC could not write the asset file.", err))
 			}
 		}
-		item := items[header.Name]
 		result.Files = append(result.Files, UnpackedFile{
-			Coordinate: item.Coordinate,
-			Path:       target,
-			Filename:   item.Filename,
-			Digest:     object.Digest,
-			Size:       object.Size,
+			Coordinate: target.item.Coordinate,
+			Path:       destination,
+			Filename:   target.item.Filename,
+			Digest:     target.object.Digest,
+			Size:       target.object.Size,
 		})
-		seen[header.Name] = struct{}{}
+		seen[target.path] = struct{}{}
 		result.FileCount++
-		result.ByteCount += object.Size
+		result.ByteCount += target.object.Size
 	}
-	if len(seen) != len(objects) {
-		for path := range objects {
+	if len(seen) != len(targets) {
+		for path := range targets {
 			if _, exists := seen[path]; !exists {
 				return failed(invalidPack(fmt.Errorf("dacpack file %q is missing", path)))
 			}
 		}
 	}
 	return result, nil
+}
+
+// packDestination joins one derived archive path onto the destination
+// directory, and refuses a result that is not inside it.
+//
+// Nothing should ever be able to reach this check: the path was built from a
+// coordinate whose three parts coord validated and a file name filename.Clean
+// vouched for, so it holds no traversal to follow. It is here so that the
+// guarantee is provable at the line that touches the filesystem rather than
+// four files away, and so that a future change to the derivation cannot quietly
+// turn into a write outside the directory the caller named.
+func packDestination(directory, file string) (string, error) {
+	// An absolute path is refused outright rather than left to the containment
+	// check below, which would pass it: Join cleans the leading separator, so
+	// "/etc/passwd" lands harmlessly at "<directory>/etc/passwd". Harmless is
+	// not the same as derived, and every derived path starts at the asset root.
+	if path.IsAbs(file) || !strings.HasPrefix(file, packAssetRoot+"/") {
+		return "", fmt.Errorf("file %q is not a path DAC derived", file)
+	}
+	destination := filepath.Join(directory, filepath.FromSlash(file))
+	inside, err := filepath.Rel(directory, destination)
+	if err != nil {
+		return "", fmt.Errorf("file %q does not resolve inside the destination: %w", file, err)
+	}
+	if inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file %q resolves outside the destination", file)
+	}
+	return destination, nil
 }
 
 // materializer writes the files of one unpack and can undo them.
@@ -255,22 +287,28 @@ func (writer *materializer) rollback() {
 // It names every collision rather than the first, because the answer to one is
 // usually to unpack somewhere else, and finding that out a file at a time is
 // worse than being told.
-func checkPackDestinations(directory string, index packIndex, force bool) error {
+func checkPackDestinations(directory string, targets map[string]packTarget, force bool) error {
 	if force {
 		return nil
 	}
-	occupied := make([]string, 0, len(index.Items))
-	for _, item := range index.Items {
-		target := filepath.Join(directory, filepath.FromSlash(item.File))
+	occupied := make([]string, 0, len(targets))
+	for _, target := range targets {
+		destination, err := packDestination(directory, target.path)
+		if err != nil {
+			return invalidPack(err)
+		}
 		// Lstat rather than Stat: a symlink where a file is going is something
 		// already there, and following it is how an unpack writes somewhere it
 		// was never pointed at.
-		if _, err := os.Lstat(target); err == nil {
-			occupied = append(occupied, target)
+		if _, err := os.Lstat(destination); err == nil {
+			occupied = append(occupied, destination)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fault.Wrap("unpack_write_failed", "DAC could not check the destination directory.", err)
 		}
 	}
+	// Map order is not an order, and an operator reading a list of files wants
+	// the same one every time.
+	slices.Sort(occupied)
 	if len(occupied) == 0 {
 		return nil
 	}
@@ -340,7 +378,7 @@ func writeMaterializedFile(ctx context.Context, target string, source io.Reader,
 }
 
 // readPackIndex reads and checks the first tar entry.
-func readPackIndex(reader *tar.Reader) (packIndex, map[string]Object, error) {
+func readPackIndex(reader *tar.Reader) (packIndex, map[string]packTarget, error) {
 	header, err := reader.Next()
 	if err != nil {
 		return packIndex{}, nil, err
@@ -359,8 +397,8 @@ func readPackIndex(reader *tar.Reader) (packIndex, map[string]Object, error) {
 	if err := jsonfile.DecodeStrict(data, &index); err != nil {
 		return packIndex{}, nil, err
 	}
-	objects, err := validatePackIndex(index)
-	return index, objects, err
+	targets, err := validatePackIndex(index)
+	return index, targets, err
 }
 
 // invalidPack gives all dacpack format failures one stable command error.

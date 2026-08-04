@@ -109,13 +109,27 @@ func packFilePath(name coord.Coordinate, file string) (string, error) {
 	return path.Join(packAssetRoot, name.Namespace, name.Name, name.Version, file), nil
 }
 
-// validatePackIndex checks item metadata and returns the object each file holds.
+// packTarget is one file a validated index describes.
+//
+// Path is the path DAC derived from the coordinate, not the one the index
+// claimed. The two are equal or the index was rejected, so this changes no
+// behaviour -- what it changes is provenance. The value that reaches the
+// filesystem is one DAC computed from data it had already checked, rather than
+// a string out of the archive that a reader has to trace back through the
+// equality test to know is safe.
+type packTarget struct {
+	item   PackItem
+	path   string
+	object Object
+}
+
+// validatePackIndex checks item metadata and returns what belongs at each path.
 //
 // It returns a map keyed by path rather than the set of distinct objects a
 // bundle returns. A dacpack materializes each asset separately, so two
 // coordinates that resolved to the same bytes appear as two files with two
 // paths and one digest, and the reader needs to know what to expect at each.
-func validatePackIndex(index packIndex) (map[string]Object, error) {
+func validatePackIndex(index packIndex) (map[string]packTarget, error) {
 	if index.SchemaVersion != packSchemaVersion {
 		return nil, fmt.Errorf("unsupported dacpack schema version %d", index.SchemaVersion)
 	}
@@ -123,7 +137,7 @@ func validatePackIndex(index packIndex) (map[string]Object, error) {
 		return nil, fmt.Errorf("dacpack items must be an array")
 	}
 	coordinates := make(map[coord.Coordinate]struct{}, len(index.Items))
-	objects := make(map[string]Object, len(index.Items))
+	targets := make(map[string]packTarget, len(index.Items))
 	for position, item := range index.Items {
 		coordinate, err := coord.Parse(item.Coordinate)
 		if err != nil {
@@ -138,23 +152,30 @@ func validatePackIndex(index packIndex) (map[string]Object, error) {
 		if _, err := digest.Hex(item.Digest); err != nil {
 			return nil, fmt.Errorf("dacpack item %d has an invalid digest: %w", position, err)
 		}
-		expectedFile, err := packFilePath(coordinate, item.Filename)
+		derived, err := packFilePath(coordinate, item.Filename)
 		if err != nil {
 			return nil, fmt.Errorf("dacpack item %d: %w", position, err)
 		}
-		if item.File != expectedFile {
-			return nil, fmt.Errorf("dacpack item %d has file %q, not %q", position, item.File, expectedFile)
+		if item.File != derived {
+			return nil, fmt.Errorf("dacpack item %d has file %q, not %q", position, item.File, derived)
 		}
 		if _, exists := coordinates[coordinate]; exists {
 			return nil, fmt.Errorf("dacpack has duplicate item %q", coordinate)
 		}
 		coordinates[coordinate] = struct{}{}
+		// Keyed on the derived path rather than the claimed one, so that even the
+		// lookup an archive entry performs is against a path DAC built.
+		//
 		// One path per coordinate and one coordinate per item, so a repeated path
 		// here means two items disagree about which asset a file belongs to.
-		if _, exists := objects[item.File]; exists {
-			return nil, fmt.Errorf("dacpack has duplicate file %q", item.File)
+		if _, exists := targets[derived]; exists {
+			return nil, fmt.Errorf("dacpack has duplicate file %q", derived)
 		}
-		objects[item.File] = Object{Digest: item.Digest, Size: item.Size}
+		targets[derived] = packTarget{
+			item:   item,
+			path:   derived,
+			object: Object{Digest: item.Digest, Size: item.Size},
+		}
 	}
-	return objects, nil
+	return targets, nil
 }
