@@ -7,7 +7,7 @@ import (
 
 // AssetSummary is the part of a command result that reports the assets it
 // installed. Embedding it keeps those JSON field names identical between pull
-// and export, which is the point of a versioned output contract.
+// and pack, which is the point of a versioned output contract.
 type AssetSummary struct {
 	Assets     []Asset `json:"assets"`
 	AssetCount int     `json:"assetCount"`
@@ -57,7 +57,7 @@ type Asset struct {
 
 // assetView reports the state of one asset. It renders a corrupt object as a
 // flag rather than an error, because every caller wants a different answer to
-// it: pull downloads the object again, export refuses, info prints it.
+// it: pull downloads the object again, pack refuses, info prints it.
 func (service *Service) assetView(name coord.Coordinate, source project.Asset, locked project.LockAsset, status string) (Asset, error) {
 	view := Asset{
 		Coordinate: name.String(),

@@ -185,8 +185,6 @@ func (runner *runner) app() *urfave.Command {
 		runner.pullCommand(),
 		runner.pathCommand(),
 		runner.verifyCommand(),
-		runner.exportCommand(),
-		runner.importCommand(),
 		runner.packCommand(),
 		runner.unpackCommand(),
 		runner.cacheCommand(),
@@ -219,15 +217,33 @@ func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 }
 
 func (runner *runner) helpOrInvalid(_ context.Context, current *urfave.Command) error {
-	if !current.Args().Present() {
+	name := current.Args().First()
+	if name == "" {
 		return urfave.ShowRootCommandHelp(current)
 	}
-	runner.commandName = current.Args().First()
+	runner.commandName = name
 	runner.usage = true
 	if !runner.json {
 		_ = urfave.ShowRootCommandHelp(current)
 	}
+	// Only at the root, which is where the retired spellings were. This is also
+	// the action a bare `dac cache <nonsense>` reaches, and answering that with
+	// where a top-level command went would be a non sequitur.
+	if moved, exists := movedCommands[name]; exists && current == current.Root() {
+		return fault.New("invalid_arguments", moved)
+	}
 	return fault.New("invalid_arguments", "The command is not valid.")
+}
+
+// movedCommands maps each command version 8 retired to where its work went.
+//
+// It is the same reasoning movedFlags is written from: telling somebody with
+// `dac import` in a script that there is no such command is true and useless,
+// and the one question they have is where it went. Both of these are answered
+// by one archive doing the job two used to.
+var movedCommands = map[string]string{
+	"import": "dac import is now dac cache import, and it reads a dacpack rather than a cache bundle.",
+	"export": "dac export is now dac pack. A dacpack carries the same objects, and dac cache import installs them.",
 }
 
 func (runner *runner) usageError(_ context.Context, current *urfave.Command, err error, _ bool) error {
@@ -260,7 +276,7 @@ var movedFlags = map[string]string{
 	"--max-size":          "transfer.max-size",
 	"--credential-helper": "the credentials table",
 	"--progress":          "transfer.progress, or --no-progress for one run",
-	"--distdir":           "an argument to dac import",
+	"--distdir":           "an argument to dac cache import",
 }
 
 // movedFlag reports which retired option a parse error is about, if any.

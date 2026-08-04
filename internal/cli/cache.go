@@ -20,13 +20,15 @@ func (runner *runner) cacheCommand() *urfave.Command {
 		Usage:           "Inspect, check, and collect the object cache.",
 		HideHelpCommand: true,
 		// The cache is a noun with a complete set of verbs: where it is, what
-		// is in it, collect it by age, empty it, drop one asset, check it.
-		// Emptying it used to be spelled as a collection with an age short
-		// enough that everything fell outside it, and seeing into it at all was
-		// not possible.
+		// is in it, fill it from a delivery, collect it by age, empty it, drop
+		// one asset, check it. Emptying it used to be spelled as a collection
+		// with an age short enough that everything fell outside it, seeing into
+		// it at all was not possible, and filling it was a top-level command
+		// that read a format nothing else in DAC used.
 		Commands: []*urfave.Command{
 			runner.cacheDirCommand(),
 			runner.cacheListCommand(),
+			runner.cacheImportCommand(),
 			runner.cacheGCCommand(),
 			runner.cacheClearCommand(),
 			runner.cacheRemoveCommand(),
@@ -173,6 +175,49 @@ func (runner *runner) cacheListCommand() *urfave.Command {
 				return nil, "", err
 			}
 			return result, listText(result), nil
+		}),
+	}
+}
+
+// cacheImportCommand builds the local cache import command.
+//
+// It is a cache verb because the cache is what it writes: it reads no project
+// files, resolves nothing, and the archive it takes was made somewhere else. As
+// a top-level command it sat beside pull and lock looking like part of a
+// project's workflow, and the pair it actually belonged to -- export and import
+// -- described a format nothing else in DAC read.
+//
+// What it reads now is a dacpack, the archive dac pack writes, so the machine
+// that receives one can install it into a cache with this or materialize it
+// with dac unpack. That is the thing a second format cost: a bundle delivered
+// to somebody who did not run DAC was a tar full of files named by hash.
+//
+// It accepts a directory as well, for a delivery that arrives on a mounted
+// share rather than as a file. Each file in it must be named by its digest,
+// which is the only name a consumer can check.
+func (runner *runner) cacheImportCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "import",
+		Usage: "Install objects from a dacpack or a directory of digest-named files.",
+		// The source is an argument rather than a required flag, and it has no
+		// default: an import reads a file somebody delivered, at whatever path
+		// they put it down. That is a reason to require the argument, not a
+		// reason to make every script spell --file in front of it.
+		ArgsUsage: "<dacpack|directory>",
+		Action: runner.run("cache.import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			source, err := requiredPath(current, "Specify one dacpack or directory path to read, as <dacpack|directory>.")
+			if err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.Import(ctx, source)
+			if err != nil {
+				return nil, "", err
+			}
+			return result, fmt.Sprintf("Imported %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
 		}),
 	}
 }

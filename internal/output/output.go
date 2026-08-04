@@ -20,8 +20,11 @@ import (
 // actually moved. It became 5 when the transfer options moved into a config
 // file: cache verify became cache scrub, so the command name in a result
 // changed, and pull dropped both the distdir asset status and the
-// distdir_read_failed code along with the flag that produced them.
-const Version = 5
+// distdir_read_failed code along with the flag that produced them. It became 6
+// when the two archives became one: export left along with the bundle format it
+// wrote, import became cache import and now reads a dacpack, so that result's
+// command name changed and its bundle field became source.
+const Version = 6
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`

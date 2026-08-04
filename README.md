@@ -104,12 +104,11 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac pull [<namespace>/<name>[@<version>]...] [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets, or the ones named. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
-| `dac export <bundle>` | Write locked objects and metadata to a cache bundle. |
-| `dac import <bundle\|directory>` | Install objects from a cache bundle, or from a directory of digest-named files. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
 | `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
+| `dac cache import <dacpack\|directory>` | Install objects from a dacpack, or from a directory of digest-named files. |
 | `dac cache gc [--max-age <age>] [--max-size <size>] [--dry-run]` | Remove cache objects that nothing has used recently, then evict until the cache fits. |
 | `dac cache clear [--dry-run]` | Remove every cache object. |
 | `dac cache remove <coordinate>... [--force]` | Remove the objects specific asset versions resolved to. |
@@ -232,9 +231,9 @@ Nothing writes the lock file without being asked: `add` and `remove` maintain it
 because they are already changing the project, `lock` because that is what it is
 for, and `pull` never.
 
-`export`, `import`, and every `cache` command except `remove` do not use the
-network. `import` does not read the project files. `cache gc`, `cache clear`,
-and `cache scrub --all` cover the whole shared cache.
+`pack`, `unpack`, and every `cache` command except `remove` do not use the
+network. `unpack` and `cache import` do not read the project files. `cache gc`,
+`cache clear`, and `cache scrub --all` cover the whole shared cache.
 
 Version 7 moved the transfer options off the command line and into a
 [config file](#config-file). `--timeout`, `--retries`, `--download-parts`,
@@ -256,8 +255,30 @@ became `dac cache scrub`: `dac verify`, `dac verify --refresh`, and that command
 were three operations under one word, costing nothing, a full re-download, and a
 full read of the cache respectively.
 
-`dac pull --distdir` is now an argument to `dac import`, which already installed
-the same digest-named objects out of a tar.
+`dac pull --distdir` is now an argument to `dac cache import`, which already
+installed the same digest-named objects out of an archive.
+
+Version 8 leaves DAC with one archive. There were two: a cache bundle, written
+by `dac export` and read by `dac import`, holding every object under its digest;
+and a dacpack, written by `dac pack` and read by `dac unpack`, holding the same
+bytes under the names their origins gave them. They carried the same delivery
+and the choice between them had to be made before the file was written, by
+somebody who could not yet know what the machine receiving it would want to do.
+A bundle handed to a machine that did not run DAC was a tar full of files named
+by hash.
+
+So the import reads a dacpack and `dac export` is gone: `dac pack` writes the
+archive both halves read. The import moved to `dac cache import` with it,
+because the cache is what it writes and it reads nothing else — as a top-level
+command it sat among `pull` and `lock` looking like part of a project's
+workflow. Running either old spelling says where the work went.
+
+What that costs is the free validation the digest layout had: the only path an
+item could claim in a bundle was the one its digest spelled. A dacpack's paths
+carry names that came from a remote server, so both readers recompute every path
+from the coordinate it belongs to and refuse an index claiming anything else.
+What it also costs is size, for a project whose assets overlap — see
+[dacpacks](#dacpacks).
 
 ## Project files
 
@@ -634,7 +655,7 @@ detailed block for each selected asset.
 Use `--json` or `-j` to write one versioned JSON document to standard output:
 
 ```json
-{"outputVersion":5,"ok":true,"command":"path","data":{}}
+{"outputVersion":6,"ok":true,"command":"path","data":{}}
 ```
 
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
@@ -658,7 +679,7 @@ the same reason `filename` was.
 JSON errors use the same stream and framing:
 
 ```json
-{"outputVersion":5,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
+{"outputVersion":6,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
 ```
 
 `code` and `message` are stable enough to branch on, which is exactly why
@@ -676,6 +697,13 @@ Output version `5` came with the move to a config file. `dac cache verify`
 became `dac cache scrub`, so the `command` field of that result changed, and
 `pull` dropped both the `distdir` asset status and the `distdir_read_failed`
 code along with the flag that produced them.
+
+Output version `6` came with the two archives becoming one. `export` is gone
+along with the `bundle_invalid` code it shared with `import`, and an import's
+`command` field is now `cache.import`. The result's `bundle` field is `source`,
+because what it names is a dacpack or a directory rather than the one format
+that used to have a name of its own. An invalid archive reports
+`dacpack_invalid` from either half that reads one.
 
 Output version `4` moved the lock operations off `pull` onto `dac lock`. A
 `pull` result no longer carries `locked`, because a pull no longer writes the
@@ -760,10 +788,10 @@ unless `--repair` removes it. Corrupt objects are worth nothing, and `dac pull`
 replaces one by downloading it again, so `--repair` followed by `pull` restores
 a damaged cache.
 
-Damage is reported wherever it turns up. `dac path` and `dac export` refuse,
-because neither can do anything about it — and a bundle is the one artifact that
-carries cache damage onto machines that cannot tell where it came from. `dac
-info` reports `cache: corrupt`. `dac pull` downloads the asset again and
+Damage is reported wherever it turns up. `dac path` and `dac pack` refuse,
+because neither can do anything about it — and an archive is the one artifact
+that carries cache damage onto machines that cannot tell where it came from.
+`dac info` reports `cache: corrupt`. `dac pull` downloads the asset again and
 installs good bytes over the bad ones, reporting the asset as `repaired`.
 
 ### Managing the cache
@@ -772,6 +800,7 @@ installs good bytes over the bad ones, reporting the asset as `repaired`.
 dac cache dir                        # where it is
 dac cache list                       # what this project has in it
 dac cache list --all                 # everything, with sizes and last use
+dac cache import ./delivery.dacpack  # fill it from an archive
 dac cache gc                         # collect by age
 dac cache gc --max-size 20GiB        # and evict until it fits
 dac cache clear                      # empty it
@@ -850,53 +879,52 @@ between a download and the disk, so a single `dac pull` larger than the bound
 still lands, and `gc` brings the cache back under afterwards. Set the bound
 below the disk you have rather than at it.
 
-### Cache bundles
+### Moving a cache
 
-`dac export <bundle>` writes every locked object to one tar bundle. `dac import
-<bundle>` validates the bundle and installs its objects in the local cache. This
-supports a cold cache on an isolated machine.
+`dac pack` writes every locked asset to one archive. `dac cache import
+<dacpack>` validates that archive and installs its objects in the local cache.
+That is the cold cache on an isolated machine:
 
 ```bash
-dac export ./cache.tar             # on a machine with network access
-dac import ./cache.tar             # on an isolated machine
+dac pack ./delivery.dacpack             # on a machine with network access
+dac cache import ./delivery.dacpack     # on an isolated machine
+dac pull --offline                      # everything it needs is already there
 ```
 
-The format uses two ideas from the OCI image layout. The tar root contains an
-`index.json` file. Object bytes use `blobs/sha256/<hex>` paths. The simpler DAC
-index lists each asset coordinate, source URL, file path, digest, and size
-directly.
+`pack` hashes each object while it writes the archive. `cache import` checks the
+index, entry type, path, size, and digest, and refuses the whole archive rather
+than install the part of it that read cleanly. Neither half needs the network,
+and the importing machine needs no project files at all — an archive says what
+it carries, and the cache is keyed by digest.
 
-The index names each asset by its whole coordinate. Two assets that resolved to
-one object share one blob, which is what makes a bundle for a project that
-vendors the same file under two namespaces no larger than one that does not.
+The same file is what `dac unpack` reads, so what crosses the air gap does not
+have to be decided by whoever wrote it. A machine that runs DAC imports it; a
+machine that does not extracts it with `tar` and gets real files with real
+names. DAC used to write a separate cache bundle for the first case, holding
+every object under `blobs/sha256/<hex>`, and delivering one to anybody in the
+second case handed them a tar full of files named by hash.
 
-`export` hashes each object while it writes the tar. `import` checks the index,
-entry type, path, size, and digest. It rejects an invalid bundle before it
-installs the applicable object.
-
-`dac import <dir>` also accepts an unpacked distribution directory, for a
-delivery that arrives on a mounted share rather than as a tar. Each file in it
-must use its SHA-256 hexadecimal digest as its name; anything else is left
-alone, so a `README` beside the objects costs nothing. Files whose contents do
-not match the name they carry are refused.
+`dac cache import <dir>` also accepts a distribution directory, for a delivery
+that arrives on a mounted share rather than as a file. Each file in it must use
+its SHA-256 hexadecimal digest as its name; anything else is left alone, so a
+`README` beside the objects costs nothing. Files whose contents do not match the
+name they carry are refused.
 
 ```bash
-dac import /mnt/dist && dac pull --offline
+dac cache import /mnt/dist && dac pull --offline
 ```
 
 This replaces `dac pull --distdir`, which installed the same digest-named
 objects from the same kind of directory as a flag on an unrelated command. One
 difference is worth knowing: `--distdir` read only the objects the lock named,
-where `import` installs everything in the directory. A share holding more than
+where an import installs everything in the directory. A share holding more than
 this project needs will therefore cost more cache than it used to.
 
 ### dacpacks
 
-A cache bundle is the cache, moved: every file in it is named by its digest,
-which is all DAC needs and nothing else can read. A dacpack is the project,
-materialized. Its files carry the names their origins gave them, so unpacking
-one — or just extracting it with `tar` — leaves a directory of real files with
-real extensions:
+A dacpack is the project, materialized. Its files carry the names their origins
+gave them, so unpacking one — or just extracting it with `tar` — leaves a
+directory of real files with real extensions:
 
 ```bash
 dac pack                           # writes ./dac.dacpack
@@ -905,15 +933,16 @@ dac unpack build.dacpack /opt/in   # or name both
 ```
 
 `unpack` writes files and **never touches the cache**. That is the whole
-difference from `import`: a cache bundle is how DAC moves objects to another
-DAC, and a dacpack is how a project hands its assets to something that is not
-DAC at all. It reads no project files and needs no cache directory, so it runs
-anywhere the archive does.
+difference from `dac cache import`, which reads the same archive and installs
+the same bytes under their digests: one hands a project's assets to something
+that is not DAC at all, the other moves a cache to a machine that runs it. It
+reads no project files and needs no cache directory, so it runs anywhere the
+archive does.
 
 The archive defaults to `dac.dacpack` and the destination to the working
-directory. `export` and `import` require their bundle path, because a bundle is
-a thing you are moving somewhere and the somewhere is the point, while a dacpack
-is a build output that a project makes one of. Both spell it as an argument
+directory, because a dacpack is a build output that a project makes one of. An
+import has no default, because the archive it reads arrived from somewhere else
+and is wherever whoever delivered it put it. Every one of them is an argument
 either way: whether a path has a default and whether it is a flag are separate
 questions, and a required flag is a flag in name only.
 
@@ -934,9 +963,9 @@ alone would have the second file silently overwrite the first.
 Each file lands at the same path under the destination that it has inside the
 archive, so `dac unpack <archive> <dir>` and `tar -xf <archive> -C <dir>` put the
 files in the same places. `index.json` records what each one is — coordinate,
-source URL, path, file name, digest, and size — and `unpack` checks every file
-against its digest while writing. A file name says nothing about the bytes under
-it, so that digest is the only claim there is to check.
+source URL, path, file name, digest, and size — and both readers check every
+file against its digest as they go. A file name says nothing about the bytes
+under it, so that digest is the only claim there is to check.
 
 `unpack` refuses to replace anything unless `--force` is given, naming every
 file that is in the way and writing nothing. The destination defaults to the
@@ -945,16 +974,20 @@ DAC's to lose. A failed unpack leaves nothing behind either: an archive is not
 known to be sound until it has been read to the end, so anything already written
 is taken back rather than left looking like a complete tree.
 
-Two coordinates that resolved to one object are one blob in a bundle and two
-files in a dacpack, because each is materialized under its own name. Packing a
-project whose assets overlap therefore costs more than exporting it.
+Two coordinates that resolved to one object are one object in the cache and two
+files in a dacpack, because each is materialized under its own name and a file
+cannot be in two places. Packing a project whose assets overlap therefore costs
+more than the cache it came from. Importing one costs nothing extra: both files
+are read and checked, and the cache holds the one object they agree on, which is
+what `objectCount` and `byteCount` report.
 
-A dacpack's paths carry names that came from a remote server, so `unpack`
+A dacpack's paths carry names that came from a remote server, so a reader
 recomputes every path from the coordinate it belongs to and refuses an index
 claiming anything else. A file name that is not a single safe path element is
 refused outright, and a symlink where a file is going counts as something
 already there rather than as empty space — following one is how an extraction
-writes outside the directory it was pointed at.
+writes outside the directory it was pointed at. An import derives no path at all:
+the cache decides where an object lives, from its digest.
 
 ## Non-goals
 

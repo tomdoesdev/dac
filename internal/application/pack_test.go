@@ -1,10 +1,10 @@
 package application_test
 
-// Tests for the materialized archive. What separates a dacpack from a cache
-// bundle is that its paths carry names an origin chose rather than digests DAC
-// computed, so most of what is worth testing here is about those names: that
-// they survive the round trip, that two assets cannot land on one path, and
-// that a name arriving from outside cannot become a path DAC follows.
+// Tests for the materialized archive. Its paths carry names an origin chose
+// rather than digests DAC computed, so most of what is worth testing here is
+// about those names: that they survive the round trip, that two assets cannot
+// land on one path, and that a name arriving from outside cannot become a path
+// DAC follows.
 
 import (
 	"archive/tar"
@@ -88,10 +88,10 @@ func packEntries(t *testing.T, path string) (map[string]any, map[string][]byte, 
 	return index, files, order
 }
 
-// TestPackMaterializesEachAssetUnderItsOwnName covers the difference from a
-// cache bundle. Extracting this archive with tar has to leave a directory of
-// real files with real extensions, because that is the only reason to prefer it
-// over the bundle that names everything by digest.
+// TestPackMaterializesEachAssetUnderItsOwnName covers what the archive is for.
+// Extracting it with tar has to leave a directory of real files with real
+// extensions, because that is what a machine which does not run DAC can use,
+// and a tree of sha256 hashes is not.
 func TestPackMaterializesEachAssetUnderItsOwnName(t *testing.T) {
 	eleven, seventeen := []byte("jdk eleven bytes"), []byte("jdk seventeen bytes")
 	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
@@ -177,9 +177,9 @@ func TestPackFallsBackToTheCoordinateName(t *testing.T) {
 }
 
 // TestPackWritesSharedBytesOncePerAsset is the cost a materialized archive
-// pays. Two coordinates that resolved to the same object are one blob in a
-// cache bundle and two files here, because each is materialized under its own
-// name and a file cannot be in two places.
+// pays. Two coordinates that resolved to the same object are one object in the
+// cache and two files here, because each is materialized under its own name and
+// a file cannot be in two places.
 func TestPackWritesSharedBytesOncePerAsset(t *testing.T) {
 	content := []byte("one set of bytes")
 	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
@@ -375,12 +375,12 @@ func writePackArchive(t *testing.T, path string, index any, entries [][2]any) {
 	}
 }
 
-// TestUnpackRefusesAPathItDidNotDerive is the check a cache bundle gets for
-// free. Every path in a bundle is spelled by a digest, so an index cannot claim
-// one that points anywhere else. A dacpack's paths carry names a remote server
-// chose, so the derivation has to be redone here and the claim compared against
-// it -- otherwise an index naming "../../../etc/cron.d/root" is a file write
-// wherever DAC was run.
+// TestUnpackRefusesAPathItDidNotDerive is the check a digest layout got for
+// free. Where every path is spelled by a digest, an index cannot claim one that
+// points anywhere else. A dacpack's paths carry names a remote server chose, so
+// the derivation has to be redone here and the claim compared against it --
+// otherwise an index naming "../../../etc/cron.d/root" is a file write wherever
+// DAC was run.
 func TestUnpackRefusesAPathItDidNotDerive(t *testing.T) {
 	content := []byte("evil payload")
 	value := digest.Bytes(content)
@@ -569,8 +569,8 @@ func TestUnpackRefusesContentThatDoesNotMatchTheIndex(t *testing.T) {
 }
 
 // TestUnpackRefusesAnUnsupportedSchemaVersion keeps a dacpack from being read
-// as something it is not. The bundle schema and this one both start at an
-// integer nobody should guess the meaning of.
+// as something it is not. The schema is an integer nobody should guess the
+// meaning of, so a version DAC does not know is refused rather than tried.
 func TestUnpackRefusesAnUnsupportedSchemaVersion(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "future.dacpack")
 	writePackArchive(t, archive, map[string]any{"schemaVersion": 2, "items": []any{}}, nil)
@@ -580,9 +580,9 @@ func TestUnpackRefusesAnUnsupportedSchemaVersion(t *testing.T) {
 	}
 }
 
-// TestPackRequiresACompleteCache refuses for the same reason export does: an
-// archive missing an asset it lists is worse than no archive, because whoever
-// receives it finds out at the point they needed the file.
+// TestPackRequiresACompleteCache covers what a half-written archive would
+// cost: one missing an asset it lists is worse than no archive at all, because
+// whoever receives it finds out at the point they needed the file.
 func TestPackRequiresACompleteCache(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, cache.New(t.TempDir()), nil, nil)
