@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tom/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // PackResult reports one dacpack.

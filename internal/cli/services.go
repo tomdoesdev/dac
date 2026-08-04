@@ -10,14 +10,14 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/cache"
-	"github.com/tom/dac/internal/config"
-	"github.com/tom/dac/internal/credential"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/httpclient"
-	"github.com/tom/dac/internal/progress"
-	"github.com/tom/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/cache"
+	"github.com/tomdoesdev/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/httpclient"
+	"github.com/tomdoesdev/dac/internal/progress"
+	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
 // projectPaths returns the manifest and lock file this run acts on.

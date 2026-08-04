@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/tom/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 func TestWriterWritesHumanOutput(t *testing.T) {

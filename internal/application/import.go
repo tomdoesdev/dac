@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/jsonfile"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
 // ImportResult reports the objects installed from one cache bundle.

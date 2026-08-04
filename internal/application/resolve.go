@@ -3,10 +3,10 @@ package application
 import (
 	"context"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/filename"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options NetworkOptions) (project.LockAsset, string, error) {

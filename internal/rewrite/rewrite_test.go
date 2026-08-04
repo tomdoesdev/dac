@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tom/dac/internal/rewrite"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 func parse(t *testing.T, text string) *rewrite.Config {

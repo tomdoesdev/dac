@@ -7,8 +7,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/bytesize"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/bytesize"
 )
 
 // infoCommand defines the project inspection command and its coordinate filter.

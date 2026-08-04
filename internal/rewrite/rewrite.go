@@ -23,7 +23,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 // ErrBlocked marks a URL that the config refuses. It wraps the URL policy error

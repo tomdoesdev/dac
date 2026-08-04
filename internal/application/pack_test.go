@@ -17,12 +17,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/cache"
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/digest"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/cache"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // packedProject writes a project whose assets are described exactly as given,

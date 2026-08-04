@@ -10,10 +10,10 @@ import (
 	"errors"
 	"os"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/filename"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // The status one reconcile records for each asset it settled. The first marks

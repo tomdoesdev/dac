@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tom/dac/internal/application"
-	"github.com/tom/dac/internal/credential"
-	"github.com/tom/dac/internal/rewrite"
-	"github.com/tom/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/rewrite"
+	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {

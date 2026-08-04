@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 func TestPackFilePathDerivesFromTheCoordinate(t *testing.T) {

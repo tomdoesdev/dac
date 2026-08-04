@@ -13,7 +13,7 @@ DAC requires Go 1.26 and targets Unix. The cache coordinates concurrent
 processes with `flock`, so there is no Windows build.
 
 ```bash
-go install github.com/tom/dac/cmd/dac@latest
+go install github.com/tomdoesdev/dac/cmd/dac@latest
 ```
 
 To build from a checkout instead:

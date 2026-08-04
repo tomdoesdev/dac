@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tom/dac/internal/coord"
-	"github.com/tom/dac/internal/fault"
-	"github.com/tom/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // InitResult reports the files created by init.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/tom/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // Version is the output contract version. It became 2 when info moved its

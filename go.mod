@@ -1,4 +1,4 @@
-module github.com/tom/dac
+module github.com/tomdoesdev/dac
 
 go 1.26
 
