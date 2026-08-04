@@ -19,10 +19,16 @@ func (runner *runner) pullCommand() *urfave.Command {
 		// files at all: settling a manifest the lock no longer describes is
 		// dac lock, and checking the origins without writing is dac verify
 		// --refresh.
-		Usage: "Install all missing locked assets.",
-		Flags: flags,
+		Usage: "Install missing locked assets, or the ones named.",
+		// Naming assets narrows what is fetched, for the job that needs one of
+		// them. It does not narrow what is checked: the lock file still has to
+		// describe the manifest either way.
+		ArgsUsage:     "[<namespace>/<name>[@<version>]...]",
+		Flags:         flags,
+		ShellComplete: runner.completeCoordinates(),
 		Action: runner.run("pull", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
+			assets, err := selections(current)
+			if err != nil {
 				return nil, "", err
 			}
 			service, client, err := runner.networkService(ctx, current, runner.json)
@@ -38,12 +44,27 @@ func (runner *runner) pullCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Pull(ctx, application.NetworkOptions{
-				Concurrency: concurrency,
-				MaxSize:     maxSize,
-				Offline:     current.Bool("offline"),
+			result, err := service.Pull(ctx, application.PullOptions{
+				NetworkOptions: application.NetworkOptions{
+					Concurrency: concurrency,
+					MaxSize:     maxSize,
+					Offline:     current.Bool("offline"),
+				},
+				Assets: assets,
 			})
-			return result, fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset")), err
+			return result, pullText(result), err
 		}),
 	}
+}
+
+// pullText summarizes one pull.
+//
+// A narrowed pull says what it left alone. "Pulled 1 asset" is true of a
+// project with one asset and of a job that asked for one of twenty, and the
+// difference is the whole reason to name assets in the first place.
+func pullText(result application.PullResult) string {
+	if result.AssetCount < result.ProjectCount {
+		return fmt.Sprintf("Pulled %s of %d.", plural(result.AssetCount, "asset"), result.ProjectCount)
+	}
+	return fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset"))
 }

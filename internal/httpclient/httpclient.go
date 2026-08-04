@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/filename"
 	"github.com/tomdoesdev/dac/internal/rewrite"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
@@ -36,6 +38,8 @@ type Options struct {
 	Rewriter *rewrite.Config
 	// Credentials supplies request headers for hosts that need them.
 	Credentials *credential.Resolver
+	// Logger traces what each transfer did. A nil logger traces nothing.
+	Logger *slog.Logger
 }
 
 // Client owns the connections used for asset requests.
@@ -50,6 +54,7 @@ type Client struct {
 // New creates an HTTP asset client.
 func New(options Options) *Client {
 	options.Parallelism = max(options.Parallelism, 1)
+	options.Logger = debug.Or(options.Logger)
 	return &Client{
 		options: options,
 		budget:  make(chan struct{}, options.Parallelism),
@@ -84,6 +89,12 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 	if target.Rewritten && target.AllowInsecureHTTP {
 		request.AllowInsecureHTTP = true
 	}
+	if target.Rewritten {
+		// The one thing dac info already answers, repeated here because a trace
+		// that showed the request without saying it had been moved would read
+		// as a manifest nobody could find.
+		client.options.Logger.Debug("rewrote request", "from", request.URL, "to", target.URL)
+	}
 	parsed, err := urlpolicy.ParseAndCheck(target.URL, request.AllowInsecureHTTP)
 	if err != nil {
 		return nil, &RequestError{URL: target.URL, Err: err}
@@ -92,22 +103,34 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 	// One cache for the whole transfer, including the range requests that finish
 	// a split download and every retry along the way.
 	credentials := newCredentialCache(client)
+	trace := client.options.Logger
+	trace.Debug("fetching", "url", request.URL, "conditional", request.ETag != "")
 	var lastErr error
 	reauthorized := false
 	for attempt := 0; ; {
 		response, err := client.attempt(ctx, request, credentials)
 		if err == nil {
+			trace.Debug("response", "url", request.URL, "attempt", attempt,
+				"notModified", response.NotModified, "length", response.Length,
+				"etag", response.ETag, "filename", response.Filename)
 			return response, nil
 		}
 		lastErr = err
 		if !reauthorized && rejectedCredentials(err) && credentials.reset() {
+			trace.Debug("credentials rejected, asking the helper again",
+				"url", request.URL, "status", statusOf(err))
 			reauthorized = true
 			continue
 		}
 		if attempt >= client.options.Retries || !retryable(err) || ctx.Err() != nil {
+			trace.Debug("giving up", "url", request.URL, "attempts", attempt+1,
+				"status", statusOf(lastErr), "retryable", retryable(lastErr), "error", lastErr)
 			return nil, &RequestError{URL: request.URL, Status: statusOf(lastErr), Err: lastErr}
 		}
-		if err := sleep(ctx, backoff(attempt, err)); err != nil {
+		wait := backoff(attempt, err)
+		trace.Debug("retrying", "url", request.URL, "attempt", attempt+1,
+			"after", wait, "status", statusOf(err), "error", err)
+		if err := sleep(ctx, wait); err != nil {
 			return nil, &RequestError{URL: request.URL, Err: err}
 		}
 		attempt++
@@ -229,6 +252,7 @@ func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, cre
 		if err := client.options.Rewriter.Check(request.URL); err != nil {
 			return err
 		}
+		client.options.Logger.Debug("redirect", "to", request.URL.String(), "hops", len(via))
 		return credentials.apply(ctx, request)
 	}
 }

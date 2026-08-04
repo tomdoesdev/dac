@@ -95,6 +95,26 @@ func selection(current *urfave.Command) (application.Selection, error) {
 	return parseAsset(values[0])
 }
 
+// selections reads the assets a command was narrowed to, which may be none.
+//
+// It takes the same two spellings info does, because narrowing a command and
+// asking about a project are the same question with different verbs: a
+// coordinate names one version, and a bare <namespace>/<name> names every
+// version of that asset. No arguments at all is the whole project, which is
+// what these commands did before they could be narrowed.
+func selections(current *urfave.Command) ([]application.Selection, error) {
+	values := current.Args().Slice()
+	chosen := make([]application.Selection, 0, len(values))
+	for _, value := range values {
+		selection, err := parseAsset(value)
+		if err != nil {
+			return nil, err
+		}
+		chosen = append(chosen, selection)
+	}
+	return chosen, nil
+}
+
 // asset reads the one asset a command acts on, with or without its version.
 //
 // Leaving the version off asks DAC to work out which one was meant, and it will

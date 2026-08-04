@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/proclock"
@@ -27,10 +29,16 @@ import (
 // already hashed, and a copy would hash them all over again.
 type Store struct {
 	Root string
+	// Logger traces what the cache answered for each object. A nil logger
+	// traces nothing, so the zero value is a store that says nothing.
+	Logger *slog.Logger
 	// verified maps a digest to the file information of the bytes this process
 	// hashed for it. See trusted in meta.go.
 	verified sync.Map
 }
+
+// trace returns the logger for this store, which discards when nothing set one.
+func (store *Store) trace() *slog.Logger { return debug.Or(store.Logger) }
 
 // ResolveRoot returns an absolute cache root.
 func ResolveRoot(option string) (string, error) {
@@ -74,15 +82,18 @@ func (store *Store) Stat(value string) (application.Object, bool, error) {
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
+		store.trace().Debug("cache miss", "digest", value)
 		return application.Object{}, false, nil
 	}
 	if err != nil {
 		return application.Object{}, false, err
 	}
 	if err := store.check(value, path, info); err != nil {
+		store.trace().Debug("cache object failed its check", "digest", value, "error", err)
 		return application.Object{}, false, err
 	}
 	touch(metaPath(path))
+	store.trace().Debug("cache hit", "digest", value, "size", info.Size())
 	return application.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
@@ -141,7 +152,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		if !used.Before(cutoff) {
 			continue
 		}
-		size, removed, err := store.collect(ctx, value, cutoff, options.DryRun)
+		size, removed, err := store.collect(ctx, value, olderThan(cutoff), options.DryRun)
 		if err != nil {
 			return application.GCResult{}, err
 		}
@@ -166,7 +177,149 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	result.SidecarCount = sidecars
 	result.TempCount += abandoned
+
+	// Clearing takes everything regardless, so there is no bound left to be
+	// over.
+	if options.MaxSize > 0 && !options.All {
+		if err := store.evict(ctx, options, collected, &result); err != nil {
+			return application.GCResult{}, err
+		}
+	}
 	return result, nil
+}
+
+// olderThan is the collection question: has nothing used this object since the
+// cutoff.
+func olderThan(cutoff time.Time) func(time.Time) bool {
+	return func(used time.Time) bool { return used.Before(cutoff) }
+}
+
+// evict removes the least recently used objects until the cache is inside its
+// size bound.
+//
+// Age and size are different questions, and a cache answers to both. Age asks
+// whether anything is still using an object; a bound asks whether there is
+// room. A machine whose projects genuinely use more than the disk it has to
+// spare has nothing old enough to collect and is still too full, and until now
+// the only lever was to guess an age short enough to hurt.
+//
+// So this runs after collection, on what collection left, and takes live
+// objects oldest first -- the only order that spends a full cache on the assets
+// something is actually reaching for.
+//
+// It is a bound on collection rather than a quota on the cache. Nothing here
+// stands between a download and the disk: a single pull larger than the bound
+// still lands, and the next collection brings the cache back under.
+func (store *Store) evict(ctx context.Context, options application.GCOptions, collected map[string]struct{}, result *application.GCResult) error {
+	objects, total, err := store.evictable(ctx, collected)
+	if err != nil {
+		return err
+	}
+	if total <= options.MaxSize {
+		return nil
+	}
+	// Oldest first, and by digest between objects that share a timestamp so
+	// that two runs over one cache make the same choices.
+	slices.SortFunc(objects, func(left, right candidate) int {
+		if left.used.Equal(right.used) {
+			return strings.Compare(left.digest, right.digest)
+		}
+		if left.used.Before(right.used) {
+			return -1
+		}
+		return 1
+	})
+	for _, candidate := range objects {
+		if total <= options.MaxSize {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Waiting for the digest lock takes time, and an object something
+		// reached for in the meantime is the last one worth taking: it is now
+		// the most recently used thing in the cache rather than the least.
+		// Leaving it can end the run still over the bound, which the next
+		// collection settles.
+		size, removed, err := store.collect(ctx, candidate.digest, unusedSince(candidate.used), options.DryRun)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			continue
+		}
+		store.trace().Debug("evicted", "digest", candidate.digest, "size", size,
+			"lastUsed", candidate.used, "remaining", total-size, "bound", options.MaxSize)
+		total -= size
+		result.Digests = append(result.Digests, candidate.digest)
+		result.ObjectCount++
+		result.ByteCount += size
+		result.EvictedCount++
+		result.EvictedBytes += size
+	}
+	slices.Sort(result.Digests)
+	return nil
+}
+
+// unusedSince is the eviction question: has nothing reached this object since
+// the run looked at it.
+func unusedSince(observed time.Time) func(time.Time) bool {
+	return func(used time.Time) bool { return !used.After(observed) }
+}
+
+// stored is one object a size bound may have to take, and what decides whether
+// it goes.
+type candidate struct {
+	digest string
+	size   int64
+	used   time.Time
+}
+
+// evictable reports the objects collection left behind and what they come to.
+//
+// It skips the ones collection took. On a dry run those are still on disk, and
+// counting them would have the run report evicting objects it has already said
+// it would collect.
+func (store *Store) evictable(ctx context.Context, collected map[string]struct{}) ([]candidate, int64, error) {
+	blobs := filepath.Join(store.Root, "blobs", "sha256")
+	entries, err := os.ReadDir(blobs)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, 0, err
+	}
+	var objects []candidate
+	var total int64
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), metaSuffix) {
+			continue
+		}
+		if _, taken := collected[entry.Name()]; taken {
+			continue
+		}
+		value := digest.Prefix + entry.Name()
+		if _, err := digest.Hex(value); err != nil {
+			continue
+		}
+		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		used, err := store.lastUsed(filepath.Join(blobs, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		objects = append(objects, candidate{digest: value, size: info.Size(), used: used})
+		total += info.Size()
+	}
+	return objects, total, nil
 }
 
 // farFuture is the cutoff an unconditional collection uses. A century is not a
@@ -219,9 +372,15 @@ func (store *Store) lastUsed(objectPath string) (time.Time, error) {
 
 // collect removes one object and its sidecar while it holds that object's
 // digest lock, so a concurrent install cannot rename a new copy into place
-// mid-removal. It re-checks the timestamp under the lock because waiting for it
-// takes time during which another process may have used the object.
-func (store *Store) collect(ctx context.Context, value string, cutoff time.Time, dryRun bool) (int64, bool, error) {
+// mid-removal. It re-checks under the lock because waiting for it takes time
+// during which another process may have used the object.
+//
+// What that re-check asks is the caller's to decide, because the two removals
+// this store makes ask different questions of the same timestamp. Collection
+// asks whether the object is older than a cutoff. Eviction asks whether it has
+// been used since the run picked it, which is a cutoff nothing knows in advance
+// -- it is whatever that object's timestamp read a moment ago.
+func (store *Store) collect(ctx context.Context, value string, unused func(time.Time) bool, dryRun bool) (int64, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
 		return 0, false, err
@@ -243,7 +402,7 @@ func (store *Store) collect(ctx context.Context, value string, cutoff time.Time,
 		if err != nil {
 			return err
 		}
-		if !used.Before(cutoff) {
+		if !unused(used) {
 			return nil
 		}
 		size, removed = info.Size(), true
@@ -586,6 +745,7 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 		if err := os.Rename(temporaryPath, path); err != nil {
 			return err
 		}
+		store.trace().Debug("installed", "digest", actualDigest, "size", size)
 		return store.record(actualDigest, path)
 	}
 	if !options.Locked {

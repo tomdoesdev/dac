@@ -164,6 +164,15 @@ func (runner *runner) app() *urfave.Command {
 			&urfave.StringFlag{Name: "cache-dir", Sources: urfave.EnvVars("DAC_CACHE_DIR"), Usage: "Use this cache directory."},
 			&urfave.StringFlag{Name: "config", Sources: urfave.EnvVars("DAC_CONFIG"), Usage: "Read this config file instead of the ones the XDG search path finds."},
 			&urfave.BoolFlag{Name: "json", Aliases: []string{"j"}, Destination: &runner.json, Usage: "Write command results as JSON."},
+			// Tracing is a global flag because the question it answers -- what
+			// did this actually do -- is asked of whichever command just
+			// surprised somebody, and having to find out which of them carries
+			// it is part of the problem.
+			&urfave.BoolFlag{
+				Name:    "debug",
+				Sources: urfave.EnvVars("DAC_DEBUG"),
+				Usage:   "Write a trace of requests, credentials, and cache decisions to standard error.",
+			},
 		},
 		Action: runner.helpOrInvalid,
 	}

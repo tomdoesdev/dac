@@ -34,8 +34,10 @@ const minSplitSize = 2 * chunkSize
 // it and the asset is large enough to pay for them, and otherwise hands back
 // the single stream the response already carries.
 func (client *Client) body(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, cache *credentialCache) io.ReadCloser {
-	precondition, ok := splittable(client.options.Parallelism, response)
-	if !ok {
+	trace := client.options.Logger
+	precondition, refused := splittable(client.options.Parallelism, response)
+	if refused != "" {
+		trace.Debug("streaming one response", "url", input.URL, "reason", refused, "length", response.ContentLength)
 		return guard(response.Body, cancel, client.options.Timeout)
 	}
 	// The head response already carries the first chunk, so only the chunks
@@ -45,8 +47,11 @@ func (client *Client) body(ctx context.Context, input application.FetchRequest, 
 	chunks := int((response.ContentLength + chunkSize - 1) / chunkSize)
 	workers := client.acquire(min(client.options.Parallelism-1, chunks-1))
 	if workers == 0 {
+		trace.Debug("streaming one response", "url", input.URL, "reason", "no parts to spare", "length", response.ContentLength)
 		return guard(response.Body, cancel, client.options.Timeout)
 	}
+	trace.Debug("splitting download", "url", input.URL, "length", response.ContentLength,
+		"chunks", chunks, "workers", workers, "precondition", precondition.name)
 	return client.split(ctx, input, response, cancel, cancelHead, precondition, chunks, workers, cache)
 }
 
@@ -54,8 +59,13 @@ func (client *Client) body(ctx context.Context, input application.FetchRequest, 
 type header struct{ name, value string }
 
 // splittable reports whether the rest of a response can be fetched as range
-// requests, and returns the precondition header that pins the entity while it
-// is.
+// requests, returning the precondition header that pins the entity while it is,
+// or the reason it cannot be.
+//
+// The reason is what a trace needs. Every condition here is something the
+// origin decided, so an operator watching a large asset arrive over one
+// connection is looking at a server's answer rather than at a setting they got
+// wrong, and only naming which one turns that into something they can act on.
 //
 // A split download reads one asset over several requests, so it has to be sure
 // every request answers about the same bytes. The origin makes that promise: a
@@ -64,22 +74,29 @@ type header struct{ name, value string }
 // all. Silently reassembling two versions of an asset would surface as a digest
 // mismatch for a pinned asset, and for an unpinned one it would be locked as if
 // it were a real object.
-func splittable(parallelism int, response *http.Response) (header, bool) {
-	if parallelism < 2 || response.StatusCode != http.StatusOK || response.ContentLength < minSplitSize {
-		return header{}, false
+func splittable(parallelism int, response *http.Response) (header, string) {
+	switch {
+	case parallelism < 2:
+		return header{}, "download-parts is 1"
+	case response.StatusCode != http.StatusOK:
+		return header{}, "response is not 200"
+	case response.ContentLength < 0:
+		return header{}, "response has no length"
+	case response.ContentLength < minSplitSize:
+		return header{}, "response is below the split size"
 	}
 	if !acceptsRanges(response.Header.Get("Accept-Ranges")) {
-		return header{}, false
+		return header{}, "origin does not serve byte ranges"
 	}
 	// A weak ETag says two responses are equivalent, not that they are the same
 	// bytes, which is the only question a byte range asks.
 	if etag := strings.TrimSpace(response.Header.Get("ETag")); etag != "" && !strings.HasPrefix(etag, "W/") {
-		return header{name: "If-Match", value: etag}, true
+		return header{name: "If-Match", value: etag}, ""
 	}
 	if modified := strings.TrimSpace(response.Header.Get("Last-Modified")); modified != "" {
-		return header{name: "If-Unmodified-Since", value: modified}, true
+		return header{name: "If-Unmodified-Since", value: modified}, ""
 	}
-	return header{}, false
+	return header{}, "origin sent no strong validator"
 }
 
 func acceptsRanges(value string) bool {
@@ -332,6 +349,8 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	body.client.options.Logger.Debug("range", "url", body.url,
+		"start", start, "end", end, "status", response.StatusCode)
 	// A chunk gets the same stall guard as a whole transfer, and its own
 	// cancellation with it, so one slow connection fails and is retried instead
 	// of holding up the download behind it.

@@ -10,11 +10,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/tomdoesdev/dac/internal/debug"
 )
 
 // maxOutput bounds a helper's response so a runaway program cannot exhaust
@@ -37,6 +42,9 @@ const waitGrace = time.Second
 type Resolver struct {
 	helpers []helper
 	timeout time.Duration
+	// Logger traces which helper answered for which host. It never carries what
+	// a helper returned: see Headers.
+	Logger *slog.Logger
 }
 
 type helper struct {
@@ -93,10 +101,14 @@ func (resolver *Resolver) Headers(ctx context.Context, rawURL string) (http.Head
 	if err != nil {
 		return nil, err
 	}
-	selected, found := resolver.selectHelper(strings.ToLower(parsed.Hostname()))
+	host := strings.ToLower(parsed.Hostname())
+	selected, found := resolver.selectHelper(host)
+	trace := debug.Or(resolver.Logger)
 	if !found {
+		trace.Debug("no credential helper for host", "host", host)
 		return nil, nil
 	}
+	trace.Debug("running credential helper", "host", host, "command", selected.command)
 	payload, err := json.Marshal(request{URI: rawURL})
 	if err != nil {
 		return nil, err
@@ -137,8 +149,15 @@ func (resolver *Resolver) Headers(ctx context.Context, rawURL string) (http.Head
 		}
 	}
 	if len(header) == 0 {
+		trace.Debug("credential helper returned no headers", "host", host, "command", selected.command)
 		return nil, nil
 	}
+	// The names and nothing else. A trace exists to show which helper answered
+	// and what it set, and a helper's answer is the secret itself -- the same
+	// reason no part of it reaches an error message either. Sorted so that two
+	// runs of one helper read the same.
+	names := slices.Sorted(maps.Keys(header))
+	trace.Debug("credential helper answered", "host", host, "command", selected.command, "headers", names)
 	return header, nil
 }
 

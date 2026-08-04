@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/cache"
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/credential"
+	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/httpclient"
 	"github.com/tomdoesdev/dac/internal/progress"
@@ -46,7 +48,16 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 		return nil, err
 	}
 	manifest, lock := projectPaths(current)
-	return application.New(manifest, lock, cache.New(root), nil, nil), nil
+	store := cache.New(root)
+	store.Logger = runner.trace(current)
+	return application.New(manifest, lock, store, nil, nil), nil
+}
+
+// trace returns the logger for this run. It writes to standard error, where
+// help and progress already go, because standard output carries the output
+// contract and a trace is not a command result.
+func (runner *runner) trace(current *urfave.Command) *slog.Logger {
+	return debug.New(runner.stderr, current.Bool("debug"))
 }
 
 // cacheRoot resolves the cache directory from the flag, then the config file,
@@ -91,15 +102,23 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	if err != nil {
 		return nil, nil, fault.Wrap("config_invalid", "A credential helper is invalid.", err)
 	}
+	trace := runner.trace(current)
+	if credentials != nil {
+		credentials.Logger = trace
+	}
 	client := httpclient.New(httpclient.Options{
 		Timeout:     settings.Timeout,
 		Retries:     settings.Retries,
 		Parallelism: settings.DownloadParts,
 		Rewriter:    rewriter,
 		Credentials: credentials,
+		Logger:      trace,
 	})
 	service.Fetcher = client
-	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress
+	// A trace and a progress bar share standard error, and mpb redraws in
+	// place. Two writers to one terminal produce a display that is neither, so
+	// asking what happened turns the bars off the way JSON mode does.
+	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug")
 	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled)
 	return service, client, nil
 }

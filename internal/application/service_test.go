@@ -441,7 +441,7 @@ func TestPullUsesCacheWithoutNetwork(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 2})
+	result, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,13 +457,13 @@ func TestPullReportsOfflineMissAndContentMismatch(t *testing.T) {
 	fetcher := staticFetcher([]byte("differnt"))
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
 
-	if _, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, Offline: true}); fault.As(err).Code != "offline_cache_miss" {
+	if _, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1, Offline: true}}); fault.As(err).Code != "offline_cache_miss" {
 		t.Fatalf("expected offline_cache_miss, got %v", err)
 	}
 	if fetcher.count() != 0 {
 		t.Fatal("offline pull made a request")
 	}
-	if _, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1}); fault.As(err).Code != "content_mismatch" {
+	if _, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1}}); fault.As(err).Code != "content_mismatch" {
 		t.Fatalf("expected content_mismatch, got %v", err)
 	}
 	if fetcher.requests[0].ETag != "" {
@@ -527,7 +527,7 @@ func TestPullRunsConcurrentlyAndSortsResults(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	result, err := service.Pull(ctx, application.NetworkOptions{Concurrency: 2})
+	result, err := service.Pull(ctx, application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -887,7 +887,7 @@ func TestImportInstallsFromADistributionDirectory(t *testing.T) {
 	}
 	// The objects are in the cache, so a pull that cannot reach the network
 	// finds everything it needs.
-	pulled, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, Offline: true})
+	pulled, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1, Offline: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1289,7 +1289,7 @@ func TestPullRepairsACorruptObject(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, content)
 	service := application.New(manifestPath, lockPath, store, staticFetcher(content), nil)
 
-	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1305,7 +1305,7 @@ func TestOfflinePullReportsACorruptObjectRatherThanAMiss(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	_, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1, Offline: true})
+	_, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1, Offline: true}})
 	if code := fault.As(err).Code; code != "cache_object_corrupt" {
 		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
 	}
@@ -1509,7 +1509,7 @@ func TestPullRefusesAStaleLock(t *testing.T) {
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	if _, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1}); fault.As(err).Code != "lock_stale" {
+	if _, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1}}); fault.As(err).Code != "lock_stale" {
 		t.Fatalf("expected lock_stale, got %v", err)
 	}
 }
@@ -2002,7 +2002,7 @@ func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
 	warm(t, store, content)
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Pull(context.Background(), application.NetworkOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), application.PullOptions{NetworkOptions: application.NetworkOptions{Concurrency: 1}})
 	if err != nil {
 		t.Fatalf("a lock with no file name was rejected: %v", err)
 	}

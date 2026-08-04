@@ -101,7 +101,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac remove <coordinate>` | Remove one asset version without network access. |
 | `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
 | `dac lock [--refresh] [--rebind] [--concurrency <n>] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
-| `dac pull [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets. |
+| `dac pull [<namespace>/<name>[@<version>]...] [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets, or the ones named. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac export <bundle>` | Write locked objects and metadata to a cache bundle. |
@@ -110,7 +110,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
-| `dac cache gc [--max-age <age>] [--dry-run]` | Remove cache objects that nothing has used recently. |
+| `dac cache gc [--max-age <age>] [--max-size <size>] [--dry-run]` | Remove cache objects that nothing has used recently, then evict until the cache fits. |
 | `dac cache clear [--dry-run]` | Remove every cache object. |
 | `dac cache remove <coordinate>... [--force]` | Remove the objects specific asset versions resolved to. |
 | `dac cache scrub [--all] [--repair]` | Hash cache objects and report the ones that no longer match. |
@@ -131,6 +131,22 @@ otherwise refuses with `asset_ambiguous` and the versions to choose from — DAC
 does not order versions, so there is no latest for it to fall back on. `info`
 lists every version, because answering what a project has is its job; it accepts
 nothing, one coordinate, or one `<namespace>/<name>`.
+
+`pull` takes any number of either, and no arguments means the whole project:
+
+```bash
+dac pull                              # everything the lock file names
+dac pull backend-app/geo-database     # every version of one asset
+dac pull tools/toolchain@1.4          # one version
+```
+
+A project holds every asset every job built from it needs, and a job needs the
+ones it needs. Naming them narrows what is fetched and nothing else: the whole
+project is still read, and the lock file still has to describe the manifest,
+because whether this is the project that was committed is not a question a
+command fetching half of it gets to skip. Naming an asset the project does not
+have fails with `asset_unknown` rather than fetching nothing and reporting
+success.
 
 A namespace and a name are lowercase letters, digits, and `.`, `_`, or `-`. A
 version also takes uppercase and `+`, because it is copied from whatever the
@@ -331,9 +347,13 @@ Global options:
 | `--cache-dir` | `DAC_CACHE_DIR` | `cache.dir`, then the XDG cache |
 | `--config` | `DAC_CONFIG` | The XDG config search path |
 | `--json`, `-j` | | `false` |
+| `--debug` | `DAC_DEBUG` | `false` |
 
 `--lock` follows `--manifest` unless it is given. A project is its two files
 together, so `dac --manifest sub/dac.json` reads `sub/dac-lock.json`.
+
+`--debug` writes a trace of what a command actually did. See
+[Seeing what happened](#seeing-what-happened).
 
 Per-command options are decisions about one run:
 
@@ -379,8 +399,9 @@ max-size       = "2GiB"    # or "none"
 progress       = true
 
 [cache]
-dir     = "/var/cache/dac"  # absolute; unset means the XDG cache
-max-age = "30d"             # the default dac cache gc collects by
+dir      = "/var/cache/dac"  # absolute; unset means the XDG cache
+max-age  = "30d"             # the default dac cache gc collects by
+max-size = "20GiB"           # or "none"; what dac cache gc leaves behind
 
 [credentials]
 default             = "/usr/local/bin/dac-cred"
@@ -460,6 +481,54 @@ could only report that the bytes were wrong, and the reason they were wrong is
 worth naming. A piece that fails is retried on its own, under the same
 `transfer.retries` and backoff as a whole request: its bytes have not reached the hash
 yet, so the retry costs one piece rather than the asset.
+
+## Seeing what happened
+
+DAC is pointed at a mirror by a rewrite rule, handed credentials by a program it
+starts, and told to retry and to split downloads across range requests. When any
+of that misbehaves, the only thing on screen is the failure at the end of it.
+
+`--debug`, or `DAC_DEBUG`, writes a trace of the decisions behind it to standard
+error:
+
+```bash
+dac --debug pull
+```
+
+```text
+level=DEBUG msg="rewrote request" from=https://vendor.example.com/db.bin to=https://mirror.internal/vendor/db.bin
+level=DEBUG msg="running credential helper" host=mirror.internal command=/usr/local/bin/dac-cred
+level=DEBUG msg="credential helper answered" host=mirror.internal command=/usr/local/bin/dac-cred headers="[Authorization]"
+level=DEBUG msg=fetching url=https://mirror.internal/vendor/db.bin conditional=false
+level=DEBUG msg="splitting download" url=https://mirror.internal/vendor/db.bin length=20971520 chunks=3 workers=2 precondition=If-Match
+level=DEBUG msg=range url=https://mirror.internal/vendor/db.bin start=8388608 end=16777215 status=206
+level=DEBUG msg=installed digest=sha256:6adfa077... size=20971520
+```
+
+It answers the questions nothing else does: which URL was requested after a
+rewrite, which helper answered for which host, how many retries happened and
+what each one saw, whether an object came from the cache or the origin, and what
+a collection evicted.
+
+A download that arrives over one connection when it should have split says why,
+and every reason is something the origin decided rather than a setting to go and
+correct:
+
+```text
+level=DEBUG msg="streaming one response" url=... reason="origin does not serve byte ranges" length=20971520
+level=DEBUG msg="streaming one response" url=... reason="origin sent no strong validator" length=20971520
+level=DEBUG msg="streaming one response" url=... reason="no parts to spare" length=20971520
+```
+
+Two things a trace never carries. It is not part of the [output
+contract](#output-contract) — it goes to standard error, it is written for a
+person, and its wording is free to change, so nothing should parse it. And it
+never carries what a credential helper returned: the helper's answer is the
+secret itself, and a trace reports which helper ran and which header names it
+set, never a value.
+
+Tracing turns progress bars off. Both write to standard error and the bars
+redraw in place, so the two together produce a display that is neither.
 
 ## Credentials
 
@@ -580,6 +649,12 @@ half a script needs to put a file somewhere a later tool will recognize. It is
 absent for an asset nothing names, and it was added without a version bump
 because an added optional field breaks no consumer.
 
+A `pull` result carries `projectCount` alongside `assetCount`, which is how
+many assets the project has rather than how many this pull took. The two differ
+only when the pull was narrowed, and the difference is what tells "there was one
+asset" from "one asset was asked for". It was added without a version bump for
+the same reason `filename` was.
+
 JSON errors use the same stream and framing:
 
 ```json
@@ -698,6 +773,7 @@ dac cache dir                        # where it is
 dac cache list                       # what this project has in it
 dac cache list --all                 # everything, with sizes and last use
 dac cache gc                         # collect by age
+dac cache gc --max-size 20GiB        # and evict until it fits
 dac cache clear                      # empty it
 dac cache remove app/geo@2026.08     # forget one asset's bytes
 dac cache scrub --all                # read every byte and check it
@@ -735,6 +811,44 @@ DAC process running alongside.
 
 Neither one removes a digest lock file. Unlinking a lock that another process
 holds would let a later process take the same lock through a new inode.
+
+### Keeping the cache to a size
+
+Age answers whether anything is still using an object. It does not answer
+whether there is room, and on a build machine that is the question: a set of
+projects that genuinely uses more than the disk has to spare has nothing old
+enough to collect and is still too full. The only lever used to be guessing an
+age short enough to hurt.
+
+`--max-size`, or `cache.max-size` in the config file, is the other half. A
+collection first removes what nothing has used within `--max-age`, and then, if
+the cache is still over the bound, evicts the least recently used objects until
+it fits:
+
+```bash
+dac cache gc --max-size 20GiB --dry-run    # what it would take
+dac cache gc --max-size 20GiB
+```
+
+It accepts the same sizes `transfer.max-size` does, and `none` — the default —
+means no bound, which is what collection by age alone amounts to.
+
+Eviction is reported apart from collection, in `evictedCount` and
+`evictedBytes` and in the summary line, because the two mean different things.
+Taking an object nothing has touched in a month is a cache doing its job.
+Taking one a project used yesterday is a cache too small for what this machine
+builds, and the next `dac pull` downloads it again. Both counts are included in
+the totals beside them.
+
+An object something reaches for while the collection is waiting for its digest
+lock is left alone: it has just become the most recently used thing in the
+cache rather than the least. That can end a run still over the bound, which the
+next collection settles.
+
+This is a bound on collection rather than a quota on the cache. Nothing stands
+between a download and the disk, so a single `dac pull` larger than the bound
+still lands, and `gc` brings the cache back under afterwards. Set the bound
+below the disk you have rather than at it.
 
 ### Cache bundles
 

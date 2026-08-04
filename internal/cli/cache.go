@@ -50,6 +50,15 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 				Usage:       "Keep objects used within this period.",
 				DefaultText: "cache.max-age, or " + config.DefaultMaxAge,
 			},
+			// The size bound is the other parameter of the same operation, and
+			// it is a flag for the same reason the age is: what a collection
+			// aims at belongs to the collection rather than to the machine,
+			// even though the machine supplies the usual answer.
+			&urfave.StringFlag{
+				Name:        "max-size",
+				Usage:       "Evict the least recently used objects until the cache is this size, or none.",
+				DefaultText: "cache.max-size, or " + config.DefaultCacheMaxSize,
+			},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what collection would remove."},
 		},
 		Action: runner.run("cache.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
@@ -60,11 +69,19 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
+			maxSize, err := runner.maximumCacheSize(current)
+			if err != nil {
+				return nil, "", err
+			}
 			service, err := runner.storeService(current)
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.CacheGC(ctx, application.GCOptions{MaxAge: maxAge, DryRun: current.Bool("dry-run")})
+			result, err := service.CacheGC(ctx, application.GCOptions{
+				MaxAge:  maxAge,
+				MaxSize: maxSize,
+				DryRun:  current.Bool("dry-run"),
+			})
 			if err != nil {
 				return nil, "", err
 			}
@@ -294,7 +311,37 @@ func gcText(result application.GCResult) string {
 		_, _ = fmt.Fprintf(&text, ", %s", plural(result.SidecarCount, "orphaned sidecar"))
 	}
 	text.WriteByte('.')
+	// Eviction is said separately because it means something else. Collecting
+	// what nothing has used is a cache working; taking what a project still
+	// wants is a cache too small for this machine, and the next command pays to
+	// download it again. The leading verb already set the tense, so neither of
+	// these has to say it twice.
+	switch result.EvictedCount {
+	case 0:
+	case result.ObjectCount:
+		text.WriteString(" All of them still in use, to stay within the size bound.")
+	default:
+		_, _ = fmt.Fprintf(&text, " %d of them (%s) still in use, to stay within the size bound.",
+			result.EvictedCount, bytesize.Format(result.EvictedBytes))
+	}
 	return text.String()
+}
+
+// maximumCacheSize reads the collection size bound, preferring the flag over
+// the config. Zero is no bound, which is what a cache collected only by age is.
+func (runner *runner) maximumCacheSize(current *urfave.Command) (int64, error) {
+	if current.IsSet("max-size") {
+		size, err := config.ParseSize(current.String("max-size"))
+		if err != nil {
+			return 0, fault.Wrap("invalid_arguments", "The maximum size is invalid.", err)
+		}
+		return size, nil
+	}
+	settings, err := runner.config(current)
+	if err != nil {
+		return 0, err
+	}
+	return settings.CacheMaxSize, nil
 }
 
 // maximumAge reads the collection age, preferring the flag over the config.
