@@ -105,7 +105,7 @@ downloading it, so a refresh warms the cache on its way past.
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
-| `dac unpack [<archive> [<directory>]] [--force]` | Write the assets a dacpack carries into a directory. |
+| `dac unpack [<archive> [<namespace>/<name>[@<version>]...]] [--dest <directory>] [--force]` | Write the assets a dacpack carries into a directory, or the ones named. |
 | `dac cache dir` | Print the resolved cache directory. |
 | `dac cache list [--all]` | List cached objects with their size, last use, and the assets they belong to. |
 | `dac cache import <dacpack\|directory>` | Install objects from a dacpack, or from a directory of digest-named files. |
@@ -927,9 +927,10 @@ gave them, so unpacking one — or just extracting it with `tar` — leaves a
 directory of real files with real extensions:
 
 ```bash
-dac pack                           # writes ./dac.dacpack
-dac unpack                         # writes ./assets/... from it
-dac unpack build.dacpack /opt/in   # or name both
+dac pack                                       # writes ./dac.dacpack
+dac unpack                                     # writes ./assets/... from it
+dac unpack build.dacpack --dest /opt/in        # or name the archive and where it goes
+dac unpack build.dacpack java/sdk@11           # or take one asset out of it
 ```
 
 `unpack` writes files and **never touches the cache**. That is the whole
@@ -939,12 +940,32 @@ that is not DAC at all, the other moves a cache to a machine that runs it. It
 reads no project files and needs no cache directory, so it runs anywhere the
 archive does.
 
-The archive defaults to `dac.dacpack` and the destination to the working
-directory, because a dacpack is a build output that a project makes one of. An
-import has no default, because the archive it reads arrived from somewhere else
-and is wherever whoever delivered it put it. Every one of them is an argument
-either way: whether a path has a default and whether it is a flag are separate
-questions, and a required flag is a flag in name only.
+Naming assets after the archive unpacks those and leaves the rest in it, in the
+two spellings `info` and `pull` already read — a coordinate for one version, a
+bare `namespace/name` for every version of an asset. A dacpack carries a whole
+project and a build step usually wants one file out of it, so the alternative
+was materializing twenty and deleting nineteen. An asset the archive does not
+carry fails rather than writing nothing and reporting success.
+
+Narrowing changes what is written and nothing else. The whole archive is still
+read and still checked — an entry the index never listed, a repeat, a size that
+disagrees, a file the index promised and the archive does not carry — because
+whether the delivery is sound is not a question a command taking one asset out
+of it gets to skip. What it does skip is hashing the contents of files nobody
+asked for; those are checked by whoever asks for them.
+
+The archive defaults to `dac.dacpack`, because a dacpack is a build output that
+a project makes one of. An import has no default, because the archive it reads
+arrived from somewhere else and is wherever whoever delivered it put it. Both
+are arguments either way: whether a path has a default and whether it is a flag
+are separate questions, and a required flag is a flag in name only.
+
+The destination is `--dest`, and defaults to the working directory. It is the
+one path here that is a flag, because it is where the result goes rather than
+part of what was asked for — and the arguments say which assets, the way they do
+everywhere else in DAC. It used to be the second argument, so `dac unpack
+<archive> <dir>` now says where the destination went rather than reporting that
+a directory is not a coordinate.
 
 The layout keys each file on the coordinate it belongs to, and the name comes
 from the lock file's `filename` — falling back to the name half of the
@@ -961,18 +982,20 @@ always share a file name, and two assets easily can. A layout keyed on the name
 alone would have the second file silently overwrite the first.
 
 Each file lands at the same path under the destination that it has inside the
-archive, so `dac unpack <archive> <dir>` and `tar -xf <archive> -C <dir>` put the
-files in the same places. `index.json` records what each one is — coordinate,
-source URL, path, file name, digest, and size — and both readers check every
-file against its digest as they go. A file name says nothing about the bytes
+archive, so `dac unpack <archive> --dest <dir>` and `tar -xf <archive> -C <dir>`
+put the files in the same places. `index.json` records what each one is —
+coordinate, source URL, path, file name, digest, and size — and both readers
+check every file against its digest as they go. A file name says nothing about the bytes
 under it, so that digest is the only claim there is to check.
 
 `unpack` refuses to replace anything unless `--force` is given, naming every
-file that is in the way and writing nothing. The destination defaults to the
-directory the command was run in, where a mistake costs work that was never
-DAC's to lose. A failed unpack leaves nothing behind either: an archive is not
-known to be sound until it has been read to the end, so anything already written
-is taken back rather than left looking like a complete tree.
+file that is in the way and writing nothing. It asks that about the files it
+will write, so an unpack narrowed to one asset is not refused over what is in
+another's way. The destination defaults to the directory the command was run in,
+where a mistake costs work that was never DAC's to lose. A failed unpack leaves
+nothing behind either: an archive is not known to be sound until it has been
+read to the end, so anything already written is taken back rather than left
+looking like a complete tree.
 
 Two coordinates that resolved to one object are one object in the cache and two
 files in a dacpack, because each is materialized under its own name and a file

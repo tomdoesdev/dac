@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/application"
@@ -244,6 +245,198 @@ func TestUnpackMaterializesWhatPackWrote(t *testing.T) {
 	if len(result.Files) != 1 || result.Files[0].Path != target ||
 		result.Files[0].Coordinate != "test/asset@1" || result.Files[0].Digest != digest.Bytes(content) {
 		t.Fatalf("unexpected file report: %#v", result.Files)
+	}
+}
+
+// packedArchive writes a two-version project and packs it, returning the
+// archive and the bytes each coordinate was materialized from.
+func packedArchive(t *testing.T) (string, map[string][]byte) {
+	t.Helper()
+	eleven, seventeen := []byte("jdk eleven bytes"), []byte("jdk seventeen bytes")
+	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
+		coord.MustParse("java/sdk@11"): {
+			URL: "https://example.com/jdk-11.tar.gz", Digest: digest.Bytes(eleven),
+			Size: int64(len(eleven)), Filename: "jdk-11.tar.gz",
+		},
+		coord.MustParse("java/sdk@17"): {
+			URL: "https://example.com/jdk-17.tar.gz", Digest: digest.Bytes(seventeen),
+			Size: int64(len(seventeen)), Filename: "jdk-17.tar.gz",
+		},
+	})
+	store := cache.New(t.TempDir())
+	warmStore(t, store, eleven)
+	warmStore(t, store, seventeen)
+	archive := filepath.Join(t.TempDir(), "project.dacpack")
+	if _, err := application.New(manifestPath, lockPath, store, nil, nil).Pack(context.Background(), archive); err != nil {
+		t.Fatal(err)
+	}
+	return archive, map[string][]byte{
+		"assets/java/sdk/11/jdk-11.tar.gz": eleven,
+		"assets/java/sdk/17/jdk-17.tar.gz": seventeen,
+	}
+}
+
+// TestUnpackWritesOnlyTheAssetsSelected covers narrowing. A dacpack carries a
+// whole project, and what reaches into one usually wants one asset out of it.
+func TestUnpackWritesOnlyTheAssetsSelected(t *testing.T) {
+	archive, contents := packedArchive(t)
+	directory := t.TempDir()
+
+	result, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.ExactSelection(coord.MustParse("java/sdk@11"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The counts are what tell a caller it got part of an archive rather than
+	// all of a smaller one.
+	if result.FileCount != 1 || result.ItemCount != 2 || result.ByteCount != int64(len(contents["assets/java/sdk/11/jdk-11.tar.gz"])) {
+		t.Fatalf("unexpected unpack result: %#v", result)
+	}
+	if len(result.Files) != 1 || result.Files[0].Coordinate != "java/sdk@11" {
+		t.Fatalf("unexpected file report: %#v", result.Files)
+	}
+	written, err := os.ReadFile(filepath.Join(directory, "assets/java/sdk/11/jdk-11.tar.gz"))
+	if err != nil || !bytes.Equal(written, contents["assets/java/sdk/11/jdk-11.tar.gz"]) {
+		t.Fatalf("the unpack wrote %q: %v", written, err)
+	}
+	// The other version stays in the archive, which is the whole point.
+	if _, err := os.Stat(filepath.Join(directory, "assets/java/sdk/17")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the unpack materialized an asset nobody named: %v", err)
+	}
+}
+
+// TestUnpackNarrowedByAssetTakesEveryVersion covers the shorter spelling, which
+// is the one info and pull already read.
+func TestUnpackNarrowedByAssetTakesEveryVersion(t *testing.T) {
+	archive, contents := packedArchive(t)
+	directory := t.TempDir()
+
+	result, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.GroupSelection(coord.MustParse("java/sdk@11").Group())},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 2 {
+		t.Fatalf("a group selection wrote %d files", result.FileCount)
+	}
+	for path, content := range contents {
+		if written, readErr := os.ReadFile(filepath.Join(directory, path)); readErr != nil || !bytes.Equal(written, content) {
+			t.Fatalf("%s holds %q: %v", path, written, readErr)
+		}
+	}
+}
+
+// TestUnpackRefusesAnAssetTheDacpackDoesNotCarry keeps a typo from being read
+// as "write nothing and report success". The refusal names the archive, because
+// unpack reads no project and reporting one would point at a file it never
+// opened.
+func TestUnpackRefusesAnAssetTheDacpackDoesNotCarry(t *testing.T) {
+	archive, _ := packedArchive(t)
+	directory := t.TempDir()
+
+	for _, selection := range []application.Selection{
+		application.ExactSelection(coord.MustParse("java/sdk@21")),
+		application.GroupSelection(coord.MustParse("python/sdk@3").Group()),
+	} {
+		_, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+			Pack: archive, Directory: directory, Assets: []application.Selection{selection},
+		})
+		value := fault.As(err)
+		if value.Code != "asset_unknown" || !strings.Contains(value.Message, "dacpack") {
+			t.Fatalf("unexpected refusal: %q %q (%v)", value.Code, value.Message, err)
+		}
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a refused unpack wrote %d entries", len(entries))
+	}
+}
+
+// TestUnpackNarrowedStillChecksTheWholeArchive is what narrowing does not buy.
+// Whether a dacpack is sound is not a question a command taking one asset out
+// of it gets to skip, so an entry the index never listed still refuses the
+// unpack -- even when the asset that was asked for read cleanly first.
+func TestUnpackNarrowedStillChecksTheWholeArchive(t *testing.T) {
+	content := []byte("the good file")
+	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
+	writePackArchive(t, archive, map[string]any{
+		"schemaVersion": 1,
+		"items": []any{map[string]any{
+			"coordinate": "app/geo@1",
+			"sourceUrl":  "https://example.com/geo.bin",
+			"file":       "assets/app/geo/1/geo.bin",
+			"filename":   "geo.bin",
+			"digest":     digest.Bytes(content),
+			"size":       len(content),
+		}},
+	}, [][2]any{
+		{"assets/app/geo/1/geo.bin", content},
+		{"assets/../../../tmp/pwned", content},
+	})
+
+	directory := t.TempDir()
+	_, err := application.New("", "", nil, nil, nil).Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.ExactSelection(coord.MustParse("app/geo@1"))},
+	})
+	if code := fault.As(err).Code; code != "dacpack_invalid" {
+		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a rejected dacpack left %d entries behind", len(entries))
+	}
+}
+
+// TestUnpackNarrowedIgnoresACollisionItWillNotCause covers what the destination
+// check is asked about. An unpack that writes one asset is in nobody's way over
+// the other two, and refusing it would make --force the answer to a file this
+// command was never going to touch.
+func TestUnpackNarrowedIgnoresACollisionItWillNotCause(t *testing.T) {
+	archive, _ := packedArchive(t)
+	directory := t.TempDir()
+	occupied := filepath.Join(directory, "assets/java/sdk/17/jdk-17.tar.gz")
+	if err := os.MkdirAll(filepath.Dir(occupied), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("something somebody was working on")
+	if err := os.WriteFile(occupied, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	service := application.New("", "", nil, nil, nil)
+	if _, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.ExactSelection(coord.MustParse("java/sdk@11"))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := os.ReadFile(occupied); err != nil || !bytes.Equal(kept, existing) {
+		t.Fatalf("the unpack changed a file it was not asked to write: %q %v", kept, err)
+	}
+	// The same file is in the way of the version it belongs to, and that unpack
+	// is still refused.
+	_, err := service.Unpack(context.Background(), application.UnpackOptions{
+		Pack:      archive,
+		Directory: directory,
+		Assets:    []application.Selection{application.ExactSelection(coord.MustParse("java/sdk@17"))},
+	})
+	if code := fault.As(err).Code; code != "unpack_destination_occupied" {
+		t.Fatalf("expected unpack_destination_occupied, got %q (%v)", code, err)
 	}
 }
 

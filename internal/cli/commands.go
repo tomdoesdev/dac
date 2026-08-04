@@ -131,32 +131,57 @@ func (runner *runner) packCommand() *urfave.Command {
 // runs anywhere the archive does. The destination defaults to the working
 // directory, which is why --force exists: replacing files somebody is standing
 // in the middle of is not something to do because an archive said so.
+//
+// Naming assets after the archive unpacks those and leaves the rest in it, for
+// the job that wants one file out of a project's worth of them. That is the
+// argument slot the destination used to occupy: a destination is where the
+// result goes rather than part of what was asked for, so it is --dest, and the
+// arguments say which assets, the way they do everywhere else in DAC.
 func (runner *runner) unpackCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "unpack",
-		Usage:     "Write the assets a dacpack carries into a directory.",
-		ArgsUsage: "[<archive> [<directory>]]",
+		Usage:     "Write the assets a dacpack carries into a directory, or the ones named.",
+		ArgsUsage: "[<archive> [<namespace>/<name>[@<version>]...]]",
 		Flags: []urfave.Flag{
+			&urfave.StringFlag{Name: "dest", Value: ".", Usage: "Write the files into this directory."},
 			&urfave.BoolFlag{Name: "force", Usage: "Replace files that are already in the destination."},
 		},
 		Action: runner.run("unpack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			paths, err := optionalPaths(current, 2,
-				"Specify at most an archive path and a destination directory, as [<archive> [<directory>]].")
+			pack, assets, err := unpackArguments(current)
+			if err != nil {
+				return nil, "", err
+			}
+			directory, err := destination(current)
 			if err != nil {
 				return nil, "", err
 			}
 			result, err := runner.projectService(current).Unpack(ctx, application.UnpackOptions{
-				Pack:      pathOr(paths, 0, application.DefaultPackFile),
-				Directory: pathOr(paths, 1, "."),
+				Pack:      pack,
+				Directory: directory,
+				Assets:    assets,
 				Force:     current.Bool("force"),
 			})
 			if err != nil {
 				return nil, "", err
 			}
-			return result, fmt.Sprintf("Unpacked %s (%s) into %s.",
-				plural(result.FileCount, "file"), bytesize.Format(result.ByteCount), result.Directory), nil
+			return result, unpackText(result), nil
 		}),
 	}
+}
+
+// unpackText summarizes one unpack.
+//
+// A narrowed unpack says what it left in the archive, for the reason a narrowed
+// pull says what it left in the project: "Unpacked 1 file" is true of a dacpack
+// carrying one asset and of a job that wanted one of twenty, and telling those
+// apart is the point of naming assets at all.
+func unpackText(result application.UnpackResult) string {
+	size := bytesize.Format(result.ByteCount)
+	if result.FileCount < result.ItemCount {
+		return fmt.Sprintf("Unpacked %s of %d (%s) into %s.",
+			plural(result.FileCount, "file"), result.ItemCount, size, result.Directory)
+	}
+	return fmt.Sprintf("Unpacked %s (%s) into %s.", plural(result.FileCount, "file"), size, result.Directory)
 }
 
 // plural writes a count with its noun, because "1 objects" reads as a bug in

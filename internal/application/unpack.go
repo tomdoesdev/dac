@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 )
@@ -27,6 +28,15 @@ type UnpackOptions struct {
 	// identity and the paths the index was already checked against are the paths
 	// that reach the filesystem.
 	Directory string
+	// Assets narrows the unpack to the coordinates these selections name. An
+	// empty list is every asset the archive carries.
+	//
+	// A dacpack holds a whole project, and what wants an asset out of it usually
+	// wants one asset: a build step that needs the SDK, an operator checking
+	// what a delivery actually contains. Without this the choice was to
+	// materialize twenty files and delete nineteen, in a directory the command
+	// defaults to the one it was run in.
+	Assets []Selection
 	// Force replaces files that are already there. Without it an unpack that
 	// would overwrite anything writes nothing at all: the default directory is
 	// wherever the command was run, and a mistake there costs work that was not
@@ -44,6 +54,11 @@ type UnpackedFile struct {
 }
 
 // UnpackResult reports the files materialized from one dacpack.
+//
+// ItemCount is what the archive holds and FileCount is what was written, so the
+// two differ only when the unpack was narrowed. That is what lets a consumer
+// tell "the archive had one asset" from "one asset was asked for", the way
+// pull's projectCount does beside its assetCount.
 type UnpackResult struct {
 	Pack      string         `json:"pack"`
 	Directory string         `json:"directory"`
@@ -65,6 +80,15 @@ type UnpackResult struct {
 //
 // It reads no project files and needs no cache directory, so it runs anywhere
 // the archive does.
+//
+// Naming assets narrows what is written and nothing else. The whole archive is
+// still read and still checked -- an entry the index never listed, a repeat, a
+// size that disagrees, a file the index promised and the archive does not carry
+// -- because whether this dacpack is sound is not a question a command taking
+// one asset out of it gets to skip. What a narrowed unpack does not do is hash
+// the contents of a file it was not asked for: those bytes are checked by
+// whoever asks for them, and reading them here would cost the narrowing its
+// point.
 //
 // Every path in the archive came from a name a remote server chose, so none of
 // them are trusted. Each is recomputed from the coordinate it belongs to before
@@ -92,10 +116,18 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 	if err != nil {
 		return UnpackResult{}, invalidPack(err)
 	}
+	// A selection is resolved against the index rather than against what turns
+	// up, so an asset this archive does not carry is refused before a byte of it
+	// is written -- for the reason a narrowed pull refuses one: a typo should
+	// unpack nothing rather than most of what was asked for.
+	wanted, err := wantedPackFiles(targets, options.Assets)
+	if err != nil {
+		return UnpackResult{}, err
+	}
 	// The index is the first entry, so every destination is known before a
 	// single file has been read. Refusing here rather than on the way past is
 	// what keeps a collision from leaving half a tree behind.
-	if err := checkPackDestinations(directory, targets, options.Force); err != nil {
+	if err := checkPackDestinations(directory, wanted, options.Force); err != nil {
 		return UnpackResult{}, err
 	}
 
@@ -140,6 +172,13 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		if header.Size != target.object.Size {
 			return failed(invalidPack(fmt.Errorf("dacpack file %q has size %d, not %d", target.path, header.Size, target.object.Size)))
 		}
+		seen[target.path] = struct{}{}
+		// An entry this unpack was not narrowed to has now been accounted for,
+		// which is all a narrowed unpack owes it. Next skips the rest of it
+		// without reading the bytes.
+		if _, chosen := wanted[target.path]; !chosen {
+			continue
+		}
 		destination, err := packDestination(directory, target.path)
 		if err != nil {
 			return failed(invalidPack(err))
@@ -156,13 +195,12 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 			}
 		}
 		result.Files = append(result.Files, UnpackedFile{
-			Coordinate: target.item.Coordinate,
+			Coordinate: target.coordinate.String(),
 			Path:       destination,
 			Filename:   target.item.Filename,
 			Digest:     target.object.Digest,
 			Size:       target.object.Size,
 		})
-		seen[target.path] = struct{}{}
 		result.FileCount++
 		result.ByteCount += target.object.Size
 	}
@@ -174,6 +212,35 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 		}
 	}
 	return result, nil
+}
+
+// wantedPackFiles returns the files one unpack should write, keyed by the
+// derived path its targets already are.
+//
+// No selection at all is every file the index lists, which is what an unpack
+// was before it could be narrowed. Anything else is resolved against the
+// coordinates the index carries rather than against the file names, because a
+// coordinate is what the caller names an asset by and what the index is unique
+// on -- two items claiming one coordinate had the archive rejected already, so
+// one coordinate here means one file.
+func wantedPackFiles(targets map[string]packTarget, selections []Selection) (map[string]packTarget, error) {
+	if len(selections) == 0 {
+		return targets, nil
+	}
+	byCoordinate := make(map[coord.Coordinate]packTarget, len(targets))
+	for _, target := range targets {
+		byCoordinate[target.coordinate] = target
+	}
+	names, err := chosen(subjectPack, byCoordinate, selections)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]packTarget, len(names))
+	for _, name := range names {
+		target := byCoordinate[name]
+		wanted[target.path] = target
+	}
+	return wanted, nil
 }
 
 // packDestination joins one derived archive path onto the destination
@@ -287,12 +354,16 @@ func (writer *materializer) rollback() {
 // It names every collision rather than the first, because the answer to one is
 // usually to unpack somewhere else, and finding that out a file at a time is
 // worse than being told.
-func checkPackDestinations(directory string, targets map[string]packTarget, force bool) error {
+//
+// It is given the files this unpack will write rather than every file the
+// archive holds, so an unpack narrowed to one asset is refused by what is in
+// that asset's way and not by what is in another's.
+func checkPackDestinations(directory string, wanted map[string]packTarget, force bool) error {
 	if force {
 		return nil
 	}
-	occupied := make([]string, 0, len(targets))
-	for _, target := range targets {
+	occupied := make([]string, 0, len(wanted))
+	for _, target := range wanted {
 		destination, err := packDestination(directory, target.path)
 		if err != nil {
 			return invalidPack(err)

@@ -55,6 +55,18 @@ const (
 	selectGroup
 )
 
+// The two things a selection is resolved against, as the noun a refusal names.
+//
+// A selection is a filter over coordinates, and coordinates key more than a
+// manifest: unpack applies the same argument to the index of a dacpack, which
+// is a file that arrived from somewhere else and that no project has to be
+// behind at all. Naming the wrong one would point somebody at a manifest the
+// command never opened.
+const (
+	subjectProject = "project"
+	subjectPack    = "dacpack"
+)
+
 // EverySelection selects the whole project.
 func EverySelection() Selection { return Selection{kind: selectEvery} }
 
@@ -113,7 +125,7 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	if err != nil {
 		return InfoResult{}, err
 	}
-	names, err := selected(manifest, options.Selection)
+	names, err := selected(subjectProject, manifest.Assets, options.Selection)
 	if err != nil {
 		return InfoResult{}, err
 	}
@@ -145,26 +157,61 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 }
 
 // selected returns the coordinates one filter covers, in a stable order.
-func selected(manifest project.Manifest, selection Selection) ([]coord.Coordinate, error) {
+//
+// It takes any coordinate-keyed set rather than a manifest, because the two
+// commands that narrow themselves narrow against different things: a pull reads
+// the project, and an unpack reads the index of an archive. Both are maps keyed
+// by the same coordinate, and the filter is the same filter.
+func selected[V any](subject string, assets map[coord.Coordinate]V, selection Selection) ([]coord.Coordinate, error) {
 	switch selection.kind {
 	case selectExact:
-		if _, exists := manifest.Assets[selection.coordinate]; !exists {
-			return nil, unknownCoordinate(selection.coordinate, manifest.Assets)
+		if _, exists := assets[selection.coordinate]; !exists {
+			return nil, unknownCoordinate(subject, selection.coordinate, assets)
 		}
 		return []coord.Coordinate{selection.coordinate}, nil
 	case selectGroup:
-		names := coord.InGroup(manifest.Assets, selection.group)
+		names := coord.InGroup(assets, selection.group)
 		if len(names) == 0 {
 			return nil, &fault.Error{
 				Code:    "asset_unknown",
-				Message: "The project does not have this asset.",
+				Message: "The " + subject + " does not have this asset.",
 				Details: map[string]any{"asset": selection.group.String()},
 			}
 		}
 		return names, nil
 	default:
-		return manifest.Coordinates(), nil
+		return coord.Sorted(assets), nil
 	}
+}
+
+// chosen returns the coordinates a list of selections covers, in the order the
+// set being filtered has and without repeats. An empty list covers all of it.
+//
+// The order is the manifest's or the index's rather than the command line's, so
+// that a result reads the same whether or not it was narrowed, and two
+// selections that overlap -- an asset named once whole and once by its group --
+// name it once.
+func chosen[V any](subject string, assets map[coord.Coordinate]V, selections []Selection) ([]coord.Coordinate, error) {
+	if len(selections) == 0 {
+		return coord.Sorted(assets), nil
+	}
+	wanted := make(map[coord.Coordinate]struct{}, len(selections))
+	for _, selection := range selections {
+		names, err := selected(subject, assets, selection)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			wanted[name] = struct{}{}
+		}
+	}
+	names := make([]coord.Coordinate, 0, len(wanted))
+	for _, name := range coord.Sorted(assets) {
+		if _, found := wanted[name]; found {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // onlyAsset resolves a selection to the single asset it names.
@@ -183,7 +230,7 @@ func onlyAsset[V any](selection Selection, assets map[coord.Coordinate]V) (coord
 	switch selection.kind {
 	case selectExact:
 		if _, exists := assets[selection.coordinate]; !exists {
-			return coord.Coordinate{}, unknownCoordinate(selection.coordinate, assets)
+			return coord.Coordinate{}, unknownCoordinate(subjectProject, selection.coordinate, assets)
 		}
 		return selection.coordinate, nil
 	case selectGroup:
