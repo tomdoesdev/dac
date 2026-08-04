@@ -139,6 +139,71 @@ func (runner *runner) importCommand() *urfave.Command {
 	}
 }
 
+// packCommand builds the materialized archive command.
+//
+// The file has a default rather than being required, which is the one way its
+// flags differ from export's. A cache bundle is moved somewhere and the
+// destination is the point of writing it; a dacpack is a build output that a
+// project makes one of, and a required flag would have every script that
+// touches one invent a spelling for the same file.
+func (runner *runner) packCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "pack",
+		Usage: "Write locked assets to a dacpack under the names their origins give them.",
+		Flags: []urfave.Flag{
+			&urfave.StringFlag{
+				Name:  "file",
+				Value: application.DefaultPackFile,
+				Usage: "Write the tar archive to this file.",
+			},
+		},
+		Action: runner.run("pack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			if err := noArguments(current); err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.Pack(ctx, current.String("file"))
+			if err != nil {
+				return nil, "", err
+			}
+			return result, fmt.Sprintf("Packed %s (%s) into %s.",
+				plural(result.AssetCount, "asset"), bytesize.Format(result.ByteCount), result.Pack), nil
+		}),
+	}
+}
+
+func (runner *runner) unpackCommand() *urfave.Command {
+	return &urfave.Command{
+		Name:  "unpack",
+		Usage: "Install the assets a dacpack carries into the local cache.",
+		Flags: []urfave.Flag{
+			&urfave.StringFlag{
+				Name:  "file",
+				Value: application.DefaultPackFile,
+				Usage: "Read the tar archive from this file.",
+			},
+		},
+		Action: runner.run("unpack", func(ctx context.Context, current *urfave.Command) (any, string, error) {
+			if err := noArguments(current); err != nil {
+				return nil, "", err
+			}
+			service, err := runner.storeService(current)
+			if err != nil {
+				return nil, "", err
+			}
+			result, err := service.Unpack(ctx, current.String("file"))
+			if err != nil {
+				return nil, "", err
+			}
+			return result, fmt.Sprintf("Unpacked %s (%s).",
+				plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
+		}),
+	}
+}
+
 // plural writes a count with its noun, because "1 objects" reads as a bug in
 // the tool rather than as a summary of it.
 func plural(count int, noun string) string {

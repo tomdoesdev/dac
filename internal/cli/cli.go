@@ -80,6 +80,8 @@ func (runner *runner) app() *urfave.Command {
 		runner.verifyCommand(),
 		runner.exportCommand(),
 		runner.importCommand(),
+		runner.packCommand(),
+		runner.unpackCommand(),
 		runner.cacheCommand(),
 	}
 	_ = app.Walk(func(current *urfave.Command) error {
