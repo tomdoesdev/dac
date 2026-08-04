@@ -368,10 +368,14 @@ Global options:
 | `--cache-dir` | `DAC_CACHE_DIR` | `cache.dir`, then the XDG cache |
 | `--config` | `DAC_CONFIG` | The XDG config search path |
 | `--json`, `-j` | | `false` |
+| `--color`, `--colour` | `DAC_COLOR` | `auto` |
 | `--debug` | `DAC_DEBUG` | `false` |
 
 `--lock` follows `--manifest` unless it is given. A project is its two files
 together, so `dac --manifest sub/dac.json` reads `sub/dac-lock.json`.
+
+`--color` takes `auto`, `always`, or `never`. See
+[Colour](#colour).
 
 `--debug` writes a trace of what a command actually did. See
 [Seeing what happened](#seeing-what-happened).
@@ -727,6 +731,41 @@ spinner and a byte count. A non-terminal stream gets one start line and one
 completion line for each asset. Use `--no-progress`, or `transfer.progress` in
 the config file, to disable both forms.
 The `lock` and `pull` commands disable both forms in JSON mode.
+
+## Colour
+
+Human-readable output is coloured when a terminal is going to render it, using
+[`termenv`](https://github.com/muesli/termenv) to work out whether one is. Six
+looks carry the whole scheme: coordinates, the count a summary was run for, the
+digests and timestamps that recede, and the three states a result can report.
+
+| Look | Where |
+|---|---|
+| Cyan | Coordinates, and the bar and asset name during a transfer |
+| Bold | The coordinate above an `info` block, the count in a summary |
+| Faint | Digests, timestamps, sizes in a listing, the keys in an `info` block |
+| Green | A state that needs nothing: `cached`, `current`, `allowed` |
+| Yellow | A state to act on: `missing`, `stale`, a warning, a suggested command |
+| Red | `Error:`, a corrupt object, a blocked host |
+
+Colour never carries information on its own. The same result with the escape
+sequences taken out reads word for word the same, because most of what DAC
+writes to is not a terminal.
+
+`--color=auto`, the default, colours a terminal and leaves a pipe, a file, and a
+CI log alone. `--color=always` colours regardless, for output that reaches a
+terminal through something that is not one, such as a pager. `--color=never`
+colours nothing. `DAC_COLOR` sets the same thing for a shell. `--colour` is
+accepted for all three.
+
+The usual environment conventions are honoured under `auto`: `NO_COLOR` turns it
+off, `CLICOLOR=0` turns it off, `CLICOLOR_FORCE` turns it on for a stream that is
+not a terminal, and a `TERM` naming a terminal that cannot colour is believed.
+`--color` overrides all of them.
+
+Standard output and standard error are decided separately, so
+`dac pull > log` leaves the progress bars and errors on the terminal coloured
+and the file plain. JSON mode colours nothing at all.
 
 ## Cache behavior
 

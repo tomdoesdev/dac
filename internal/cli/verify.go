@@ -26,7 +26,9 @@ func (runner *runner) verifyCommand() *urfave.Command {
 			// either, so only a refresh builds a service that has them.
 			if !current.Bool("refresh") {
 				result, err := runner.projectService(current).Verify(ctx, application.NetworkOptions{})
-				return result, "Project files are valid.", err
+				// The whole sentence is the finding here, rather than a fact
+				// with a state buried in it, so the whole sentence carries it.
+				return result, runner.stdoutPalette.Good("Project files are valid."), err
 			}
 			service, client, err := runner.networkService(ctx, current, false)
 			if err != nil {
@@ -46,7 +48,8 @@ func (runner *runner) verifyCommand() *urfave.Command {
 				MaxSize:     maxSize,
 				Refresh:     true,
 			})
-			return result, fmt.Sprintf("The origins still serve the locked bytes for %s.", plural(result.AssetCount, "asset")), err
+			return result, fmt.Sprintf("The origins still serve the locked bytes for %s.",
+				runner.stdoutPalette.Strong(plural(result.AssetCount, "asset"))), err
 		}),
 	}
 }

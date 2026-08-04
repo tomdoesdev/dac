@@ -7,6 +7,7 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 func (runner *runner) pullCommand() *urfave.Command {
@@ -52,7 +53,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 				},
 				Assets: assets,
 			})
-			return result, pullText(result), err
+			return result, pullText(runner.stdoutPalette, result), err
 		}),
 	}
 }
@@ -62,9 +63,10 @@ func (runner *runner) pullCommand() *urfave.Command {
 // A narrowed pull says what it left alone. "Pulled 1 asset" is true of a
 // project with one asset and of a job that asked for one of twenty, and the
 // difference is the whole reason to name assets in the first place.
-func pullText(result application.PullResult) string {
+func pullText(palette style.Palette, result application.PullResult) string {
 	if result.AssetCount < result.ProjectCount {
-		return fmt.Sprintf("Pulled %s of %d.", plural(result.AssetCount, "asset"), result.ProjectCount)
+		return fmt.Sprintf("Pulled %s of %d.",
+			palette.Strong(plural(result.AssetCount, "asset")), result.ProjectCount)
 	}
-	return fmt.Sprintf("Pulled %s.", plural(result.AssetCount, "asset"))
+	return fmt.Sprintf("Pulled %s.", palette.Strong(plural(result.AssetCount, "asset")))
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 func (runner *runner) cacheCommand() *urfave.Command {
@@ -87,7 +88,7 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, gcText(result), nil
+			return result, gcText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
@@ -126,14 +127,19 @@ func (runner *runner) cacheScrubCommand() *urfave.Command {
 			// A cache that fails its own check is a command failure. An operator
 			// who scripted this expects a nonzero status to mean "act", and
 			// finding the damage is not the same as it not being there.
+			//
+			// The message goes into a fault, which is a value the JSON contract
+			// carries and every wrapper appends a cause to, so it is built with
+			// no palette at all. Colour belongs to what a stream is written to,
+			// and this is not written yet.
 			if result.CorruptCount > 0 && !current.Bool("repair") {
 				return nil, "", &fault.Error{
 					Code:    "cache_object_corrupt",
-					Message: scrubText(result) + " Run dac cache scrub --repair, then dac pull.",
+					Message: scrubText(style.Palette{}, result) + " Run dac cache scrub --repair, then dac pull.",
 					Details: map[string]any{"corrupt": result.Corrupt},
 				}
 			}
-			return result, scrubText(result), nil
+			return result, scrubText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
@@ -174,7 +180,7 @@ func (runner *runner) cacheListCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, listText(result), nil
+			return result, listText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
@@ -217,7 +223,8 @@ func (runner *runner) cacheImportCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, fmt.Sprintf("Imported %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount)), nil
+			return result, fmt.Sprintf("Imported %s (%s).",
+				runner.stdoutPalette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount)), nil
 		}),
 	}
 }
@@ -244,7 +251,7 @@ func (runner *runner) cacheClearCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, gcText(result), nil
+			return result, gcText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
@@ -279,30 +286,41 @@ func (runner *runner) cacheRemoveCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return result, removeObjectsText(result), nil
+			return result, removeObjectsText(runner.stdoutPalette, result), nil
 		}),
 	}
 }
 
 // listText summarizes one cache listing.
-func listText(result application.CacheListResult) string {
+//
+// A listing is a table of things nobody reads across: what a person wants from
+// a row is which asset it is, and the digest, size, and last use in front of
+// that are how the cache identifies it rather than how they do. So the columns
+// recede and the coordinates at the end of each row do not.
+func listText(palette style.Palette, result application.CacheListResult) string {
 	if result.ObjectCount == 0 {
 		if result.MissingCount > 0 {
-			return fmt.Sprintf("No objects. %s not cached. Run dac pull.", plural(result.MissingCount, "asset"))
+			return fmt.Sprintf("No objects. %s. %s",
+				palette.Warn(plural(result.MissingCount, "asset")+" not cached"),
+				palette.Warn("Run dac pull."))
 		}
 		return "No objects."
 	}
 	var text strings.Builder
 	for _, object := range result.Objects {
-		_, _ = fmt.Fprintf(&text, "%s  %10s  %s", object.Digest, bytesize.Format(object.Size), object.LastUsed.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(&text, "%s  %s  %s",
+			palette.Detail(object.Digest),
+			palette.Detail(fmt.Sprintf("%10s", bytesize.Format(object.Size))),
+			palette.Detail(object.LastUsed.Format(time.RFC3339)))
 		if len(object.Coordinates) > 0 {
-			_, _ = fmt.Fprintf(&text, "  %s", strings.Join(object.Coordinates, ", "))
+			_, _ = fmt.Fprintf(&text, "  %s", palette.Name(strings.Join(object.Coordinates, ", ")))
 		}
 		text.WriteByte('\n')
 	}
-	_, _ = fmt.Fprintf(&text, "%s (%s)", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount))
+	_, _ = fmt.Fprintf(&text, "%s (%s)",
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
 	if result.MissingCount > 0 {
-		_, _ = fmt.Fprintf(&text, ". %s not cached.", plural(result.MissingCount, "asset"))
+		_, _ = fmt.Fprintf(&text, ". %s.", palette.Warn(plural(result.MissingCount, "asset")+" not cached"))
 	} else {
 		text.WriteByte('.')
 	}
@@ -310,45 +328,52 @@ func listText(result application.CacheListResult) string {
 }
 
 // removeObjectsText summarizes one targeted removal.
-func removeObjectsText(result application.CacheRemoveResult) string {
+func removeObjectsText(palette style.Palette, result application.CacheRemoveResult) string {
 	var text strings.Builder
-	_, _ = fmt.Fprintf(&text, "Removed %s (%s).", plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount))
+	_, _ = fmt.Fprintf(&text, "Removed %s (%s).",
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
 	if len(result.Shared) > 0 {
-		_, _ = fmt.Fprintf(&text, " %s also lost cached bytes.", strings.Join(result.Shared, ", "))
+		_, _ = fmt.Fprintf(&text, " %s also lost cached bytes.", palette.Name(strings.Join(result.Shared, ", ")))
 	}
 	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(&text, " %s was not cached.", plural(len(result.Missing), "object"))
+		_, _ = fmt.Fprintf(&text, " %s.", palette.Warn(plural(len(result.Missing), "object")+" was not cached"))
 	}
 	return text.String()
 }
 
 // scrubText summarizes one explicit cache check.
-func scrubText(result application.VerifyCacheResult) string {
+//
+// The counts that mean damage are the reason anybody ran this, and a scrub that
+// found some is also a command failure -- so they are coloured as what they are
+// rather than as more of the sentence they sit in.
+func scrubText(palette style.Palette, result application.VerifyCacheResult) string {
 	var text strings.Builder
-	_, _ = fmt.Fprintf(&text, "Checked %s (%s).", plural(result.Checked, "object"), bytesize.Format(result.ByteCount))
+	_, _ = fmt.Fprintf(&text, "Checked %s (%s).",
+		palette.Strong(plural(result.Checked, "object")), bytesize.Format(result.ByteCount))
 	if result.MissingCount > 0 {
-		_, _ = fmt.Fprintf(&text, " %s missing.", plural(result.MissingCount, "object"))
+		_, _ = fmt.Fprintf(&text, " %s.", palette.Warn(plural(result.MissingCount, "object")+" missing"))
 	}
 	if result.CorruptCount > 0 {
-		_, _ = fmt.Fprintf(&text, " %s corrupt.", plural(result.CorruptCount, "object"))
+		_, _ = fmt.Fprintf(&text, " %s.", palette.Bad(plural(result.CorruptCount, "object")+" corrupt"))
 	}
 	if result.Repaired > 0 {
 		_, _ = fmt.Fprintf(&text, " Removed %s.", plural(result.Repaired, "corrupt object"))
 	}
 	if result.CorruptCount == 0 && result.MissingCount == 0 {
-		text.WriteString(" No damage found.")
+		text.WriteString(" " + palette.Good("No damage found."))
 	}
 	return text.String()
 }
 
 // gcText summarizes one cache collection.
-func gcText(result application.GCResult) string {
+func gcText(palette style.Palette, result application.GCResult) string {
 	verb := "Removed"
 	if result.DryRun {
 		verb = "Would remove"
 	}
 	var text strings.Builder
-	_, _ = fmt.Fprintf(&text, "%s %s (%s)", verb, plural(result.ObjectCount, "object"), bytesize.Format(result.ByteCount))
+	_, _ = fmt.Fprintf(&text, "%s %s (%s)", verb,
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
 	if result.TempCount > 0 {
 		_, _ = fmt.Fprintf(&text, ", %s", plural(result.TempCount, "temporary file"))
 	}
@@ -364,10 +389,11 @@ func gcText(result application.GCResult) string {
 	switch result.EvictedCount {
 	case 0:
 	case result.ObjectCount:
-		text.WriteString(" All of them still in use, to stay within the size bound.")
+		text.WriteString(" " + palette.Warn("All of them still in use, to stay within the size bound."))
 	default:
-		_, _ = fmt.Fprintf(&text, " %d of them (%s) still in use, to stay within the size bound.",
-			result.EvictedCount, bytesize.Format(result.EvictedBytes))
+		_, _ = fmt.Fprintf(&text, " %s", palette.Warn(fmt.Sprintf(
+			"%d of them (%s) still in use, to stay within the size bound.",
+			result.EvictedCount, bytesize.Format(result.EvictedBytes))))
 	}
 	return text.String()
 }

@@ -119,7 +119,7 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	// place. Two writers to one terminal produce a display that is neither, so
 	// asking what happened turns the bars off the way JSON mode does.
 	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug")
-	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled)
+	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled, runner.stderrPalette)
 	return service, client, nil
 }
 

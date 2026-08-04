@@ -10,16 +10,20 @@ import (
 	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
+// The state words an info result reports. They are exported because they are
+// part of the output contract and two packages now depend on the same spelling:
+// this one writes them into the JSON, and the command line decides from them
+// which states a terminal should draw attention to.
 const (
-	lockCurrent      = "current"
-	lockMissing      = "missing"
-	lockStale        = "stale"
-	cacheCached      = "cached"
-	cacheMissing     = "missing"
-	cacheCorrupt     = "corrupt"
-	cacheUnavailable = "unavailable"
-	requestAllowed   = "allowed"
-	requestBlocked   = "blocked"
+	LockCurrent      = "current"
+	LockMissing      = "missing"
+	LockStale        = "stale"
+	CacheCached      = "cached"
+	CacheMissing     = "missing"
+	CacheCorrupt     = "corrupt"
+	CacheUnavailable = "unavailable"
+	RequestAllowed   = "allowed"
+	RequestBlocked   = "blocked"
 )
 
 // InfoOptions selects the assets and rewrite config for one inspection.
@@ -143,12 +147,12 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 			return InfoResult{}, err
 		}
 		switch asset.CacheStatus {
-		case cacheCached:
+		case CacheCached:
 			result.Summary.CachedCount++
-		case cacheCorrupt:
+		case CacheCorrupt:
 			result.Summary.CorruptCount++
 		}
-		if asset.RequestStatus == requestBlocked {
+		if asset.RequestStatus == RequestBlocked {
 			result.Summary.BlockedCount++
 		}
 		result.Assets = append(result.Assets, asset)
@@ -266,12 +270,12 @@ func (service *Service) infoLock(manifest project.Manifest) (project.Lock, strin
 		return project.Lock{}, "", fault.Wrap("lock_invalid", "The lock file is invalid.", err)
 	}
 	if !found {
-		return project.Lock{}, lockMissing, nil
+		return project.Lock{}, LockMissing, nil
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
-		return project.Lock{}, lockStale, nil
+		return project.Lock{}, LockStale, nil
 	}
-	return lock, lockCurrent, nil
+	return lock, LockCurrent, nil
 }
 
 // infoAsset combines one manifest asset with its request and cache states.
@@ -280,9 +284,9 @@ func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, l
 	if err != nil {
 		return InfoAsset{}, withAsset(fault.Wrap("rewrite_failed", "DAC could not apply the rewrite config.", err), name.String())
 	}
-	requestStatus := requestAllowed
+	requestStatus := RequestAllowed
 	if decision.Blocked {
-		requestStatus = requestBlocked
+		requestStatus = RequestBlocked
 	}
 	result := InfoAsset{
 		Coordinate:    name.String(),
@@ -293,10 +297,10 @@ func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, l
 		RequestURL:    decision.URL,
 		RequestStatus: requestStatus,
 		Rewritten:     decision.Rewritten,
-		CacheStatus:   cacheUnavailable,
+		CacheStatus:   CacheUnavailable,
 		Integrity:     source.Integrity,
 	}
-	if lockStatus != lockCurrent {
+	if lockStatus != LockCurrent {
 		return result, nil
 	}
 	view, err := service.assetView(name, source, lock.Assets[name], "")
@@ -308,12 +312,12 @@ func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, l
 	result.Size = &view.Size
 	switch {
 	case view.Corrupt:
-		result.CacheStatus = cacheCorrupt
+		result.CacheStatus = CacheCorrupt
 	case view.Cached:
-		result.CacheStatus = cacheCached
+		result.CacheStatus = CacheCached
 		result.Path = view.Path
 	default:
-		result.CacheStatus = cacheMissing
+		result.CacheStatus = CacheMissing
 	}
 	return result, nil
 }

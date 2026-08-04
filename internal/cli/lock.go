@@ -8,6 +8,7 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/style"
 )
 
 // lockCommand builds the lock file command.
@@ -48,7 +49,7 @@ func (runner *runner) lockCommand() *urfave.Command {
 				Refresh:     current.Bool("refresh"),
 				AllowRebind: current.Bool("rebind"),
 			})
-			return result, lockText(result), err
+			return result, lockText(runner.stdoutPalette, result), err
 		}),
 	}
 }
@@ -64,15 +65,18 @@ func (runner *runner) lockCommand() *urfave.Command {
 // resolved at all -- a file name backfilled from the URL, an ETag dropped
 // because the manifest pinned the asset -- and reporting that as no work would
 // deny a change the operator is about to find in git.
-func lockText(result application.LockResult) string {
+func lockText(palette style.Palette, result application.LockResult) string {
 	if !result.Changed {
 		if len(result.Locked) > 0 {
-			return fmt.Sprintf("Resolved %s. The lock file is unchanged.", strings.Join(result.Locked, ", "))
+			return fmt.Sprintf("Resolved %s. The lock file is unchanged.",
+				palette.Name(strings.Join(result.Locked, ", ")))
 		}
-		return fmt.Sprintf("The lock file already describes %s.", plural(result.AssetCount, "asset"))
+		return fmt.Sprintf("The lock file already describes %s.",
+			palette.Strong(plural(result.AssetCount, "asset")))
 	}
 	if len(result.Locked) > 0 {
-		return fmt.Sprintf("Locked %s.", strings.Join(result.Locked, ", "))
+		return fmt.Sprintf("Locked %s.", palette.Name(strings.Join(result.Locked, ", ")))
 	}
-	return fmt.Sprintf("Updated the lock file for %s without a request.", plural(result.AssetCount, "asset"))
+	return fmt.Sprintf("Updated the lock file for %s without a request.",
+		palette.Strong(plural(result.AssetCount, "asset")))
 }

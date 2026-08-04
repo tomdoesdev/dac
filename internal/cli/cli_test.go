@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -624,6 +625,95 @@ func TestCacheGCHumanSummary(t *testing.T) {
 		t.Fatalf("unexpected dry run summary: %#v", human)
 	}
 }
+
+// TestColourAddsNothingButColour is the property that makes colour safe to add
+// at all: a result read on a terminal and the same result read anywhere else
+// say the same thing, word for word. If a summary ever earns a word by being
+// coloured -- a status dropped because red already said it -- the other half of
+// DAC's readership loses it silently.
+func TestColourAddsNothingButColour(t *testing.T) {
+	content := []byte("colourful asset bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	newAssetProject := func() []string {
+		base := newProject(t).base
+		assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+		assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+		return base
+	}
+	// The two runs take a project from the same source, which for a command
+	// that only reads is the same project twice: a cache listing reports a last
+	// use, and two caches filled a moment apart do not agree about it.
+	compare := func(base func() []string, command ...string) {
+		t.Helper()
+		coloured := run(t, appendArgs(base(), append([]string{"--color=always"}, command...)...))
+		if !strings.Contains(coloured.stdout, "\x1b[") {
+			t.Fatalf("dac %v wrote no colour: %q", command, coloured.stdout)
+		}
+		bare := run(t, appendArgs(base(), append([]string{"--color=never"}, command...)...))
+		if strings.Contains(bare.stdout, "\x1b") {
+			t.Fatalf("dac %v coloured a refusal: %q", command, bare.stdout)
+		}
+		if stripped := escapes.ReplaceAllString(coloured.stdout, ""); stripped != bare.stdout {
+			t.Fatalf("dac %v reads differently in colour:\n colour: %q\n  plain: %q", command, stripped, bare.stdout)
+		}
+	}
+
+	shared := newAssetProject()
+	reused := func() []string { return shared }
+	compare(reused, "info")
+	compare(reused, "verify")
+	compare(reused, "cache", "list")
+	compare(reused, "cache", "scrub")
+	compare(reused, "pull", "--no-progress")
+	// A removal is not idempotent, so it gets a project per run. Nothing it
+	// reports depends on which one.
+	compare(newAssetProject, "remove", "app/geo@1")
+}
+
+// The default is auto, and the writers a test hands DAC are buffers rather than
+// terminals -- which is the same thing every pipe, file, and CI job is.
+func TestColourStaysOffWhereNothingWillRenderIt(t *testing.T) {
+	base := newProject(t).base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	if human := run(t, appendArgs(base, "verify")); strings.Contains(human.stdout, "\x1b") {
+		t.Fatalf("auto coloured a buffer: %q", human.stdout)
+	}
+	// Forcing it is the whole reason the option exists: a pager or a CI log
+	// viewer renders sequences that the pipe in front of it cannot admit to.
+	// The British spelling is an alias, because this is a British project and
+	// every script that has ever passed this option spells it the other way.
+	if human := run(t, appendArgs(base, "--colour=always", "verify")); !strings.Contains(human.stdout, "\x1b[") {
+		t.Fatalf("--colour=always wrote no colour: %q", human.stdout)
+	}
+}
+
+// JSON is parsed. Nothing about it is negotiable, including by an operator who
+// asked for colour in the same breath.
+func TestJSONIgnoresForcedColour(t *testing.T) {
+	base := newProject(t).base
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	result := runJSONArgs(t, append([]string{"--json", "--color=always"}, appendArgs(base, "info")...))
+	assertSuccess(t, result, "info")
+	if strings.Contains(result.stdout, "\x1b") || strings.Contains(result.stderr, "\x1b") {
+		t.Fatalf("JSON mode wrote escapes: stdout=%q stderr=%q", result.stdout, result.stderr)
+	}
+}
+
+func TestColourRejectsAValueItCannotRead(t *testing.T) {
+	base := newProject(t).base
+	result := runJSON(t, appendArgs(base, "--color", "alwyas", "info"))
+	assertError(t, result, "invalid_arguments")
+	if result.status != ExitUsage {
+		t.Fatalf("unexpected status %d: %q", result.status, result.stderr)
+	}
+}
+
+// escapes matches the SGR sequences a palette writes.
+var escapes = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func TestCacheGCRejectsAnInvalidAge(t *testing.T) {
 	base := newProject(t).base
@@ -1428,8 +1518,10 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
 	// The content-check message used to print its detail twice, once inside the
-	// message and once again as the cause.
-	if strings.Count(result.stderr, "404") != 1 {
+	// message and once again as the cause. The status is counted with the word
+	// in front of it, because the line also carries a port that httptest picks
+	// at random and that is sometimes 40483.
+	if strings.Count(result.stderr, "HTTP 404") != 1 {
 		t.Fatalf("the cause was printed more than once: %q", result.stderr)
 	}
 }
