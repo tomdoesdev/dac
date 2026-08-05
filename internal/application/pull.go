@@ -114,7 +114,7 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 				Cause:   mismatch,
 			}
 		}
-		reader := &progressReader{name: name, reader: response.Body, reporter: service.Reporter}
+		reader := &transferReader{name: name, reader: response.Body, reporter: service.Reporter}
 		if _, err := service.Store.Put(ctx, reader, PutExact(object)); err != nil {
 			return contentError(err)
 		}

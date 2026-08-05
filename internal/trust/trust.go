@@ -201,8 +201,14 @@ func ParseHost(value string) (string, error) {
 }
 
 // Normalize is the matching rule: lower case, no port, no brackets, no root dot.
-// Matching is exact after this, so a Unicode host name is trusted in the punycode
-// form a URL carries rather than the form somebody reads.
+// Matching is exact after this, and it is exact on the spelling a URL carries
+// rather than on the host a URL reaches. url.Parse does no IDNA conversion, so a
+// Unicode host name arrives here in the form somebody typed and the punycode a
+// connection is finally made to never reaches this function. The two spellings of
+// one host are therefore two entries as far as this list is concerned: trusting
+// either one refuses the other, which is the safe direction to be wrong in, but it
+// does mean a list written in punycode does not answer for a manifest written in
+// Unicode. Trust the form the manifest uses.
 func Normalize(host string) string {
 	value := strings.ToLower(strings.TrimSpace(host))
 	// A port is part of an address rather than of who is on the other end, and one

@@ -345,6 +345,69 @@ func TestGCDryRunKeepsEverything(t *testing.T) {
 	}
 }
 
+// TestVerifyStopsWhenTheCommandDoes covers the context Verify takes. A scrub
+// hashes every object in a cache in full, and an object big enough to be worth
+// caching is big enough that somebody may want to stop waiting for it.
+func TestVerifyStopsWhenTheCommandDoes(t *testing.T) {
+	store := New(t.TempDir())
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := store.Verify(ctx, object.Digest); !errors.Is(err, context.Canceled) {
+		t.Fatalf("verify error = %v, want context.Canceled", err)
+	}
+	// A cancelled check settles nothing, so the object is still there to check later.
+	if _, found, err := store.Stat(object.Digest); err != nil || !found {
+		t.Fatalf("cancelling a check disturbed the object: found=%v err=%v", found, err)
+	}
+}
+
+// TestClearingLeavesATemporaryFileInFlight covers the one thing a collection does
+// not get to take on its cutoff alone. Clearing removes every object by design,
+// but a download in flight is an open temporary file in a directory this sweep
+// walks, and an age says nothing about whether somebody is still writing to it.
+func TestClearingLeavesATemporaryFileInFlight(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	// An object gives the sidecar sweep a directory to walk, which is where the other kind of temporary file lands.
+	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0)); err != nil {
+		t.Fatal(err)
+	}
+	downloads := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blobs := filepath.Join(root, "blobs", "sha256")
+	running := filepath.Join(downloads, "download-running")
+	abandoned := filepath.Join(downloads, "download-abandoned")
+	writing := filepath.Join(blobs, jsonfile.TempPrefix+"writing")
+	for _, path := range []string{running, abandoned, writing} {
+		if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age(t, abandoned, time.Now().Add(-48*time.Hour))
+
+	result, err := store.GC(context.Background(), application.GCOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TempCount != 1 {
+		t.Fatalf("clearing removed %d temporary files, want 1", result.TempCount)
+	}
+	for _, path := range []string{running, writing} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("clearing took %s, which something may still be writing: %v", filepath.Base(path), err)
+		}
+	}
+	if _, err := os.Stat(abandoned); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the abandoned download survived a clear")
+	}
+}
+
 func TestGCRemovesAbandonedTemporaryFiles(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

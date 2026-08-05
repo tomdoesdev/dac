@@ -324,6 +324,14 @@ func stageUnpack(ctx context.Context, directory string, targets []*unpackTarget)
 }
 
 // stageUnpackFile creates one verified temporary file in the destination.
+// It stages beside the destination rather than in the cache so that the commit is a
+// rename within one file system. Every path out of this operation removes what it
+// staged, cancellation included; what none of them can cover is a process that was
+// killed outright, which leaves a .dac-unpack-* file behind. Nothing collects
+// those, because they are in somebody's directory rather than in DAC's, and a tool
+// that deletes files it finds there had better be certain no other unpack is
+// running. They are inert, and removing one is a matter for whoever owns the
+// directory.
 func stageUnpackFile(ctx context.Context, directory, source string, expected Object) (string, error) {
 	input, err := os.Open(source)
 	if err != nil {
@@ -379,8 +387,9 @@ func commitUnpack(targets []*unpackTarget, force bool) error {
 		} else {
 			// A hard link makes the no-replace check atomic on the destination file system.
 			if err := os.Link(target.staged, target.destination); err != nil {
-				return failUnpackCommit(targets, err)
+				return failUnpackCommit(targets, unpackLinkError(err, target.destination))
 			}
+			// Set before the staged file is removed, because from here the destination is this target's to roll back.
 			target.committed = true
 			if err := os.Remove(target.staged); err != nil {
 				return failUnpackCommit(targets, err)
@@ -429,7 +438,25 @@ func backupUnpackTarget(target *unpackTarget) error {
 	return nil
 }
 
+// unpackLinkError names what a refused link actually means.
+// The link is the no-replace check, so the interesting failure is a destination
+// that appeared between the check and the commit: reporting that as a write
+// failure would send somebody looking at their disk for a file somebody made.
+func unpackLinkError(err error, destination string) error {
+	if !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return &fault.Error{
+		Code:    "unpack_destination_occupied",
+		Message: "A destination file appeared while DAC was unpacking. Use --force to replace it.",
+		Details: map[string]any{"files": []string{destination}},
+		Cause:   err,
+	}
+}
+
 // failUnpackCommit restores replaced files and removes new files.
+// A cause that already carries a code keeps it, because a commit that failed for
+// one stated reason is not improved by being called a write failure as well.
 func failUnpackCommit(targets []*unpackTarget, cause error) error {
 	var rollback []error
 	for index := len(targets) - 1; index >= 0; index-- {
@@ -447,6 +474,15 @@ func failUnpackCommit(targets []*unpackTarget, cause error) error {
 		}
 	}
 	cleanupUnpack(targets)
+	var known *fault.Error
+	if errors.As(cause, &known) {
+		return &fault.Error{
+			Code:    known.Code,
+			Message: known.Message,
+			Details: known.Details,
+			Cause:   errors.Join(append([]error{known.Cause}, rollback...)...),
+		}
+	}
 	return fault.Wrap("unpack_write_failed", "DAC could not commit the asset files.", errors.Join(append([]error{cause}, rollback...)...))
 }
 

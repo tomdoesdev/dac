@@ -612,6 +612,55 @@ func TestRefreshLockUsesStoredETagForRevalidation(t *testing.T) {
 	}
 }
 
+// interruptedBody delivers part of an asset and then fails, which is what a reset
+// connection or an expired stall guard looks like to whatever is reading it.
+type interruptedBody struct {
+	delivered io.Reader
+	err       error
+}
+
+func (body *interruptedBody) Read(buffer []byte) (int, error) {
+	count, err := body.delivered.Read(buffer)
+	if errors.Is(err, io.EOF) {
+		return count, body.err
+	}
+	return count, err
+}
+
+func (*interruptedBody) Close() error { return nil }
+
+// TestTransferFailureMidBodyKeepsItsNetworkCode covers the whole path a stalled
+// transfer takes: one Put call reads the body and writes the cache, and the
+// failure it returns has to still say that the network stopped rather than that
+// the asset failed its content check.
+func TestTransferFailureMidBodyKeepsItsNetworkCode(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "stall", err: application.ErrStalled, code: "timeout"},
+		{name: "refused redirect", err: &application.HostError{Host: "elsewhere.example"}, code: "host_not_trusted"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			manifestPath, lockPath := emptyProject(t)
+			fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+				return &application.FetchResponse{
+					Length: 8,
+					Body:   &interruptedBody{delivered: bytes.NewReader([]byte("half")), err: testCase.err},
+				}, nil
+			}}
+			service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+			_, err := service.Add(context.Background(), application.AddOptions{
+				Coordinate: at("asset@1"), URL: "https://example.com/asset",
+			})
+			if value := fault.As(err); value.Code != testCase.code {
+				t.Fatalf("code = %q, want %q (%v)", value.Code, testCase.code, err)
+			}
+		})
+	}
+}
+
 func TestNetworkTimeoutHasStableCode(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {

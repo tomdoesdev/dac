@@ -437,6 +437,69 @@ func TestPullHelpOmitsRemovedRequestFlags(t *testing.T) {
 }
 
 // runJSON selects JSON mode and decodes the result.
+// TestGroupCommandShowsItsOwnHelp covers what a bare group command answers.
+// The commands that only group others share one action with the root, and the
+// question somebody typing "dac trust" is asking is what trust can do, not what
+// dac can do.
+func TestGroupCommandShowsItsOwnHelp(t *testing.T) {
+	for _, group := range []struct{ name, command string }{
+		{name: "trust", command: "list"},
+		{name: "cache", command: "scrub"},
+		{name: "config", command: "show"},
+	} {
+		t.Run(group.name, func(t *testing.T) {
+			result := run(t, []string{group.name})
+			if result.status != ExitOK {
+				t.Fatalf("status = %d, want %d", result.status, ExitOK)
+			}
+			if !strings.Contains(result.stderr, "dac "+group.name+" -") {
+				t.Fatalf("help does not name the group itself:\n%s", result.stderr)
+			}
+			if !strings.Contains(result.stderr, group.command) {
+				t.Fatalf("help does not list %q, which is one of its commands:\n%s", group.command, result.stderr)
+			}
+		})
+	}
+}
+
+// TestIncompleteCommandInJSONModeWritesADocument covers the contract rather than
+// the wording. Help is not something a JSON consumer can read, so an invocation
+// that would answer with help has to answer with the usage error it is instead:
+// exiting successfully with nothing on standard output leaves a caller with no
+// result and no failure to handle.
+func TestIncompleteCommandInJSONModeWritesADocument(t *testing.T) {
+	for _, name := range []string{"", "trust", "cache", "config"} {
+		t.Run("dac "+name, func(t *testing.T) {
+			args := []string{"--json"}
+			if name != "" {
+				args = append(args, name)
+			}
+			result := runJSONArgs(t, args)
+			if result.status != ExitUsage {
+				t.Fatalf("status = %d, want %d", result.status, ExitUsage)
+			}
+			if result.value["command"] != name {
+				t.Fatalf("command = %v, want %q", result.value["command"], name)
+			}
+			assertError(t, result, "invalid_arguments")
+		})
+	}
+}
+
+// TestUnknownSubcommandNamesTheGroupItWasGiven pins the command a failure is
+// reported against: the group that was asked, rather than the word that is not
+// one of its commands.
+func TestUnknownSubcommandNamesTheGroupItWasGiven(t *testing.T) {
+	result := runJSON(t, []string{"trust", "bogus"})
+	if result.status != ExitUsage {
+		t.Fatalf("status = %d, want %d", result.status, ExitUsage)
+	}
+	if result.value["command"] != "trust" {
+		t.Fatalf("command = %v, want trust", result.value["command"])
+	}
+	assertError(t, result, "invalid_arguments")
+}
+
 func runJSON(t *testing.T, args []string) invocation {
 	t.Helper()
 	return runJSONArgs(t, append([]string{"--json"}, args...))

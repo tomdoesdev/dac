@@ -40,6 +40,16 @@ func (value *HostError) Details() map[string]any {
 	return map[string]any{"host": value.Host}
 }
 
+// transferError marks a failure that came from reading the asset body rather than from the object store.
+// Installing an asset is one call that reads the network and writes the cache, and
+// the two failures need different codes: a network that stopped delivering bytes is
+// not a publisher that changed them.
+type transferError struct{ Err error }
+
+func (value *transferError) Error() string { return value.Err.Error() }
+
+func (value *transferError) Unwrap() error { return value.Err }
+
 // Unknown marks a ContentError size that DAC could not determine.
 const Unknown = int64(-1)
 
@@ -185,13 +195,23 @@ func requestDetails(err error) map[string]any {
 	return details
 }
 
-// contentError turns a failed content check into a stable command error.
+// contentError turns a failed installation into a stable command error.
+// Installing an asset reads the network and writes the cache in one call, so the
+// three things that can go wrong there are reported as three different failures
+// rather than all as a content check. Only bytes that arrived and then failed
+// their check are a content mismatch; a transfer keeps the code its own failure
+// has, which is the one that says whether to retry, to trust a host, or to look
+// at the publisher.
 func contentError(err error) error {
+	var transfer *transferError
+	if errors.As(err, &transfer) {
+		return networkError(transfer.Err)
+	}
 	if errors.Is(err, ErrTooLarge) {
 		return fault.Wrap("asset_too_large", "The asset is larger than the permitted size.", err)
 	}
-	if errors.Is(err, context.Canceled) {
-		return fault.Wrap("cancelled", "The command was cancelled.", err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return networkError(err)
 	}
 	var mismatch *ContentError
 	if errors.As(err, &mismatch) {
@@ -203,7 +223,8 @@ func contentError(err error) error {
 			Cause:   err,
 		}
 	}
-	return fault.Wrap("content_mismatch", "The downloaded asset failed its content check.", err)
+	// Nothing is left that the network or the bytes could account for, so it came from the store: the temporary file, the hash, or the install.
+	return fault.Wrap("cache_write_failed", "DAC could not write the asset to the cache.", err)
 }
 
 func withAsset(err error, name string) error {

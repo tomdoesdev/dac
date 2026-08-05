@@ -190,16 +190,24 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	return manifest, lock, nil
 }
 
-type progressReader struct {
+// transferReader is the asset body as the object store reads it.
+// It reports progress, and it marks a read failure as a transfer failure, because
+// one Put call both reads the network and writes the cache: by the time the error
+// comes back out, this reader is the only thing that knew which of the two it was.
+type transferReader struct {
 	name     string
 	reader   io.Reader
 	reporter Reporter
 }
 
-func (reader *progressReader) Read(buffer []byte) (int, error) {
+func (reader *transferReader) Read(buffer []byte) (int, error) {
 	count, err := reader.reader.Read(buffer)
 	if count > 0 {
 		reader.reporter.Advance(reader.name, int64(count))
+	}
+	// The end of the body is passed back exactly as it arrived: io.Copy compares it against io.EOF rather than unwrapping it, so a wrapped one would read as a failure.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return count, &transferError{Err: err}
 	}
 	return count, err
 }
