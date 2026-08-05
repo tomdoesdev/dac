@@ -762,10 +762,21 @@ Status `2` means that DAC rejected the arguments.
 
 On an interactive terminal, DAC uses concurrent progress bars from
 [`mpb`](https://github.com/vbauerster/mpb). Each bar shows the asset name,
-bytes, percentage, speed, and completion state. An unknown response size uses a
-spinner and a byte count. A non-terminal stream gets one start line and one
-completion line for each asset. Use `--no-progress`, or `transfer.progress` in
-the config file, to disable both forms.
+percentage, bytes, speed, and completion state. An unknown response size uses a
+spinner in place of the bar and leaves the percentage empty.
+
+The bars are drawn as fixed columns, and every column is in the same place on
+every row for as long as the command runs. Nothing is measured against what
+happens to be on screen: the name column is sized from the assets the command
+is about to work through, before the first bar is drawn, and the rest are as
+wide as their widest possible value. A column that will not fit is dropped
+whole rather than allowed to squeeze the bar -- the speed first, then the byte
+counts -- so a narrow terminal shows fewer columns rather than a display that
+moves as the numbers in it change.
+
+A non-terminal stream gets one start line and one completion line for each
+asset. Use `--no-progress`, or `transfer.progress` in the config file, to
+disable both forms.
 The `lock` and `pull` commands disable both forms in JSON mode.
 
 ## Colour

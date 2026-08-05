@@ -206,6 +206,10 @@ type fakeReporter struct {
 	events []string
 }
 
+func (reporter *fakeReporter) Plan(names []string) {
+	reporter.add("plan:" + strings.Join(names, ","))
+}
+
 func (reporter *fakeReporter) Start(name string, total int64) {
 	reporter.add(fmt.Sprintf("start:%s:%d", name, total))
 }

@@ -134,6 +134,15 @@ type Fetcher interface {
 
 // Reporter is the progress boundary used by the service.
 type Reporter interface {
+	// Plan names the assets the operation about to run will report on, before
+	// it reports on any of them. A reporter that lays its output out in columns
+	// cannot size the one holding these names from the names it has been given
+	// so far without moving what it has already drawn every time a longer one
+	// arrives, and the operation knows the whole set before it starts.
+	//
+	// It is a set to expect rather than a promise: an operation may settle an
+	// asset without a transfer to report, and calling this at all is optional.
+	Plan(names []string)
 	Start(name string, total int64)
 	Advance(name string, count int64)
 	Done(name, status string)
@@ -237,6 +246,7 @@ func (reader *progressReader) Read(buffer []byte) (int, error) {
 // reporter and the --progress=false form of every network command.
 type NopReporter struct{}
 
+func (NopReporter) Plan([]string)         {}
 func (NopReporter) Start(string, int64)   {}
 func (NopReporter) Advance(string, int64) {}
 func (NopReporter) Done(string, string)   {}
