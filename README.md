@@ -25,6 +25,7 @@ mise run build
 
 ```bash
 dac init
+dac trust add example.com
 dac add backend/geo@2026.08 \
   https://example.com/geo/2026.08/database.bin --pin --name geo.db
 dac pull
@@ -74,6 +75,11 @@ bytes differ.
 | `dac cache clear [--dry-run]` | Remove every cache object. |
 | `dac cache remove <coordinate>... [--force]` | Remove selected objects. |
 | `dac cache scrub [--all] [--repair]` | Hash objects and report damage. |
+| `dac trust list` | List the trusted hosts and when each was last used. |
+| `dac trust add <host\|url>...` | Trust one or more hosts. |
+| `dac trust remove <host\|url>...` | Withdraw trust from one or more hosts. |
+| `dac trust gc [--max-age <d>] [--dry-run]` | Withdraw trust from unused hosts. |
+| `dac trust path` | Print the resolved trusted-hosts file. |
 | `dac config path` | Print the config files that DAC read. |
 | `dac config show` | Print effective settings. |
 | `dac completion <shell>` | Write a shell completion script. |
@@ -220,6 +226,10 @@ progress = true
 dir = "/var/cache/dac"
 max-age = "30d"
 max-size = "none"
+
+[trust]
+file = "/var/lib/dac/trusted-hosts.json"
+max-age = "180d"
 ```
 
 `--concurrency` and `DAC_CONCURRENCY` override transfer concurrency for one
@@ -246,6 +256,73 @@ rendering.
 
 `--debug` writes request, retry, range, and cache decisions to standard error.
 It does not write authorization data because DAC has no credential feature.
+
+## Trusted hosts
+
+DAC refuses to download from a host that is not in its trusted-hosts file. The
+URL policy says which schemes DAC will request; the trust list says who DAC is
+willing to request them from, so an edited manifest cannot move a download to a
+host nobody chose.
+
+```bash
+dac trust add example.com          # a bare host
+dac trust add https://example.com/asset   # or the URL you already have
+dac trust list
+```
+
+The file is `dac/trusted-hosts.json` under the XDG data location, which is
+`~/.local/share/dac/trusted-hosts.json` unless `XDG_DATA_HOME` says otherwise.
+`--trust-file`, `DAC_TRUST_FILE`, and `trust.file` select a different one.
+`dac trust path` prints the one in use. A file that does not exist yet trusts
+nothing; a file DAC cannot parse fails the command rather than being ignored.
+
+```json
+{
+  "schemaVersion": 1,
+  "hosts": {
+    "example.com": {
+      "addedAt": "2026-08-05T09:14:22Z",
+      "lastUsed": "2026-08-05T11:02:48Z"
+    }
+  }
+}
+```
+
+A host matches exactly, ignoring case and port. `example.com` does not cover
+`cdn.example.com`, and there are no wildcards. A Unicode host is trusted in the
+punycode form its URL carries.
+
+The check runs in the transport, so it applies to every request a download
+makes: the asset, each redirect it follows, and each range of a split download.
+A URL on a trusted host that redirects to an untrusted one is refused, and the
+error names the host it was refused at rather than the one you asked for. A
+refusal is never retried.
+
+Refusals report the code `host_not_trusted` with the offending host in
+`details.host`, and the message names the command that changes the answer:
+
+```text
+Error: DAC will not download from cdn.example.com. Run dac trust add cdn.example.com.
+```
+
+Two flags change what a downloading command does about trust:
+
+- `--insecure-trust-all` skips the check for one run, on `add`, `pull`, `lock`,
+  and `verify`. It records nothing. There is no environment variable for it, so
+  it cannot be left switched on for everything a shell later runs.
+- `dac add --trust` records the source URL's host before the request goes out,
+  which is `dac trust add` and `dac add` in one step. It trusts only the host
+  you typed; a redirect elsewhere is still refused.
+
+`dac info` reports `trust: trusted` or `trust: untrusted` per asset, with the
+host in `host` and a count of the assets a pull would refuse in
+`summary.untrustedCount`.
+
+DAC records when a download last reached each trusted host, once per run rather
+than once per request. `dac trust gc` withdraws trust from the hosts nothing has
+downloaded from within `trust.max-age`, which defaults to 180 days. A host added
+by hand with no timestamps is never collected, because nothing about it can be
+shown to be stale.
 
 ## Cache behavior
 
@@ -305,6 +382,12 @@ The HTTP package exposes `TransportDecorator` through client options. The first
 transport decorator is also outermost. Decorators see direct requests,
 redirects, retries, and range requests. URL policy checks run before transport
 decorators.
+
+The trusted-host check is a transport decorator, which is what a decorator is
+for: it needs to see every request rather than every asset. A decorator that
+refuses a request should make the refusal permanent, by returning an error that
+answers to one of the sentinels the client treats as final. Otherwise the same
+refusal is re-asked once per retry and once per range.
 
 DAC does not load plugins or define an external plugin protocol.
 

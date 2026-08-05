@@ -15,6 +15,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/dac/internal/trust"
 )
 
 const (
@@ -68,6 +69,13 @@ type runner struct {
 	settings *config.Config
 	loadOnce sync.Once
 	loadErr  error
+
+	// The trusted-hosts file this run reads, and the gate a network command built from it.
+	trustStore *trust.Store
+	trustList  trust.List
+	trustOnce  sync.Once
+	trustErr   error
+	gate       *trust.Gate
 }
 
 // styles settles how this run colours each of its two streams.
@@ -147,6 +155,46 @@ func (runner *runner) config(current *urfave.Command) (*config.Config, error) {
 	return runner.settings, runner.loadErr
 }
 
+// trustFile reads the trusted-hosts file for this run, once.
+// The path comes from the flag, then the config file, then the XDG data location, which is how the cache root resolves.
+func (runner *runner) trustFile(current *urfave.Command) (*trust.Store, trust.List, error) {
+	runner.trustOnce.Do(func() {
+		selected := current.String("trust-file")
+		if selected == "" {
+			settings, err := runner.config(current)
+			if err != nil {
+				runner.trustErr = err
+				return
+			}
+			selected = settings.TrustFile
+		}
+		path, err := trust.ResolvePath(selected)
+		if err != nil {
+			runner.trustErr = fault.Wrap("trust_file_unresolved", "DAC could not resolve the trusted-hosts file.", err)
+			return
+		}
+		runner.trustStore = trust.New(path)
+		// A file nobody has written yet trusts nothing, which is a state to report rather than a failure to read.
+		runner.trustList, err = runner.trustStore.Load()
+		if err != nil {
+			runner.trustErr = fault.Wrap("trust_file_invalid", "The trusted-hosts file is invalid.", err)
+		}
+	})
+	return runner.trustStore, runner.trustList, runner.trustErr
+}
+
+// flushTrust records the hosts this run downloaded from.
+// A failure to write is traced rather than reported, because a use time is not the answer the command was asked for, and losing one only brings a collection forward.
+func (runner *runner) flushTrust(ctx context.Context, current *urfave.Command) {
+	if runner.gate == nil {
+		return
+	}
+	// A cancelled run still reached the hosts it reached.
+	if err := runner.gate.Flush(context.WithoutCancel(ctx)); err != nil {
+		runner.trace(current).Debug("trusted hosts not recorded", "error", err)
+	}
+}
+
 type action func(context.Context, *urfave.Command) (any, string, error)
 
 func (runner *runner) app() *urfave.Command {
@@ -164,6 +212,7 @@ func (runner *runner) app() *urfave.Command {
 			&urfave.StringFlag{Name: "manifest", Value: DefaultManifest, Usage: "Use this manifest file."},
 			&urfave.StringFlag{Name: "lock", Value: DefaultLock, Usage: "Use this lock file. Defaults beside the manifest."},
 			&urfave.StringFlag{Name: "cache-dir", Sources: urfave.EnvVars("DAC_CACHE_DIR"), Usage: "Use this cache directory."},
+			&urfave.StringFlag{Name: "trust-file", Sources: urfave.EnvVars("DAC_TRUST_FILE"), Usage: "Use this trusted-hosts file."},
 			&urfave.StringFlag{Name: "config", Sources: urfave.EnvVars("DAC_CONFIG"), Usage: "Read this config file instead of the ones the XDG search path finds."},
 			&urfave.BoolFlag{Name: "json", Aliases: []string{"j"}, Destination: &runner.json, Usage: "Write command results as JSON."},
 			// Colour is a global flag for the reason --json is one: it says how a result is written rather than what it says, so every command answers to it.
@@ -195,6 +244,7 @@ func (runner *runner) app() *urfave.Command {
 		runner.verifyCommand(),
 		runner.unpackCommand(),
 		runner.cacheCommand(),
+		runner.trustCommand(),
 		runner.configCommand(),
 	}
 	// The writer is settled once the flags exist to read it from. See completing.
@@ -216,6 +266,9 @@ func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 			return err
 		}
 		result, summary, err := operation(ctx, current)
+		// Every command completes here, which is the one place a run has finished
+		// using the hosts it was going to use, whether or not it succeeded.
+		runner.flushTrust(ctx, current)
 		if err != nil {
 			return err
 		}

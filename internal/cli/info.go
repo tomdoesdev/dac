@@ -50,6 +50,8 @@ func infoText(palette style.Palette, result application.InfoResult) string {
 			_, _ = fmt.Fprintf(&text, "%s %s\n", palette.Detail(label+":"), value)
 		}
 		field("source", asset.SourceURL)
+		// Trust follows the source because it is a statement about that URL's host.
+		field("trust", statusText(palette, asset.TrustStatus))
 		field("lock", statusText(palette, result.Summary.LockStatus))
 		field("cache", statusText(palette, asset.CacheStatus))
 		if asset.Filename != "" {
@@ -74,11 +76,12 @@ func infoText(palette style.Palette, result application.InfoResult) string {
 // statusText adds color without changing the state value in the output.
 func statusText(palette style.Palette, status string) string {
 	switch status {
-	case application.CacheCached, application.LockCurrent:
+	case application.CacheCached, application.LockCurrent, application.TrustTrusted:
 		return palette.Good(status)
 	case application.CacheMissing, application.LockStale, application.CacheUnavailable:
 		return palette.Warn(status)
-	case application.CacheCorrupt:
+	// An untrusted host is a refusal rather than something to get around to, so it reads like one.
+	case application.CacheCorrupt, application.TrustUntrusted:
 		return palette.Bad(status)
 	}
 	return status

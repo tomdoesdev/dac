@@ -120,6 +120,13 @@ func DecorateFetcher(fetcher Fetcher, decorators ...FetcherDecorator) Fetcher {
 	return fetcher
 }
 
+// HostTrust reports whether DAC is willing to download from a host.
+// Info answers without making a request, so it asks the trusted-hosts file
+// rather than the transport stage that enforces the same answer.
+type HostTrust interface {
+	Trusted(host string) bool
+}
+
 // Reporter is the progress boundary used by the service.
 type Reporter interface {
 	// Plan names the assets the operation about to run will report on, before it reports on any of them.
@@ -139,6 +146,9 @@ type Service struct {
 	Store        ObjectStore
 	Fetcher      Fetcher
 	Reporter     Reporter
+	// Trust reports which hosts a download would be allowed to reach. A nil value
+	// reports nothing rather than reporting that nothing is trusted.
+	Trust HostTrust
 }
 
 // New creates a service with absolute project paths.

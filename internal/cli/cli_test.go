@@ -21,6 +21,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/dac/internal/projecttest"
+	"github.com/tomdoesdev/dac/internal/trust"
 )
 
 type invocation struct {
@@ -30,8 +31,9 @@ type invocation struct {
 	value  map[string]any
 }
 
-// TestMain points the config search path at an empty directory.
+// TestMain points the config search path and the trusted-hosts file at an empty directory.
 // DAC reads a config file from the XDG base directories, so without this every test in this package would read whatever the machine running it has installed, and a developer with a config would get different results from CI.
+// The trusted-hosts file is pointed the same way and seeded with the loopback names, because every test in this package downloads from an httptest server and DAC refuses a host nothing trusts.
 func TestMain(main *testing.M) {
 	root, err := os.MkdirTemp("", "dac-cli-test")
 	if err != nil {
@@ -40,13 +42,22 @@ func TestMain(main *testing.M) {
 	for name, value := range map[string]string{
 		"XDG_CONFIG_HOME": filepath.Join(root, "config"),
 		"XDG_CONFIG_DIRS": filepath.Join(root, "system"),
+		"XDG_DATA_HOME":   filepath.Join(root, "data"),
 		"HOME":            root,
+		"DAC_TRUST_FILE":  filepath.Join(root, "trusted-hosts.json"),
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			panic(err)
 		}
 	}
 	if err := os.Unsetenv("DAC_CONFIG"); err != nil {
+		panic(err)
+	}
+	if _, err := trust.New(os.Getenv("DAC_TRUST_FILE")).Update(context.Background(),
+		func(list trust.List) (trust.List, error) {
+			updated, _ := list.Add([]string{"127.0.0.1", "localhost", "::1"}, time.Now().UTC())
+			return updated, nil
+		}); err != nil {
 		panic(err)
 	}
 	code := main.Run()
@@ -164,6 +175,7 @@ func TestCommandLifecycle(t *testing.T) {
 	human := run(t, appendArgs(base, "info"))
 	expectedInfo := "app/geo@2026.08\n" +
 		"source: " + server.URL + "\n" +
+		"trust: trusted\n" +
 		"lock: current\n" +
 		"cache: cached\n" +
 		"filename: geo.bin\n" +

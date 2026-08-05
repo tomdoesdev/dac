@@ -226,6 +226,19 @@ func retryAfter(response *http.Response) time.Duration {
 	return 0
 }
 
+// permanent names the refusals that asking again cannot change.
+// A transport decorator that refuses a request is not asked the same question
+// Retries more times, on every range of a split download.
+var permanent = []error{
+	context.Canceled,
+	context.DeadlineExceeded,
+	urlpolicy.ErrNotPermitted,
+	application.ErrHostNotTrusted,
+}
+
+// retryable reports whether an error is worth another attempt.
+// The answer defaults to yes, because a transport error DAC does not recognize
+// is more often a network that dropped than a request nobody will ever answer.
 func retryable(err error) bool {
 	var status *statusError
 	if errors.As(err, &status) {
@@ -233,10 +246,12 @@ func retryable(err error) bool {
 			status.statusCode == http.StatusRequestTimeout ||
 			status.statusCode >= 500 && status.statusCode <= 599
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
+	for _, sentinel := range permanent {
+		if errors.Is(err, sentinel) {
+			return false
+		}
 	}
-	return !errors.Is(err, urlpolicy.ErrNotPermitted)
+	return true
 }
 
 // retry applies one retry policy to full requests and range requests.

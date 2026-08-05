@@ -190,6 +190,49 @@ type CacheDirResult struct {
 	Path string `json:"path"`
 }
 
+// TrustPathResult reports where the trusted-hosts file resolved to.
+type TrustPathResult struct {
+	Path string `json:"path"`
+}
+
+// TrustHost is one trusted host and what is known about when it was used.
+type TrustHost struct {
+	Host    string    `json:"host"`
+	AddedAt time.Time `json:"addedAt"`
+	// LastUsed is the zero time until a download reaches this host.
+	LastUsed time.Time `json:"lastUsed"`
+}
+
+// TrustListResult reports the trusted hosts, in name order.
+type TrustListResult struct {
+	Path  string      `json:"path"`
+	Hosts []TrustHost `json:"hosts"`
+}
+
+// TrustAddResult reports what one trust addition changed.
+type TrustAddResult struct {
+	Path  string   `json:"path"`
+	Added []string `json:"added"`
+	// Present names the hosts that were already trusted, so adding twice is not a failure.
+	Present []string `json:"present"`
+}
+
+// TrustRemoveResult reports what one trust removal changed.
+type TrustRemoveResult struct {
+	Path    string   `json:"path"`
+	Removed []string `json:"removed"`
+	// Absent names the hosts that were not trusted to begin with.
+	Absent []string `json:"absent"`
+}
+
+// TrustGCResult reports the hosts a trust collection dropped.
+type TrustGCResult struct {
+	Path      string   `json:"path"`
+	Hosts     []string `json:"hosts"`
+	HostCount int      `json:"hostCount"`
+	DryRun    bool     `json:"dryRun"`
+}
+
 // VerifyCacheOptions controls one explicit cache check.
 type VerifyCacheOptions struct {
 	// All checks every object in the cache instead of the ones this project locked.

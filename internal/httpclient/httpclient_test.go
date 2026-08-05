@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -119,6 +120,95 @@ func TestTransportDecoratorSeesRedirectsAndRetries(t *testing.T) {
 	if requests.Load() != 4 {
 		t.Fatalf("decorated requests = %d, want 4", requests.Load())
 	}
+}
+
+// TestARefusedRequestIsNotRetried covers what a transport decorator needs in
+// order to refuse anything at all. Retrying defaults to yes, so without the
+// permanent list a refusal would be re-asked once per retry and once per range
+// of a split download, and every one of them would be refused again.
+func TestARefusedRequestIsNotRetried(t *testing.T) {
+	var requests atomic.Int32
+	refuse := func(http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests.Add(1)
+			return nil, &application.HostError{Host: request.URL.Hostname()}
+		})
+	}
+	client := New(Options{
+		Timeout:             time.Second,
+		Retries:             3,
+		TransportDecorators: []TransportDecorator{refuse},
+	})
+	defer client.Close()
+
+	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: "https://example.com/asset"})
+	if !errors.Is(err, application.ErrHostNotTrusted) {
+		t.Fatalf("error is %v, want a refusal", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1", requests.Load())
+	}
+}
+
+// TestADecoratorSeesTheHostARedirectMovesTo is why the trust check belongs in
+// the transport: the URL DAC was given is not the only host it would talk to.
+func TestADecoratorSeesTheHostARedirectMovesTo(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "asset")
+	}))
+	defer origin.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, origin.URL+"/asset", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	// The first host is allowed and the one it redirects to is not, so only a
+	// decorator that sees the second hop can tell the difference.
+	allowed := mustHostPort(t, redirect.URL)
+	refuseOthers := func(next http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Host != allowed {
+				return nil, &application.HostError{Host: request.URL.Hostname()}
+			}
+			return next.RoundTrip(request)
+		})
+	}
+	client := New(Options{
+		Timeout:             time.Second,
+		Retries:             2,
+		TransportDecorators: []TransportDecorator{refuseOthers},
+	})
+	defer client.Close()
+
+	_, err := client.Fetch(context.Background(), application.FetchRequest{
+		URL:               redirect.URL + "/source",
+		AllowInsecureHTTP: true,
+	})
+	if !errors.Is(err, application.ErrHostNotTrusted) {
+		t.Fatalf("error is %v, want a refusal", err)
+	}
+	var refusal *application.HostError
+	if !errors.As(err, &refusal) || refusal.Host != mustHostname(t, origin.URL) {
+		t.Fatalf("error names %v, want the host the redirect moved to", err)
+	}
+}
+
+func mustHostPort(t *testing.T, rawURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", rawURL, err)
+	}
+	return parsed.Host
+}
+
+func mustHostname(t *testing.T, rawURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", rawURL, err)
+	}
+	return parsed.Hostname()
 }
 
 func TestURLPolicyRunsBeforeTransportDecorators(t *testing.T) {
