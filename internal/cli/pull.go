@@ -16,14 +16,9 @@ func (runner *runner) pullCommand() *urfave.Command {
 	)
 	return &urfave.Command{
 		Name: "pull",
-		// A pull installs what the lock file already says. It writes no project
-		// files at all: settling a manifest the lock no longer describes is
-		// dac lock, and checking the origins without writing is dac verify
-		// --refresh.
+		// A pull installs what the lock file already says.
 		Usage: "Install missing locked assets, or the ones named.",
-		// Naming assets narrows what is fetched, for the job that needs one of
-		// them. It does not narrow what is checked: the lock file still has to
-		// describe the manifest either way.
+		// Naming assets narrows what is fetched, for the job that needs one of them.
 		ArgsUsage:     "[<namespace>/<name>[@<version>]...]",
 		Flags:         flags,
 		ShellComplete: runner.completeCoordinates(),
@@ -46,12 +41,10 @@ func (runner *runner) pullCommand() *urfave.Command {
 				return nil, "", err
 			}
 			result, err := service.Pull(ctx, application.PullOptions{
-				NetworkOptions: application.NetworkOptions{
-					Concurrency: concurrency,
-					MaxSize:     maxSize,
-					Offline:     current.Bool("offline"),
-				},
-				Assets: assets,
+				Concurrency: concurrency,
+				MaxSize:     maxSize,
+				Offline:     current.Bool("offline"),
+				Assets:      assets,
 			})
 			return result, pullText(runner.stdoutPalette, result), err
 		}),
@@ -59,10 +52,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 }
 
 // pullText summarizes one pull.
-//
-// A narrowed pull says what it left alone. "Pulled 1 asset" is true of a
-// project with one asset and of a job that asked for one of twenty, and the
-// difference is the whole reason to name assets in the first place.
+// A narrowed pull says what it left alone.
 func pullText(palette style.Palette, result application.PullResult) string {
 	if result.AssetCount < result.ProjectCount {
 		return fmt.Sprintf("Pulled %s of %d.",

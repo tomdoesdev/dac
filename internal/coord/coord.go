@@ -1,14 +1,6 @@
 // Package coord defines DAC asset coordinates.
-//
-// A coordinate names one asset completely: <namespace>/<name>@<version>. DAC
-// keys the manifest and the lock file by it, so a version is part of what an
-// asset is rather than a field describing it. That is what makes a version
-// mean something. Two versions of one asset are two entries, a project can
-// hold both, and editing a version cannot quietly redefine the asset that was
-// already there.
-//
-// The namespace exists so that two projects, or two parts of one project, can
-// each have a "database" without either one being the database.
+// A coordinate names one asset completely: <namespace>/<name>@<version>.
+// The namespace exists so that two projects, or two parts of one project, can each have a "database" without either one being the database.
 package coord
 
 import (
@@ -18,17 +10,10 @@ import (
 	"strings"
 )
 
-// maxPart bounds each part of a coordinate. A coordinate is a map key, a
-// progress label, and a command argument, and none of those want an unbounded
-// string.
+// maxPart bounds each part of a coordinate.
 const maxPart = 64
 
-// The three parts answer to different things, so they take different
-// characters. A namespace and a name are labels this project chooses, and they
-// are lowercase because two spellings of one asset would be two assets: a case
-// difference is the spelling mistake nobody sees. A version is copied from
-// whatever the publisher calls a release, so it keeps uppercase and the plus
-// sign that build metadata uses.
+// The three parts answer to different things, so they take different characters.
 const (
 	labelSeparators   = "._-"
 	versionSeparators = "._-+"
@@ -36,9 +21,7 @@ const (
 	versionCharacters = "letters, digits, and . _ - +"
 )
 
-// Group is the pair a version belongs to. Every coordinate sharing a namespace
-// and a name names the same asset at a different version, and that is the set
-// the version rules apply within.
+// Group is the pair a version belongs to.
 type Group struct {
 	Namespace string
 	Name      string
@@ -94,9 +77,7 @@ func Parse(text string) (Coordinate, error) {
 	return value, nil
 }
 
-// MustParse parses a coordinate that the caller knows is valid. It is for
-// constants and tests; anything reading a coordinate from a file or an argument
-// uses Parse and reports the error.
+// MustParse parses a coordinate that the caller knows is valid.
 func MustParse(text string) Coordinate {
 	value, err := Parse(text)
 	if err != nil {
@@ -119,10 +100,7 @@ func ParseGroup(text string) (Group, error) {
 }
 
 // MarshalText writes the coordinate that keys a manifest or lock entry.
-//
-// It validates first. A Coordinate built in memory rather than parsed could
-// otherwise put a key into a project file that DAC would refuse to read back,
-// and a file DAC cannot read is a worse failure than a write that refused.
+// It validates first.
 func (value Coordinate) MarshalText() ([]byte, error) {
 	if err := value.Validate(); err != nil {
 		return nil, err
@@ -130,9 +108,7 @@ func (value Coordinate) MarshalText() ([]byte, error) {
 	return []byte(value.String()), nil
 }
 
-// UnmarshalText reads one coordinate key. Every manifest and lock key passes
-// through here, so an invalid coordinate fails at the read that found it rather
-// than at whichever command first tried to use it.
+// UnmarshalText reads one coordinate key.
 func (value *Coordinate) UnmarshalText(data []byte) error {
 	parsed, err := Parse(string(data))
 	if err != nil {
@@ -143,11 +119,7 @@ func (value *Coordinate) UnmarshalText(data []byte) error {
 }
 
 // Compare orders coordinates by namespace, then name, then version.
-//
-// All three comparisons are lexicographic, including the version. DAC does not
-// order versions: it has no idea whether "10" follows "9" or whether either is
-// a number. This exists to make output and file writes deterministic, and it is
-// deliberately not something a caller should read meaning into.
+// All three comparisons are lexicographic, including the version.
 func Compare(first, second Coordinate) int {
 	if result := strings.Compare(first.Namespace, second.Namespace); result != 0 {
 		return result
@@ -163,9 +135,7 @@ func Sorted[V any](values map[Coordinate]V) []Coordinate {
 	return slices.SortedFunc(maps.Keys(values), Compare)
 }
 
-// InGroup returns the coordinates of one asset, sorted. It answers the question
-// every "which versions do I have" message asks, from the sibling list an add
-// reports to the versions an unknown coordinate suggests instead.
+// InGroup returns the coordinates of one asset, sorted.
 func InGroup[V any](values map[Coordinate]V, group Group) []Coordinate {
 	found := make([]Coordinate, 0, len(values))
 	for value := range values {
@@ -186,8 +156,7 @@ func Strings(values []Coordinate) []string {
 	return text
 }
 
-// Versions renders only the version part of each coordinate, which is what a
-// message that has already named the asset should list.
+// Versions renders only the version part of each coordinate, which is what a message that has already named the asset should list.
 func Versions(values []Coordinate) []string {
 	versions := make([]string, 0, len(values))
 	for _, value := range values {
@@ -196,9 +165,7 @@ func Versions(values []Coordinate) []string {
 	return versions
 }
 
-// separated reports whether text holds exactly one of each separator, in the
-// order given. It is what keeps "a@b/c" from parsing as a namespace containing
-// an at sign.
+// separated reports whether text holds exactly one of each separator, in the order given.
 func separated(text string, separators ...string) bool {
 	position := -1
 	for _, separator := range separators {
@@ -215,10 +182,7 @@ func separated(text string, separators ...string) bool {
 }
 
 // checkPart checks one part of a coordinate against its character set.
-//
-// A part starts and ends alphanumeric. That rules out the leading dash that
-// reads as a flag wherever a coordinate is a command argument, the trailing dot
-// that reads as a typo, and "." and ".." outright.
+// A part starts and ends alphanumeric.
 func checkPart(kind, value string, allowUpper bool, separators, characters string) error {
 	switch {
 	case value == "":

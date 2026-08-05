@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
@@ -24,25 +23,14 @@ const (
 )
 
 // Manifest defines the assets for one project.
-//
-// Both files key their assets by coordinate, so the version is part of the key
-// rather than a field of the value. A project holds as many versions of an
-// asset as it names, and nothing can change what a version means by editing the
-// entry in place: a different version is a different key.
+// Both files key their assets by coordinate, so the version is part of the key rather than a field of the value.
 type Manifest struct {
 	SchemaVersion int                        `json:"schemaVersion"`
 	Assets        map[coord.Coordinate]Asset `json:"assets"`
 }
 
 // Asset defines one source.
-//
-// Filename is the name the project chooses for the asset, which is the one
-// thing about a file name that is a decision rather than an observation. Every
-// other source of a name -- a Content-Disposition header, the last element of
-// the URL -- is something an origin happened to say, so those belong to the
-// lock, which records what resolution found. This is the manifest's own answer,
-// and it is optional: an asset that declares none is named by whatever the
-// origin calls it, which is what every asset did before this field existed.
+// Filename is the name the project chooses for the asset, which is the one thing about a file name that is a decision rather than an observation.
 type Asset struct {
 	URL               string `json:"url"`
 	Integrity         string `json:"integrity,omitempty"`
@@ -58,44 +46,14 @@ type Lock struct {
 }
 
 // LockAsset records one resolved asset.
-//
-// Filename is the name the asset is known by -- the one the manifest declares
-// when it declares one, and otherwise the one the origin gives -- which a cache
-// path cannot carry: that path is a digest, and a digest is the right name for
-// bytes and the wrong name for a tool that switches on an extension. It belongs
-// here rather than beside the cached object because it describes the source and
-// not the bytes -- two coordinates that resolve to the same object share one
-// file in the cache and may well disagree about what it is called.
-//
-// It is advisory. Nothing decides anything by it, no other field is checked
-// against it, and it is absent from a lock written before it existed, so it
-// stays out of every comparison that asks whether a lock still describes a
-// manifest.
+// Filename records the project or origin name that a digest path cannot preserve.
+// It is advisory.
 type LockAsset struct {
 	URL      string `json:"url"`
 	Digest   string `json:"digest"`
 	Size     int64  `json:"size"`
 	ETag     string `json:"etag,omitempty"`
 	Filename string `json:"filename,omitempty"`
-}
-
-// VersionCollisionError reports two versions of one asset that name the same
-// bytes.
-//
-// This is the failure that made versions meaningless: an asset added again at a
-// new version with its old source still attached resolves to the bytes the old
-// version already had, and the project ends up with two names for one thing and
-// no way to tell which one anybody meant. A lock file never holds one, because
-// Validate refuses it, so no command has to decide what to do about it.
-type VersionCollisionError struct {
-	Group    coord.Group
-	Versions []string
-	Digest   string
-}
-
-func (value *VersionCollisionError) Error() string {
-	return fmt.Sprintf("asset %s versions %s name the same bytes (%s)",
-		value.Group, strings.Join(value.Versions, " and "), value.Digest)
 }
 
 // Empty returns matching empty project files.
@@ -118,11 +76,7 @@ func ReadManifest(path string) (Manifest, error) {
 }
 
 // Normalize rewrites each integrity value into the canonical digest form.
-//
-// DAC accepts the Subresource Integrity "sha256-<base64>" spelling on input but
-// compares and writes only "sha256:<hex>", so normalization has to happen
-// before the manifest digest is calculated. A manifest written by DAC always
-// holds the canonical form.
+// Normalize accepts SRI input but hashes and writes canonical SHA-256 values.
 func (manifest Manifest) Normalize() error {
 	for name, asset := range manifest.Assets {
 		if asset.Integrity == "" {
@@ -169,9 +123,7 @@ func (manifest Manifest) Validate() error {
 		return errors.New("manifest assets must be an object")
 	}
 	for name, asset := range manifest.Assets {
-		// A manifest read from a file has already parsed every key. One built in
-		// memory has not, so this is what stops a command from writing a
-		// coordinate that DAC would refuse to read back.
+		// A manifest read from a file has already parsed every key.
 		if err := name.Validate(); err != nil {
 			return fmt.Errorf("manifest asset: %w", err)
 		}
@@ -187,11 +139,7 @@ func (manifest Manifest) Validate() error {
 				return fmt.Errorf("asset %q has invalid integrity: %w", name, err)
 			}
 		}
-		// A declared name reaches the lock file, and from there a dacpack path and
-		// whatever a script does with it, so it is checked where it is declared.
-		// Refusing it here rather than repairing it is the rule the whole filename
-		// package is written to: a repaired name is a name DAC invented, and the
-		// manifest is the one place a name is somebody's actual answer.
+		// A declared name can become an output path, so DAC rejects unsafe values.
 		if asset.Filename != "" && filename.Clean(asset.Filename) != asset.Filename {
 			return fmt.Errorf("asset %q has an invalid filename", name)
 		}
@@ -199,8 +147,7 @@ func (manifest Manifest) Validate() error {
 	return nil
 }
 
-// Validate checks the lock schema, each locked asset, and that no two versions
-// of one asset name the same bytes.
+// Validate checks the lock schema and each locked asset.
 func (lock Lock) Validate() error {
 	if lock.LockVersion != LockVersion {
 		return fmt.Errorf("unsupported lock version %d: version %d keys each asset by <namespace>/<name>@<version> and carries no version field",
@@ -225,45 +172,12 @@ func (lock Lock) Validate() error {
 		if asset.Size < 0 {
 			return fmt.Errorf("lock asset %q has a negative size", name)
 		}
-		// A name is the one field here that a caller is invited to use as a path
-		// element, and a lock file is a text file somebody can edit. Checking it
-		// against the form DAC writes is what stops an entry naming "../../etc"
-		// from reaching a script that trusted the lock.
+		// A name is the one field here that a caller is invited to use as a path element, and a lock file is a text file somebody can edit.
 		if asset.Filename != "" && filename.Clean(asset.Filename) != asset.Filename {
 			return fmt.Errorf("lock asset %q has an invalid filename", name)
 		}
 	}
-	return CheckVersions(lock.Assets)
-}
-
-// CheckVersions reports two versions of one asset that resolved to the same
-// bytes.
-//
-// Two coordinates naming one object is fine when they are different assets: a
-// namespace exists so that two projects can vendor the same file, and the cache
-// stores it once either way. Two versions of the same asset is the case that
-// cannot be true, because one of the two versions is then a label somebody
-// invented for bytes that already had one.
-func CheckVersions(assets map[coord.Coordinate]LockAsset) error {
-	seen := make(map[groupDigest]coord.Coordinate, len(assets))
-	for _, name := range coord.Sorted(assets) {
-		key := groupDigest{group: name.Group(), digest: assets[name].Digest}
-		previous, exists := seen[key]
-		if exists {
-			return &VersionCollisionError{
-				Group:    name.Group(),
-				Versions: []string{previous.Version, name.Version},
-				Digest:   key.digest,
-			}
-		}
-		seen[key] = name
-	}
 	return nil
-}
-
-type groupDigest struct {
-	group  coord.Group
-	digest string
 }
 
 // Digest returns the digest of the normalized manifest.
@@ -286,27 +200,14 @@ func (manifest Manifest) Clone() Manifest {
 }
 
 // Agrees reports whether a lock entry still describes a manifest asset.
-//
-// It is the per-asset half of CheckLock, exported because a command deciding
-// which assets it has to resolve and a command checking the whole project ask
-// the same question. Two answers to it would mean a lock that one command
-// rewrites and another rejects.
+// Agrees lets reconciliation and full lock checks share one asset rule.
 func Agrees(asset Asset, locked LockAsset, exists bool) bool {
 	return disagreement(asset, locked, exists) == ""
 }
 
-// disagreement returns why a lock entry no longer describes a manifest asset,
-// or an empty string when it still does. CheckLock reports the reason, so a
-// stale lock says which part of the asset moved.
-//
-// The version is not compared here because it cannot differ: both entries are
-// found by the same coordinate, and the coordinate carries it.
-//
-// The file name is not compared either, and that is deliberate rather than an
-// omission. It is a label the origin supplied, the manifest holds nothing to
-// compare it against, and every lock written before it existed carries none --
-// so comparing it would report every asset of every existing project as stale
-// over a field that decides nothing.
+// disagreement returns why a lock entry no longer describes a manifest asset, or an empty string when it still does.
+// The version is not compared here because it cannot differ: both entries are found by the same coordinate, and the coordinate carries it.
+// The file name is not compared either, and that is deliberate rather than an omission.
 func disagreement(asset Asset, locked LockAsset, exists bool) string {
 	switch {
 	case !exists:
@@ -350,8 +251,7 @@ func NewLock(manifest Manifest, assets map[coord.Coordinate]LockAsset) (Lock, er
 	return lock, lock.Validate()
 }
 
-// File is one of the two project documents. The constraint keeps Marshal and
-// Write from accepting anything that is not a project file.
+// File is one of the two project documents.
 type File interface{ Manifest | Lock }
 
 // Marshal returns stable bytes for one project file.
@@ -372,14 +272,12 @@ func Write[T File](path string, value T) error {
 	return WriteBytes(path, data)
 }
 
-// WriteBytes atomically writes project file bytes that a caller has already
-// marshalled, so lock does not have to encode the same document twice.
+// WriteBytes atomically writes project file bytes that a caller has already marshalled, so lock does not have to encode the same document twice.
 func WriteBytes(path string, data []byte) error {
 	return jsonfile.WriteAtomic(path, data, fileMode)
 }
 
-// WritePair writes matching project files and restores the manifest if the
-// second write fails.
+// WritePair writes matching project files and restores the manifest if the second write fails.
 func WritePair(manifestPath, lockPath string, manifest Manifest, lock Lock) error {
 	manifestData, err := Marshal(manifest)
 	if err != nil {

@@ -9,18 +9,10 @@ import (
 )
 
 // overflow is the first value a byte count may not reach.
-//
-// It is two to the sixty-third, one past the largest int64, because that is the
-// nearest bound a float64 can express exactly: math.MaxInt64 itself has no
-// exact float64 form, so comparing against it would let a value through that
-// the conversion then wraps to a negative number. A negative limit reads as no
-// limit at all further down, which turned a mistyped size into a guard that was
-// silently switched off.
+// The exclusive bound is the nearest exact float64 above the largest int64.
 const overflow = float64(1 << 63)
 
-// units maps a suffix to its multiplier, the longest suffix of each family
-// first so that MiB is never read as M. Both SI and binary suffixes are
-// accepted because build scripts and configuration files write both.
+// units maps a suffix to its multiplier, the longest suffix of each family first so that MiB is never read as M.
 var units = []struct {
 	suffix     string
 	multiplier int64
@@ -31,9 +23,7 @@ var units = []struct {
 	{"B", 1},
 }
 
-// Format writes a byte count with a binary unit suffix, using one decimal place
-// for anything above a kibibyte. It is the inverse of Parse only in spirit:
-// it rounds, so it belongs in summaries and never in a lock file.
+// Format writes a byte count with a binary unit suffix, using one decimal place for anything above a kibibyte.
 func Format(count int64) string {
 	if count < 1<<10 {
 		return fmt.Sprintf("%d B", count)
@@ -63,9 +53,7 @@ func Parse(value string) (int64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("byte count %q is invalid", value)
 		}
-		// ParseFloat accepts "NaN" and "Inf", so "NaNB" and "InfB" arrive here as
-		// numbers. Neither is negative and neither converts to anything an int64
-		// can hold, so both would otherwise pass every check below.
+		// ParseFloat accepts "NaN" and "Inf", so "NaNB" and "InfB" arrive here as numbers.
 		if math.IsNaN(amount) || math.IsInf(amount, 0) {
 			return 0, fmt.Errorf("byte count %q is invalid", value)
 		}

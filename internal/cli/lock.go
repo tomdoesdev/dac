@@ -12,15 +12,10 @@ import (
 )
 
 // lockCommand builds the lock file command.
-//
-// It takes no --offline flag. Locking an asset means resolving it, and resolving
-// it means fetching the bytes to write a digest for, so an offline lock is a
-// command with nothing to do. Use add --offline to record a source now and
-// dac lock to resolve it later.
+// It takes no --offline flag.
 func (runner *runner) lockCommand() *urfave.Command {
 	flags := append(runner.networkFlags(true),
 		&urfave.BoolFlag{Name: "refresh", Usage: "Resolve every manifest asset against its origin instead of only the ones the lock file does not describe."},
-		&urfave.BoolFlag{Name: "rebind", Usage: "Accept origins that no longer serve the bytes a locked version names."},
 	)
 	return &urfave.Command{
 		Name:  "lock",
@@ -43,28 +38,18 @@ func (runner *runner) lockCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Lock(ctx, application.NetworkOptions{
+			result, err := service.Lock(ctx, application.LockOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Refresh:     current.Bool("refresh"),
-				AllowRebind: current.Bool("rebind"),
 			})
 			return result, lockText(runner.stdoutPalette, result), err
 		}),
 	}
 }
 
-// lockText summarizes one lock file update. It names the assets it resolved,
-// because an operator who ran this is about to review that file's diff and wants
-// to know what to expect in it.
-//
-// Whether the file moved is reported separately from what was resolved, because
-// the two come apart in both directions. A --refresh resolves every asset and
-// usually finds nothing to write, so announcing what it locked would describe a
-// diff that is not there. A lock file can also be rewritten with nothing
-// resolved at all -- a file name backfilled from the URL, an ETag dropped
-// because the manifest pinned the asset -- and reporting that as no work would
-// deny a change the operator is about to find in git.
+// lockText summarizes one lock file update.
+// Whether the file moved is reported separately from what was resolved, because the two come apart in both directions.
 func lockText(palette style.Palette, result application.LockResult) string {
 	if !result.Changed {
 		if len(result.Locked) > 0 {

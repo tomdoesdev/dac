@@ -20,16 +20,9 @@ func (runner *runner) cacheCommand() *urfave.Command {
 		Name:            "cache",
 		Usage:           "Inspect, check, and collect the object cache.",
 		HideHelpCommand: true,
-		// The cache is a noun with a complete set of verbs: where it is, what
-		// is in it, fill it from a delivery, collect it by age, empty it, drop
-		// one asset, check it. Emptying it used to be spelled as a collection
-		// with an age short enough that everything fell outside it, seeing into
-		// it at all was not possible, and filling it was a top-level command
-		// that read a format nothing else in DAC used.
 		Commands: []*urfave.Command{
 			runner.cacheDirCommand(),
 			runner.cacheListCommand(),
-			runner.cacheImportCommand(),
 			runner.cacheGCCommand(),
 			runner.cacheClearCommand(),
 			runner.cacheRemoveCommand(),
@@ -44,19 +37,13 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 		Name:  "gc",
 		Usage: "Remove cache objects that nothing has used recently.",
 		Flags: []urfave.Flag{
-			// The age is the parameter of the operation rather than a tuning
-			// knob, so it stays a flag: a collection without one is not a
-			// meaningful command. The config file supplies the default a site
-			// runs on, and the flag overrides it for one run.
+			// The age is the parameter of the operation rather than a tuning knob, so it stays a flag: a collection without one is not a meaningful command.
 			&urfave.StringFlag{
 				Name:        "max-age",
 				Usage:       "Keep objects used within this period.",
 				DefaultText: "cache.max-age, or " + config.DefaultMaxAge,
 			},
-			// The size bound is the other parameter of the same operation, and
-			// it is a flag for the same reason the age is: what a collection
-			// aims at belongs to the collection rather than to the machine,
-			// even though the machine supplies the usual answer.
+			// The command flag overrides the configured size goal for one collection.
 			&urfave.StringFlag{
 				Name:        "max-size",
 				Usage:       "Evict the least recently used objects until the cache is this size, or none.",
@@ -94,13 +81,7 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 }
 
 // cacheScrubCommand builds the object integrity check.
-//
-// It is called scrub rather than verify because dac verify already means
-// something, and the two cost wildly different amounts: dac verify reads two
-// JSON files, dac verify --refresh downloads every asset again, and this reads
-// every byte in the cache. One word covering all three told an operator nothing
-// about which one they were about to run. Scrub is what storage systems call
-// reading everything to check it, and it carries the cost in the name.
+// Scrub names the full cache hash check and differs from project verification.
 func (runner *runner) cacheScrubCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "scrub",
@@ -124,14 +105,8 @@ func (runner *runner) cacheScrubCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			// A cache that fails its own check is a command failure. An operator
-			// who scripted this expects a nonzero status to mean "act", and
-			// finding the damage is not the same as it not being there.
-			//
-			// The message goes into a fault, which is a value the JSON contract
-			// carries and every wrapper appends a cause to, so it is built with
-			// no palette at all. Colour belongs to what a stream is written to,
-			// and this is not written yet.
+			// A cache that fails its own check is a command failure.
+			// The message goes into a fault, which is a value the JSON contract carries and every wrapper appends a cause to, so it is built with no palette at all.
 			if result.CorruptCount > 0 && !current.Bool("repair") {
 				return nil, "", &fault.Error{
 					Code:    "cache_object_corrupt",
@@ -185,50 +160,6 @@ func (runner *runner) cacheListCommand() *urfave.Command {
 	}
 }
 
-// cacheImportCommand builds the local cache import command.
-//
-// It is a cache verb because the cache is what it writes: it reads no project
-// files, resolves nothing, and the archive it takes was made somewhere else. As
-// a top-level command it sat beside pull and lock looking like part of a
-// project's workflow, and the pair it actually belonged to -- export and import
-// -- described a format nothing else in DAC read.
-//
-// What it reads now is a dacpack, the archive dac pack writes, so the machine
-// that receives one can install it into a cache with this or materialize it
-// with dac unpack. That is the thing a second format cost: a bundle delivered
-// to somebody who did not run DAC was a tar full of files named by hash.
-//
-// It accepts a directory as well, for a delivery that arrives on a mounted
-// share rather than as a file. Each file in it must be named by its digest,
-// which is the only name a consumer can check.
-func (runner *runner) cacheImportCommand() *urfave.Command {
-	return &urfave.Command{
-		Name:  "import",
-		Usage: "Install objects from a dacpack or a directory of digest-named files.",
-		// The source is an argument rather than a required flag, and it has no
-		// default: an import reads a file somebody delivered, at whatever path
-		// they put it down. That is a reason to require the argument, not a
-		// reason to make every script spell --file in front of it.
-		ArgsUsage: "<dacpack|directory>",
-		Action: runner.run("cache.import", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			source, err := requiredPath(current, "Specify one dacpack or directory path to read, as <dacpack|directory>.")
-			if err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
-			result, err := service.Import(ctx, source)
-			if err != nil {
-				return nil, "", err
-			}
-			return result, fmt.Sprintf("Imported %s (%s).",
-				runner.stdoutPalette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount)), nil
-		}),
-	}
-}
-
 func (runner *runner) cacheClearCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "clear",
@@ -244,9 +175,7 @@ func (runner *runner) cacheClearCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			// No confirmation prompt: DAC has none anywhere, a cleared cache
-			// costs a pull rather than anything that cannot be got back, and
-			// --dry-run is already the careful path.
+			// Clear needs no prompt because dry-run is available and pull restores objects.
 			result, err := service.CacheClear(ctx, current.Bool("dry-run"))
 			if err != nil {
 				return nil, "", err
@@ -257,10 +186,7 @@ func (runner *runner) cacheClearCommand() *urfave.Command {
 }
 
 // cacheRemoveCommand builds the targeted removal.
-//
-// It takes coordinates rather than digests because a coordinate is what a
-// person has: the cache is keyed by digest, and looking one up to forget it is
-// the sort of errand a tool should run for you.
+// Cache removal accepts coordinates and resolves their digests for the caller.
 func (runner *runner) cacheRemoveCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "remove",
@@ -292,11 +218,7 @@ func (runner *runner) cacheRemoveCommand() *urfave.Command {
 }
 
 // listText summarizes one cache listing.
-//
-// A listing is a table of things nobody reads across: what a person wants from
-// a row is which asset it is, and the digest, size, and last use in front of
-// that are how the cache identifies it rather than how they do. So the columns
-// recede and the coordinates at the end of each row do not.
+// Cache listing puts coordinates after object metadata so each row is easy to scan.
 func listText(palette style.Palette, result application.CacheListResult) string {
 	if result.ObjectCount == 0 {
 		if result.MissingCount > 0 {
@@ -342,10 +264,7 @@ func removeObjectsText(palette style.Palette, result application.CacheRemoveResu
 }
 
 // scrubText summarizes one explicit cache check.
-//
-// The counts that mean damage are the reason anybody ran this, and a scrub that
-// found some is also a command failure -- so they are coloured as what they are
-// rather than as more of the sentence they sit in.
+// Damage counts use warning styles because they also make scrub fail.
 func scrubText(palette style.Palette, result application.VerifyCacheResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Checked %s (%s).",
@@ -381,11 +300,7 @@ func gcText(palette style.Palette, result application.GCResult) string {
 		_, _ = fmt.Fprintf(&text, ", %s", plural(result.SidecarCount, "orphaned sidecar"))
 	}
 	text.WriteByte('.')
-	// Eviction is said separately because it means something else. Collecting
-	// what nothing has used is a cache working; taking what a project still
-	// wants is a cache too small for this machine, and the next command pays to
-	// download it again. The leading verb already set the tense, so neither of
-	// these has to say it twice.
+	// Eviction is said separately because it means something else.
 	switch result.EvictedCount {
 	case 0:
 	case result.ObjectCount:
@@ -398,8 +313,7 @@ func gcText(palette style.Palette, result application.GCResult) string {
 	return text.String()
 }
 
-// maximumCacheSize reads the collection size bound, preferring the flag over
-// the config. Zero is no bound, which is what a cache collected only by age is.
+// maximumCacheSize reads the collection size bound, preferring the flag over the config.
 func (runner *runner) maximumCacheSize(current *urfave.Command) (int64, error) {
 	if current.IsSet("max-size") {
 		size, err := config.ParseSize(current.String("max-size"))

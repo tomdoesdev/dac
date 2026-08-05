@@ -49,8 +49,7 @@ func TestWritePairRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The version lives in the key. A "version" field beside it would be a
-	// second place to say the same thing, and the place the two could disagree.
+	// The version lives in the key.
 	if strings.Contains(string(data), "\"version\"") {
 		t.Fatalf("lock repeats the version outside the key: %s", data)
 	}
@@ -70,8 +69,7 @@ func TestReadManifestRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
-// A key that DAC would refuse to read back must not reach a file, so validation
-// covers a manifest built in memory as well as one that was parsed.
+// A key that DAC would refuse to read back must not reach a file, so validation covers a manifest built in memory as well as one that was parsed.
 func TestManifestRejectsInvalidCoordinates(t *testing.T) {
 	for _, name := range []coord.Coordinate{
 		{Name: "geo", Version: "1"},
@@ -90,8 +88,7 @@ func TestManifestRejectsInvalidCoordinates(t *testing.T) {
 	}
 }
 
-// A manifest written before versions were part of the key is not a manifest
-// this DAC can read, and saying so is better than guessing at what it meant.
+// A manifest written before versions were part of the key is not a manifest this DAC can read, and saying so is better than guessing at what it meant.
 func TestReadManifestRejectsTheOlderSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dac.json")
 	data := []byte(`{"schemaVersion":1,"assets":{"geo":{"version":"1","url":"https://example.com/a"}}}`)
@@ -111,8 +108,7 @@ func TestCheckLockRejectsStaleManifest(t *testing.T) {
 	}
 }
 
-// locked returns a manifest and a matching lock for one asset, which is the
-// state every check below starts from agreeing about.
+// locked returns a manifest and a matching lock for one asset, which is the state every check below starts from agreeing about.
 func locked(t *testing.T, asset Asset, entry LockAsset) (Manifest, Lock) {
 	t.Helper()
 	name := coord.MustParse("app/geo@1")
@@ -127,10 +123,7 @@ func locked(t *testing.T, asset Asset, entry LockAsset) (Manifest, Lock) {
 	return manifest, lock
 }
 
-// TestCheckLockNamesEachDisagreement covers the rule every command reads the
-// project through. A lock that no longer describes its manifest is the one
-// failure a deployment job is supposed to stop on, and each way of reaching it
-// has to say which part moved rather than "the lock file is invalid".
+// TestCheckLockNamesEachDisagreement covers the rule every command reads the project through.
 func TestCheckLockNamesEachDisagreement(t *testing.T) {
 	value := digest.Bytes([]byte("geo"))
 	name := coord.MustParse("app/geo@1")
@@ -184,8 +177,7 @@ func TestCheckLockNamesEachDisagreement(t *testing.T) {
 		}
 	}
 
-	// A pin the lock no longer satisfies is its own reason. The URL still
-	// matches, so the lock looks current until the digest is compared.
+	// A pin the lock no longer satisfies is its own reason.
 	manifest, lock := locked(t, Asset{URL: "https://example.com/geo.bin", Integrity: value},
 		LockAsset{URL: "https://example.com/geo.bin", Digest: value, Size: 3})
 	entry := lock.Assets[name]
@@ -198,9 +190,6 @@ func TestCheckLockNamesEachDisagreement(t *testing.T) {
 }
 
 // TestAgreesMatchesCheckLock keeps the two answers to one question together.
-// Reconcile decides which assets it has to resolve with Agrees and every read
-// of the project checks the whole thing with CheckLock; a lock one accepts and
-// the other rejects is a project no command can settle.
 func TestAgreesMatchesCheckLock(t *testing.T) {
 	value := digest.Bytes([]byte("geo"))
 	name := coord.MustParse("app/geo@1")
@@ -228,8 +217,7 @@ func TestAgreesMatchesCheckLock(t *testing.T) {
 	}
 }
 
-// TestLockValidateRejectsEachBrokenField covers the invariant that lets every
-// command downstream treat a Lock value as trustworthy without re-checking it.
+// TestLockValidateRejectsEachBrokenField covers the invariant that lets every command downstream treat a Lock value as trustworthy without re-checking it.
 func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 	value := digest.Bytes([]byte("geo"))
 	name := coord.MustParse("app/geo@1")
@@ -266,8 +254,7 @@ func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 		{"a negative size", func(lock *Lock) {
 			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: -1}
 		}, "negative size"},
-		// A hand edit is the only way any of these reaches a lock file, and a
-		// name is the one field here a script is invited to use as a path.
+		// A hand edit is the only way any of these reaches a lock file, and a name is the one field here a script is invited to use as a path.
 		{"a filename that escapes its directory", func(lock *Lock) {
 			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, Filename: "../../etc/passwd"}
 		}, "invalid filename"},
@@ -290,9 +277,7 @@ func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 	}
 }
 
-// TestManifestValidateRejectsEachBrokenAsset covers the other half of the same
-// guarantee, including the URL policy: a manifest is where a URL DAC will not
-// request has to be refused, because everything after it assumes one that is.
+// TestManifestValidateRejectsEachBrokenAsset covers the other half of the same guarantee, including the URL policy: a manifest is where a URL DAC will not request has to be refused, because everything after it assumes one that is.
 func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 	name := coord.MustParse("app/geo@1")
 	sound := func() Manifest {
@@ -342,16 +327,14 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 		}
 	}
 
-	// The opt-in is what makes an insecure URL a decision rather than an
-	// accident, so it has to actually permit one.
+	// The opt-in is what makes an insecure URL a decision rather than an accident, so it has to actually permit one.
 	manifest := sound()
 	manifest.Assets[name] = Asset{URL: "http://example.com/geo.bin", AllowInsecureHTTP: true}
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("an insecure URL that opted in was refused: %v", err)
 	}
 
-	// A declared name is optional and every asset written before the field
-	// existed has none, so an empty one is not a broken one.
+	// A declared name is optional and every asset written before the field existed has none, so an empty one is not a broken one.
 	named := sound()
 	named.Assets[name] = Asset{URL: "https://example.com/geo.bin", Filename: "geo.db"}
 	if err := named.Validate(); err != nil {
@@ -359,8 +342,7 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 	}
 }
 
-// A manifest that declares no name hashes exactly as it did before the field
-// existed, so adding it made no project's lock stale.
+// A manifest that declares no name hashes exactly as it did before the field existed, so adding it made no project's lock stale.
 func TestADeclaredNameLeavesAnUnnamedManifestUnchanged(t *testing.T) {
 	name := coord.MustParse("app/geo@1")
 	manifest := Manifest{
@@ -375,8 +357,7 @@ func TestADeclaredNameLeavesAnUnnamedManifestUnchanged(t *testing.T) {
 		t.Fatalf("an asset that declares no name wrote the field: %s", data)
 	}
 
-	// Declaring one does change the digest, which is what makes a rename a
-	// manifest edit that dac lock has to settle rather than a silent rewrite.
+	// Declaring one does change the digest, which is what makes a rename a manifest edit that dac lock has to settle rather than a silent rewrite.
 	before, err := manifest.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -391,10 +372,7 @@ func TestADeclaredNameLeavesAnUnnamedManifestUnchanged(t *testing.T) {
 	}
 }
 
-// TestNormalizeRewritesTheSRISpelling covers the conversion that has to happen
-// before the manifest digest is taken. DAC accepts the Subresource Integrity
-// spelling on input and compares only the canonical one, so a manifest that
-// skipped this would hash differently from the same manifest written by DAC.
+// TestNormalizeRewritesTheSRISpelling covers the conversion that has to happen before the manifest digest is taken.
 func TestNormalizeRewritesTheSRISpelling(t *testing.T) {
 	name := coord.MustParse("app/geo@1")
 	canonical := digest.Bytes([]byte("geo"))
@@ -439,11 +417,7 @@ func mustHex(t *testing.T, value string) []byte {
 	return raw
 }
 
-// TestReadLockIfPresentSeparatesAbsentFromInvalid covers the difference a first
-// pull depends on. A lock that does not exist yet is the state pull is there to
-// leave behind; a lock that exists and cannot be read is a failure, and reading
-// the second as the first would have pull quietly rebuild a file somebody was
-// in the middle of hand-editing.
+// TestReadLockIfPresentSeparatesAbsentFromInvalid covers the difference a first pull depends on.
 func TestReadLockIfPresentSeparatesAbsentFromInvalid(t *testing.T) {
 	directory := t.TempDir()
 	lock, found, err := ReadLockIfPresent(filepath.Join(directory, "absent.json"))
@@ -460,15 +434,11 @@ func TestReadLockIfPresentSeparatesAbsentFromInvalid(t *testing.T) {
 	}
 }
 
-// TestWritePairRestoresTheManifestWhenTheLockWriteFails covers the reason the
-// two files are written by one function. A manifest that reached the disk
-// without its lock is a project every later command rejects as stale, over a
-// change the operator was told had failed.
+// TestWritePairRestoresTheManifestWhenTheLockWriteFails covers the reason the two files are written by one function.
 func TestWritePairRestoresTheManifestWhenTheLockWriteFails(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
-	// A regular file where the lock's directory should be, so creating it fails
-	// after the manifest has already been written.
+	// A regular file where the lock's directory should be, so creating it fails after the manifest has already been written.
 	blocker := filepath.Join(directory, "blocked")
 	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -487,9 +457,7 @@ func TestWritePairRestoresTheManifestWhenTheLockWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// With no manifest yet, a failed pair leaves none: the file this call
-	// created is not a project, and keeping it would make the next command
-	// report a stale lock for a change that never happened.
+	// With no manifest yet, a failed pair leaves none: the file this call created is not a project, and keeping it would make the next command report a stale lock for a change that never happened.
 	if err := WritePair(manifestPath, lockPath, manifest, lock); err == nil {
 		t.Fatal("a lock write into a file was reported as succeeding")
 	}
@@ -514,9 +482,7 @@ func TestWritePairRestoresTheManifestWhenTheLockWriteFails(t *testing.T) {
 	}
 }
 
-// The invariant that keeps a version meaningful, enforced where a Lock value is
-// built rather than only where one is written.
-func TestLockRejectsTwoVersionsOfTheSameBytes(t *testing.T) {
+func TestLockAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 	value := digest.Bytes([]byte("bytes"))
 	manifest := Manifest{
 		SchemaVersion: ManifestVersion,
@@ -525,41 +491,19 @@ func TestLockRejectsTwoVersionsOfTheSameBytes(t *testing.T) {
 			coord.MustParse("app/geo@2"): {URL: "https://example.com/two"},
 		},
 	}
-	_, err := NewLock(manifest, map[coord.Coordinate]LockAsset{
+	lock, err := NewLock(manifest, map[coord.Coordinate]LockAsset{
 		coord.MustParse("app/geo@1"): {URL: "https://example.com/one", Digest: value, Size: 5},
 		coord.MustParse("app/geo@2"): {URL: "https://example.com/two", Digest: value, Size: 5},
 	})
-	var collision *VersionCollisionError
-	if !errors.As(err, &collision) {
-		t.Fatalf("expected a version collision, got %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if collision.Group.String() != "app/geo" || len(collision.Versions) != 2 {
-		t.Fatalf("unexpected collision: %#v", collision)
-	}
-}
-
-// TestVersionCollisionErrorNamesBothVersions keeps the sentence an operator
-// reads useful. The fix for a collision is to decide which of two labels was
-// meant, so the message has to carry both of them and the bytes they share.
-func TestVersionCollisionErrorNamesBothVersions(t *testing.T) {
-	value := digest.Bytes([]byte("bytes"))
-	err := &VersionCollisionError{
-		Group:    coord.MustParse("app/geo@1").Group(),
-		Versions: []string{"1", "2"},
-		Digest:   value,
-	}
-	message := err.Error()
-	for _, part := range []string{"app/geo", "1", "2", value} {
-		if !strings.Contains(message, part) {
-			t.Fatalf("the collision message %q does not name %q", message, part)
-		}
+	if len(lock.Assets) != 2 {
+		t.Fatalf("lock has %d assets, want 2", len(lock.Assets))
 	}
 }
 
-// TestManifestOrderAndCloneAreIndependent covers the two accessors every
-// command builds on. Coordinates fixes the order a project is reported and
-// resolved in, and Clone is what lets add stage a change without the caller's
-// manifest moving underneath it.
+// TestManifestOrderAndCloneAreIndependent covers the two accessors every command builds on.
 func TestManifestOrderAndCloneAreIndependent(t *testing.T) {
 	manifest := Manifest{
 		SchemaVersion: ManifestVersion,
@@ -590,8 +534,7 @@ func TestManifestOrderAndCloneAreIndependent(t *testing.T) {
 	}
 }
 
-// TestWriteRoundTripsOneFile covers the single-file writer, which init and the
-// offline form of add use where there is no lock to keep in step.
+// TestWriteRoundTripsOneFile covers the single-file writer, which init and the offline form of add use where there is no lock to keep in step.
 func TestWriteRoundTripsOneFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dac.json")
 	manifest := Manifest{
@@ -613,8 +556,6 @@ func TestWriteRoundTripsOneFile(t *testing.T) {
 }
 
 // Two versions of two different assets naming one object is not a collision.
-// The cache stores it once, and a namespace exists so that two projects can
-// vendor the same file without either one owning it.
 func TestLockAllowsTwoAssetsThatShareAnObject(t *testing.T) {
 	value := digest.Bytes([]byte("bytes"))
 	manifest := Manifest{
@@ -632,10 +573,7 @@ func TestLockAllowsTwoAssetsThatShareAnObject(t *testing.T) {
 	}
 }
 
-// A file name decides nothing, so it belongs to no comparison that asks whether
-// a lock still describes a manifest. Every lock written before the field
-// existed carries none, and comparing it would report every asset of every
-// existing project as stale.
+// A file name decides nothing, so it belongs to no comparison that asks whether a lock still describes a manifest.
 func TestAFileNameNeverMakesALockStale(t *testing.T) {
 	value := digest.Bytes([]byte("geo"))
 	name := coord.MustParse("app/geo@1")
@@ -659,8 +597,7 @@ func TestAFileNameNeverMakesALockStale(t *testing.T) {
 	}
 }
 
-// The field is optional on the way in as well as out: a lock file DAC wrote
-// before it existed has to keep reading.
+// The field is optional on the way in as well as out: a lock file DAC wrote before it existed has to keep reading.
 func TestLockWithNoFileNameSurvivesARoundTrip(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "dac-lock.json")
@@ -682,8 +619,7 @@ func TestLockWithNoFileNameSurvivesARoundTrip(t *testing.T) {
 	if lock.Assets[name].Filename != "" {
 		t.Fatalf("the entry gained the name %q on read", lock.Assets[name].Filename)
 	}
-	// Writing it back must not invent the field either, so a project that never
-	// resolves anything keeps a stable lock file.
+	// Writing it back must not invent the field either, so a project that never resolves anything keeps a stable lock file.
 	if err := Write(path, lock); err != nil {
 		t.Fatal(err)
 	}

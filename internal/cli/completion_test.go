@@ -6,23 +6,13 @@ import (
 	"testing"
 )
 
-// completionFlag is what every generated script appends to ask DAC what the
-// next word could be.
+// completionFlag is what every generated script appends to ask DAC what the next word could be.
 const completionFlag = "--generate-shell-completion"
 
-// TestCompletionWritesSuggestionsToStandardOutput is the regression test for a
-// completion that installed cleanly and then did nothing at all.
-//
-// Help goes to standard error, because standard output carries the output
-// contract. urfave sends completion suggestions through the same writer, and
-// every generated script reads them from standard output and throws standard
-// error away -- so with one writer for both, dac completion bash produced a
-// working script that completed nothing, in every shell, with nothing to see.
+// TestCompletionWritesSuggestionsToStandardOutput is the regression test for a completion that installed cleanly and then did nothing at all.
+// Help goes to standard error, because standard output carries the output contract.
 func TestCompletionWritesSuggestionsToStandardOutput(t *testing.T) {
-	// urfave finds the word being completed in os.Args when the root command
-	// is the one answering, rather than in the arguments it was handed, so a
-	// test driving Run has to supply it. A subcommand reads its own arguments;
-	// see the flag fallback below.
+	// urfave finds the word being completed in os.Args when the root command is the one answering, rather than in the arguments it was handed, so a test driving Run has to supply it.
 	original := os.Args
 	os.Args = []string{"dac", completionFlag}
 	t.Cleanup(func() { os.Args = original })
@@ -39,14 +29,8 @@ func TestCompletionWritesSuggestionsToStandardOutput(t *testing.T) {
 	}
 }
 
-// TestCompletionScriptWritesToStandardOutput covers the other half of the same
-// mistake, and the half that made it invisible.
-//
-// The script is sourced as `eval "$(dac completion bash)"`, which captures
-// standard output. Written to standard error it reached the terminal instead:
-// the shell installed an empty completion and printed the script it was
-// supposed to have installed, which looks enough like output to be mistaken for
-// working.
+// TestCompletionScriptWritesToStandardOutput covers the other half of the same mistake, and the half that made it invisible.
+// The script is sourced as `eval "$(dac completion bash)"`, which captures standard output.
 func TestCompletionScriptWritesToStandardOutput(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		result := run(t, []string{"completion", shell})
@@ -65,10 +49,7 @@ func TestCompletionScriptWritesToStandardOutput(t *testing.T) {
 	}
 }
 
-// TestCompletionScriptSurvivesGlobalOptions covers the writer decision reading
-// a command line it has to walk rather than index. A global option that takes a
-// value sits between dac and the command name, and mistaking that value for the
-// command would send the script back to standard error.
+// TestCompletionScriptSurvivesGlobalOptions covers the writer decision reading a command line it has to walk rather than index.
 func TestCompletionScriptSurvivesGlobalOptions(t *testing.T) {
 	paths := newProject(t)
 	result := run(t, appendArgs(paths.base, "completion", "bash"))
@@ -80,22 +61,17 @@ func TestCompletionScriptSurvivesGlobalOptions(t *testing.T) {
 	}
 }
 
-// The reason Writer points at standard error in the first place is covered by
-// TestHelpAndVersionStayOnStderr: standard output carries the output contract,
-// and a command result is the only thing allowed onto it.
+// The reason Writer points at standard error in the first place is covered by TestHelpAndVersionStayOnStderr: standard output carries the output contract, and a command result is the only thing allowed onto it.
 
-// TestCompletionSuggestsProjectCoordinates covers the argument that is worth
-// completing. A command name is discoverable from --help; a coordinate is three
-// parts a project chose, and the manifest is the only place it is written down.
+// TestCompletionSuggestsProjectCoordinates covers the argument that is worth completing.
 func TestCompletionSuggestsProjectCoordinates(t *testing.T) {
 	paths := newCompletableProject(t)
-	for _, command := range []string{"path", "info", "remove"} {
+	for _, command := range []string{"path", "info", "remove", "unpack"} {
 		result := run(t, appendArgs(paths.base, command, completionFlag))
 		if result.status != ExitOK {
 			t.Fatalf("%s completion exited %d: %s", command, result.status, result.stderr)
 		}
-		// The generated scripts split each line at its first colon: the
-		// coordinate is the word inserted, the URL is the description listed.
+		// The generated scripts split each line at its first colon: the coordinate is the word inserted, the URL is the description listed.
 		want := []string{
 			"app/geo@1.0.0:https://example.com/geo-1.bin\n",
 			"app/geo@2.0.0:https://example.com/geo-2.bin\n",
@@ -109,9 +85,7 @@ func TestCompletionSuggestsProjectCoordinates(t *testing.T) {
 	}
 }
 
-// TestCompletionStopsAfterOneCoordinate keeps a command that takes one asset
-// from offering a second. Suggesting it would offer an argument the command
-// refuses.
+// TestCompletionStopsAfterOneCoordinate keeps a command that takes one asset from offering a second.
 func TestCompletionStopsAfterOneCoordinate(t *testing.T) {
 	paths := newCompletableProject(t)
 	result := run(t, appendArgs(paths.base, "path", "app/geo@1.0.0", completionFlag))
@@ -123,29 +97,26 @@ func TestCompletionStopsAfterOneCoordinate(t *testing.T) {
 	}
 }
 
-// TestCompletionOmitsCoordinatesAlreadyNamed covers the command that does take
-// a list. Forgetting several assets' bytes is one errand, and the ones already
-// on the line are not candidates for the next word.
+// TestCompletionOmitsCoordinatesAlreadyNamed covers the command that does take a list.
 func TestCompletionOmitsCoordinatesAlreadyNamed(t *testing.T) {
 	paths := newCompletableProject(t)
-	result := run(t, appendArgs(paths.base, "cache", "remove", "app/geo@1.0.0", completionFlag))
-	if result.status != ExitOK {
-		t.Fatalf("completion exited %d: %s", result.status, result.stderr)
-	}
-	if strings.Contains(result.stdout, "app/geo@1.0.0:") {
-		t.Fatalf("cache remove re-suggested a named coordinate: %q", result.stdout)
-	}
-	for _, line := range []string{"app/geo@2.0.0:", "tools/kit@3.0.0:"} {
-		if !strings.Contains(result.stdout, line) {
-			t.Fatalf("cache remove missing %q: %q", line, result.stdout)
+	for _, command := range [][]string{{"cache", "remove"}, {"unpack"}} {
+		result := run(t, appendArgs(paths.base, append(command, "app/geo@1.0.0", completionFlag)...))
+		if result.status != ExitOK {
+			t.Fatalf("%v completion exited %d: %s", command, result.status, result.stderr)
+		}
+		if strings.Contains(result.stdout, "app/geo@1.0.0:") {
+			t.Fatalf("%v re-suggested a named coordinate: %q", command, result.stdout)
+		}
+		for _, line := range []string{"app/geo@2.0.0:", "tools/kit@3.0.0:"} {
+			if !strings.Contains(result.stdout, line) {
+				t.Fatalf("%v missing %q: %q", command, line, result.stdout)
+			}
 		}
 	}
 }
 
-// TestCompletionFallsBackToFlagsAfterADash covers the one case where the word
-// under the cursor reaches DAC. Every generated script sends the words already
-// finished and adds the partial one back only when it starts with a dash, so a
-// dash here is somebody part-way through an option.
+// TestCompletionFallsBackToFlagsAfterADash covers the one case where the word under the cursor reaches DAC.
 func TestCompletionFallsBackToFlagsAfterADash(t *testing.T) {
 	paths := newCompletableProject(t)
 	result := run(t, appendArgs(paths.base, "cache", "remove", "--", completionFlag))
@@ -160,10 +131,7 @@ func TestCompletionFallsBackToFlagsAfterADash(t *testing.T) {
 	}
 }
 
-// TestCompletionOutsideAProjectSaysNothing covers where completion actually
-// runs. Pressing tab happens in every directory, most of which hold no
-// manifest, and an error printed into a half-typed command line would be worse
-// than the silence the shell falls back from.
+// TestCompletionOutsideAProjectSaysNothing covers where completion actually runs.
 func TestCompletionOutsideAProjectSaysNothing(t *testing.T) {
 	paths := newProject(t)
 	result := run(t, appendArgs(paths.base, "path", completionFlag))
@@ -175,11 +143,8 @@ func TestCompletionOutsideAProjectSaysNothing(t *testing.T) {
 	}
 }
 
-// newCompletableProject writes a manifest holding two versions of one asset and
-// a second asset, which is what makes a suggestion list worth reading.
-//
-// It builds the project through dac itself rather than by writing JSON, so the
-// coordinates the shell is offered are the ones DAC would accept back.
+// newCompletableProject writes a manifest holding two versions of one asset and a second asset, which is what makes a suggestion list worth reading.
+// It builds the project through dac itself rather than by writing JSON, so the coordinates the shell is offered are the ones DAC would accept back.
 func newCompletableProject(t *testing.T) projectFlags {
 	t.Helper()
 	paths := newProject(t)

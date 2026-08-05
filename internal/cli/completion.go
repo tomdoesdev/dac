@@ -1,12 +1,7 @@
 package cli
 
 // This file completes the argument people actually have to remember.
-//
-// Command and flag names are discoverable from --help and forgiving of a wrong
-// guess. A coordinate is neither: it is three parts a project chose, DAC
-// refuses anything that is not one of them exactly, and the only place it is
-// written down is the manifest sitting in the directory the shell is already
-// standing in. So the manifest is what the shell is offered.
+// Command and flag names are discoverable from --help and forgiving of a wrong guess.
 
 import (
 	"context"
@@ -23,18 +18,13 @@ func (runner *runner) completeCoordinate() urfave.ShellCompleteFunc {
 	return runner.completeAssets(false)
 }
 
-// completeCoordinates suggests coordinates for a command that takes a list,
-// leaving out the ones already named.
+// completeCoordinates suggests coordinates for a command that takes a list, leaving out the ones already named.
 func (runner *runner) completeCoordinates() urfave.ShellCompleteFunc {
 	return runner.completeAssets(true)
 }
 
 // completeAssets writes the coordinates a command could still be given.
-//
-// It suggests the whole coordinate and never the bare <namespace>/<name> that
-// path and info also accept. Offering both spellings would double every list to
-// save deleting an @version, and the longer one is the answer to the question
-// either way.
+// It suggests the whole coordinate and never the bare <namespace>/<name> that path and info also accept.
 func (runner *runner) completeAssets(repeatable bool) urfave.ShellCompleteFunc {
 	return func(ctx context.Context, current *urfave.Command) {
 		given := current.Args().Slice()
@@ -42,27 +32,19 @@ func (runner *runner) completeAssets(repeatable bool) urfave.ShellCompleteFunc {
 		if len(given) > 0 {
 			last = given[len(given)-1]
 		}
-		// Every generated script sends the words already finished and adds the
-		// one under the cursor back only when it starts with a dash. So a dash
-		// arriving here is somebody part-way through an option, and the flags
-		// are what they are asking about.
+		// Every generated script sends the words already finished and adds the one under the cursor back only when it starts with a dash.
 		if strings.HasPrefix(last, "-") {
 			urfave.DefaultCompleteWithFlags(ctx, current)
 			return
 		}
-		// A command that takes one coordinate already has it. Suggesting a
-		// second would offer an argument the command refuses.
+		// A command that takes one coordinate already has it.
 		if len(given) > 0 && !repeatable {
 			return
 		}
 		manifestPath, _ := projectPaths(current)
 		manifest, err := project.ReadManifest(manifestPath)
 		if err != nil {
-			// Completion runs wherever somebody presses tab, which is usually
-			// not a project. A manifest that is missing or that DAC will not
-			// read is nothing to report here: the shell falls back to its own
-			// completion, where an error message would arrive in the middle of
-			// a half-typed command line.
+			// Completion runs wherever somebody presses tab, which is usually not a project.
 			return
 		}
 		named := make(map[string]struct{}, len(given))
@@ -74,10 +56,7 @@ func (runner *runner) completeAssets(repeatable bool) urfave.ShellCompleteFunc {
 			if _, taken := named[text]; taken {
 				continue
 			}
-			// The generated scripts split each line at its first colon: what is
-			// before it is the word the shell inserts, and the rest is the
-			// description it lists. A coordinate holds no colon and a URL holds
-			// several, so every one of them lands on the right side.
+			// The generated scripts split each line at its first colon: what is before it is the word the shell inserts, and the rest is the description it lists.
 			_, _ = fmt.Fprintf(runner.stdout, "%s:%s\n", text, manifest.Assets[name].URL)
 		}
 	}

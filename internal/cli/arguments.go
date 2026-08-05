@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"path/filepath"
 	"strings"
 
 	urfave "github.com/urfave/cli/v3"
@@ -12,13 +11,7 @@ import (
 )
 
 // coordinate reads the one complete coordinate a command acts on.
-//
-// A command that writes takes the whole coordinate, including the version. A
-// project can hold several versions of an asset, and a command that changed one
-// it picked for itself would do the wrong thing on the day somebody added the
-// second version, which is the worst moment for it to start guessing. Reading
-// commands take the shorter form through asset below, where the guess can be
-// refused instead.
+// A command that writes takes the whole coordinate, including the version.
 func coordinate(current *urfave.Command) (coord.Coordinate, error) {
 	values := current.Args().Slice()
 	if len(values) != 1 {
@@ -28,11 +21,7 @@ func coordinate(current *urfave.Command) (coord.Coordinate, error) {
 }
 
 // coordinates reads the one or more complete coordinates a command acts on.
-//
-// It takes several because forgetting cached bytes is the kind of thing done to
-// a handful of assets at once, and because each one is checked against the
-// project before anything is removed -- so a list with a typo in it removes
-// nothing rather than most of what was asked for.
+// coordinates validates every requested asset before cache removal starts.
 func coordinates(current *urfave.Command) ([]coord.Coordinate, error) {
 	values := current.Args().Slice()
 	if len(values) == 0 {
@@ -50,11 +39,7 @@ func coordinates(current *urfave.Command) ([]coord.Coordinate, error) {
 }
 
 // coordinateAndSource reads the coordinate and the source URL that add takes.
-//
-// The URL is an argument rather than a flag because it is not optional and it
-// is not a setting: an add is "this coordinate comes from here", and both
-// halves of that are the thing being said. A required flag is a flag in name
-// only, and writing it out on every add bought nothing.
+// The required URL is positional because it forms the add with the coordinate.
 func coordinateAndSource(current *urfave.Command) (coord.Coordinate, string, error) {
 	values := current.Args().Slice()
 	if len(values) != 2 {
@@ -80,11 +65,8 @@ func parseCoordinate(value string) (coord.Coordinate, error) {
 	return name, nil
 }
 
-// selection reads the filter info applies: nothing, one coordinate, or one
-// asset whose versions it should list.
-//
-// Info is the command whose job is to answer what a project has, so leaving the
-// version off is a question with a list for an answer.
+// selection reads the filter info applies: nothing, one coordinate, or one asset whose versions it should list.
+// Info is the command whose job is to answer what a project has, so leaving the version off is a question with a list for an answer.
 func selection(current *urfave.Command) (application.Selection, error) {
 	values := current.Args().Slice()
 	switch {
@@ -97,12 +79,7 @@ func selection(current *urfave.Command) (application.Selection, error) {
 }
 
 // selections reads the assets a command was narrowed to, which may be none.
-//
-// It takes the same two spellings info does, because narrowing a command and
-// asking about a project are the same question with different verbs: a
-// coordinate names one version, and a bare <namespace>/<name> names every
-// version of that asset. No arguments at all is the whole project, which is
-// what these commands did before they could be narrowed.
+// selections gives pull and unpack the same exact and group grammar.
 func selections(current *urfave.Command) ([]application.Selection, error) {
 	values := current.Args().Slice()
 	chosen := make([]application.Selection, 0, len(values))
@@ -117,10 +94,7 @@ func selections(current *urfave.Command) ([]application.Selection, error) {
 }
 
 // asset reads the one asset a command acts on, with or without its version.
-//
-// Leaving the version off asks DAC to work out which one was meant, and it will
-// only do that when the project leaves nothing to work out. See onlyAsset in
-// the application package for what happens when it does not.
+// Leaving the version off asks DAC to work out which one was meant, and it will only do that when the project leaves nothing to work out.
 func asset(current *urfave.Command) (application.Selection, error) {
 	values := current.Args().Slice()
 	if len(values) != 1 {
@@ -145,122 +119,14 @@ func parseAsset(value string) (application.Selection, error) {
 	return application.GroupSelection(group), nil
 }
 
-// optionalPaths reads up to most positional paths, each of which has a default
-// the caller supplies when it is left off.
-//
-// A path is trimmed and refused when empty, because an empty argument is a
-// shell variable nobody set rather than a request for the current directory,
-// and the two would otherwise be the same command.
-func optionalPaths(current *urfave.Command, most int, usage string) ([]string, error) {
-	values := current.Args().Slice()
-	if len(values) > most {
-		return nil, fault.New("invalid_arguments", usage)
-	}
-	paths := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			return nil, fault.New("invalid_arguments", usage)
-		}
-		paths = append(paths, trimmed)
-	}
-	return paths, nil
-}
-
-// unpackArguments reads the archive an unpack reads and the assets it was
-// narrowed to.
-//
-// The archive comes first and everything after it names an asset, which is the
-// grammar pull already uses to narrow itself. Both halves are arguments because
-// both are what the command is about -- this archive, these assets -- and the
-// destination is the flag, because it is where the result goes rather than part
-// of what was asked for.
-//
-// The destination used to be the second argument, so an argument in that slot
-// that cannot be an asset is answered with where it went. Telling somebody with
-// `dac unpack build.dacpack /opt/inputs` in a script that "/opt/inputs" is not
-// a coordinate would be true and useless, which is the reasoning movedFlags is
-// written from.
-func unpackArguments(current *urfave.Command) (string, []application.Selection, error) {
-	values := current.Args().Slice()
-	usage := "Specify at most an archive path and the assets to unpack, as [<archive> [<namespace>/<name>[@<version>]...]]."
-	pack := application.DefaultPackFile
-	if len(values) > 0 {
-		trimmed := strings.TrimSpace(values[0])
-		if trimmed == "" {
-			return "", nil, fault.New("invalid_arguments", usage)
-		}
-		pack = trimmed
-		values = values[1:]
-	}
-	assets := make([]application.Selection, 0, len(values))
-	for _, value := range values {
-		selection, err := parseAsset(value)
-		if err != nil {
-			if pathShaped(value) {
-				return "", nil, fault.Wrap("invalid_arguments",
-					"The destination directory is now the --dest option. Arguments after the archive name the assets to unpack.", err)
-			}
-			return "", nil, err
-		}
-		assets = append(assets, selection)
-	}
-	return pack, assets, nil
-}
-
-// pathShaped reports whether an argument that is not an asset looks like a
-// directory somebody meant as a destination.
-//
-// An asset is <namespace>/<name> with an optional @<version>, so it holds
-// exactly one slash and starts with neither a separator nor a dot. Anything
-// else cannot be an asset at all, which is what makes it worth answering with
-// the option that takes a path rather than with the coordinate grammar.
-func pathShaped(value string) bool {
-	switch {
-	case filepath.IsAbs(value), strings.HasPrefix(value, "."), strings.HasPrefix(value, "~"):
-		return true
-	}
-	return strings.Count(value, "/") != 1
-}
-
 // destination reads the directory an unpack writes into.
-//
-// It is trimmed and refused when empty for the reason a path argument is: an
-// empty --dest is a shell variable nobody set, and reading it as the working
-// directory would turn that mistake into a write where the command was run.
+// destination rejects an empty flag so an unset variable cannot select the work directory.
 func destination(current *urfave.Command) (string, error) {
 	trimmed := strings.TrimSpace(current.String("dest"))
 	if trimmed == "" {
 		return "", fault.New("invalid_arguments", "The destination directory is empty.")
 	}
 	return trimmed, nil
-}
-
-// requiredPath reads the one positional path a command has no default for.
-//
-// It is optionalPaths with the fallback taken away: same trimming, same refusal
-// of an empty argument, but leaving it off is an error rather than a default. An
-// import reads a delivery that arrived from somewhere else, at whatever path
-// whoever delivered it chose, so there is no file DAC could pick unasked --
-// which is a reason to require the argument, not a reason to spell it as a flag.
-func requiredPath(current *urfave.Command, usage string) (string, error) {
-	values := current.Args().Slice()
-	if len(values) != 1 {
-		return "", fault.New("invalid_arguments", usage)
-	}
-	trimmed := strings.TrimSpace(values[0])
-	if trimmed == "" {
-		return "", fault.New("invalid_arguments", usage)
-	}
-	return trimmed, nil
-}
-
-// pathOr returns the positional at position, or fallback when it was left off.
-func pathOr(paths []string, position int, fallback string) string {
-	if position < len(paths) {
-		return paths[position]
-	}
-	return fallback
 }
 
 func noArguments(current *urfave.Command) error {

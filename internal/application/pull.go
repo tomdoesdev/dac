@@ -10,54 +10,39 @@ import (
 
 // PullOptions controls one pull.
 type PullOptions struct {
-	NetworkOptions
-	// Assets narrows the pull to the coordinates these selections name. An
-	// empty list is the whole project.
-	//
-	// A project holds every asset every job built from it needs, and a job
-	// needs the ones it needs. Without this, fetching one asset out of twenty
-	// means fetching twenty: dac path requires the object to be cached
-	// already, so a plain pull was the only way to put it there.
+	Concurrency int
+	MaxSize     int64
+	Offline     bool
+	// Assets narrows the pull to the coordinates these selections name.
+	// A project holds every asset every job built from it needs, and a job needs the ones it needs.
 	Assets []Selection
 }
 
 // PullResult reports a pull operation.
 type PullResult struct {
 	ManifestDigest string `json:"manifestDigest"`
-	// ProjectCount is how many assets the project has. It differs from the
-	// asset count only when the pull was narrowed, which is what lets a
-	// consumer tell "there was one asset" from "one asset was asked for".
-	//
-	// It was added without an output version bump, for the reason the file name
-	// field was: a new field breaks no consumer that does not read it.
+	// ProjectCount is how many assets the project has.
+	// It was added without an output version bump, for the reason the file name field was: a new field breaks no consumer that does not read it.
 	ProjectCount int `json:"projectCount"`
 	AssetSummary
 }
 
 // Pull installs the missing locked assets, or the ones a selection names.
-//
-// It writes nothing. A pull refuses a lock file that does not describe the
-// manifest rather than settling the difference, which is what makes a pull in a
-// deployment job reproduce the project as committed rather than as the manifest
-// now reads. Bringing the two files back into agreement is dac lock.
-//
-// Narrowing a pull narrows what it fetches and nothing else. The whole project
-// is still read and the lock file still has to describe the manifest, because
-// the question "is this project what was committed" is not one that a command
-// fetching half of it gets to skip.
+// It writes nothing.
+// Narrowing a pull narrows what it fetches and nothing else.
 func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResult, error) {
 	defer service.Reporter.Wait()
 	manifest, lock, err := service.readProject()
 	if err != nil {
 		return PullResult{}, err
 	}
-	names, err := chosen(subjectProject, manifest.Assets, options.Assets)
+	names, err := chosen(manifest.Assets, options.Assets)
 	if err != nil {
 		return PullResult{}, err
 	}
 	service.Reporter.Plan(coord.Strings(names))
 	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
-		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options.NetworkOptions)
+		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options)
 		if err != nil && ctx.Err() == nil {
 			service.Reporter.Fail(name.String(), err)
 		}
@@ -73,11 +58,10 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 	}, nil
 }
 
-func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, source project.Asset, locked project.LockAsset, options NetworkOptions) (Asset, error) {
+func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, source project.Asset, locked project.LockAsset, options PullOptions) (Asset, error) {
 	name := coordinate.String()
 	object := Object{Digest: locked.Digest, Size: locked.Size}
-	// The view already answers whether the cache holds these bytes, so a hit
-	// costs one lookup rather than one to decide and another to report.
+	// The view already answers whether the cache holds these bytes, so a hit costs one lookup rather than one to decide and another to report.
 	view, err := service.assetView(coordinate, source, locked, "cached")
 	if err != nil {
 		return Asset{}, err
@@ -87,9 +71,7 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 		service.Reporter.Done(name, "cached")
 		return view, nil
 	}
-	// A corrupt object is downloaded again rather than reported. The install
-	// renames the good bytes over the bad ones, so the pull that noticed the
-	// damage is also the command that repairs it.
+	// A corrupt object is downloaded again rather than reported.
 	status := "downloaded"
 	if view.Corrupt {
 		status = "repaired"
@@ -105,8 +87,7 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 			return nil
 		}
 		if options.Offline {
-			// A corrupt object offline is a different problem from a missing
-			// one: there is damage to report and no way to repair it here.
+			// A corrupt object offline is a different problem from a missing one: there is damage to report and no way to repair it here.
 			if view.Corrupt {
 				return &fault.Error{
 					Code:    "cache_object_corrupt",

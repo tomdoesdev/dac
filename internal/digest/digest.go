@@ -22,11 +22,8 @@ func Bytes(data []byte) string {
 	return Prefix + hex.EncodeToString(sum[:])
 }
 
-// Canonical accepts a digest in either the canonical "sha256:<hex>" form or the
-// Subresource Integrity "sha256-<base64>" form and returns the canonical form.
-//
-// DAC stores and compares only the canonical form. It accepts the SRI form
-// because publishers and other tools quote digests that way.
+// Canonical accepts a digest in either the canonical "sha256:<hex>" form or the Subresource Integrity "sha256-<base64>" form and returns the canonical form.
+// DAC stores and compares only the canonical form.
 func Canonical(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if !strings.HasPrefix(trimmed, SRIPrefix) {

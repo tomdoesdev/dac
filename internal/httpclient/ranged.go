@@ -16,34 +16,22 @@ import (
 )
 
 // chunkSize is the span one range request asks for.
-//
-// It is a fixed size rather than a share of the asset, because the store hashes
-// bytes in order, so a chunk that arrives early waits in memory for its turn.
-// Splitting a 10GiB asset four ways would buy parallelism at the price of
-// holding gigabytes; splitting it into 8MiB pieces that four workers take in
-// turn keeps the transfer just as parallel with a bounded cost.
+// It is a fixed size rather than a share of the asset, because the store hashes bytes in order, so a chunk that arrives early waits in memory for its turn.
 const chunkSize = 8 << 20
 
-// minSplitSize is the smallest asset DAC splits. Below it the extra requests
-// cost more in round trips than the parallelism returns.
+// minSplitSize is the smallest asset DAC splits.
 const minSplitSize = 2 * chunkSize
 
 // body returns the reader that delivers one response's bytes.
-//
-// It splits the transfer across parallel range requests when the origin permits
-// it and the asset is large enough to pay for them, and otherwise hands back
-// the single stream the response already carries.
-func (client *Client) body(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, cache *credentialCache) io.ReadCloser {
+// download splits eligible large responses into parallel range requests.
+func (client *Client) body(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc) io.ReadCloser {
 	trace := client.options.Logger
 	precondition, refused := splittable(client.options.Parallelism, response)
 	if refused != "" {
 		trace.Debug("streaming one response", "url", input.URL, "reason", refused, "length", response.ContentLength)
 		return guard(response.Body, cancel, client.options.Timeout)
 	}
-	// The head response already carries the first chunk, so only the chunks
-	// after it need a worker. A client that has already lent its parallelism to
-	// other assets may have none left, in which case this download streams as it
-	// always did rather than waiting for a slot.
+	// The head response already carries the first chunk, so only the chunks after it need a worker.
 	chunks := int((response.ContentLength + chunkSize - 1) / chunkSize)
 	workers := client.acquire(min(client.options.Parallelism-1, chunks-1))
 	if workers == 0 {
@@ -52,28 +40,15 @@ func (client *Client) body(ctx context.Context, input application.FetchRequest, 
 	}
 	trace.Debug("splitting download", "url", input.URL, "length", response.ContentLength,
 		"chunks", chunks, "workers", workers, "precondition", precondition.name)
-	return client.split(ctx, input, response, cancel, cancelHead, precondition, chunks, workers, cache)
+	return client.split(ctx, input, response, cancel, cancelHead, precondition, chunks, workers)
 }
 
 // header is one request header, as a name and a value.
 type header struct{ name, value string }
 
-// splittable reports whether the rest of a response can be fetched as range
-// requests, returning the precondition header that pins the entity while it is,
-// or the reason it cannot be.
-//
-// The reason is what a trace needs. Every condition here is something the
-// origin decided, so an operator watching a large asset arrive over one
-// connection is looking at a server's answer rather than at a setting they got
-// wrong, and only naming which one turns that into something they can act on.
-//
-// A split download reads one asset over several requests, so it has to be sure
-// every request answers about the same bytes. The origin makes that promise: a
-// precondition it can no longer satisfy is a 412 rather than a chunk of a newer
-// file. Without a validator to build a precondition from, DAC does not split at
-// all. Silently reassembling two versions of an asset would surface as a digest
-// mismatch for a pinned asset, and for an unpinned one it would be locked as if
-// it were a real object.
+// splittable returns an entity precondition or the reason a response cannot split.
+// The reason is what a trace needs.
+// A split download reads one asset over several requests, so it has to be sure every request answers about the same bytes.
 func splittable(parallelism int, response *http.Response) (header, string) {
 	switch {
 	case parallelism < 2:
@@ -88,8 +63,7 @@ func splittable(parallelism int, response *http.Response) (header, string) {
 	if !acceptsRanges(response.Header.Get("Accept-Ranges")) {
 		return header{}, "origin does not serve byte ranges"
 	}
-	// A weak ETag says two responses are equivalent, not that they are the same
-	// bytes, which is the only question a byte range asks.
+	// A weak ETag says two responses are equivalent, not that they are the same bytes, which is the only question a byte range asks.
 	if etag := strings.TrimSpace(response.Header.Get("ETag")); etag != "" && !strings.HasPrefix(etag, "W/") {
 		return header{name: "If-Match", value: etag}, ""
 	}
@@ -109,17 +83,8 @@ func acceptsRanges(value string) bool {
 }
 
 // splitBody reassembles a split download in order.
-//
-// Order is not a convenience here: the caller hashes these bytes as it writes
-// them, so a chunk that finishes early holds its buffer until the chunks before
-// it have been read. That is what bounds the memory a split download costs.
-// Each worker holds at most one chunk, so the peak is the worker count plus one
-// times chunkSize, whatever the asset's size.
 type splitBody struct {
-	client *Client
-	// credentials is the transfer's cache, shared with the request that started
-	// it. Without it every chunk would start the credential helper again.
-	credentials  *credentialCache
+	client       *Client
 	ctx          context.Context
 	cancel       context.CancelFunc
 	url          string
@@ -127,17 +92,13 @@ type splitBody struct {
 	precondition header
 	length       int64
 
-	// head is the first chunk, still arriving on the response that started the
-	// download, and headBody is that response.
+	// head is the first chunk, still arriving on the response that started the download, and headBody is that response.
 	head       io.Reader
 	headBody   io.ReadCloser
 	headLength int64
 	headRead   int64
 
-	// chunks[index] hands one chunk from the worker that fetched it to the
-	// reader. Entry zero is the head, which no worker fetches. The channels are
-	// unbuffered on purpose: a worker that could drop a finished chunk and move
-	// on would read the whole asset into memory ahead of the hash.
+	// chunks[index] hands one chunk from the worker that fetched it to the reader.
 	chunks  []chan chunkResult
 	taken   atomic.Int64
 	index   int
@@ -154,12 +115,11 @@ type chunkResult struct {
 	err  error
 }
 
-func (client *Client) split(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, precondition header, chunks, workers int, cache *credentialCache) io.ReadCloser {
+func (client *Client) split(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, precondition header, chunks, workers int) io.ReadCloser {
 	headLength := min(int64(chunkSize), response.ContentLength)
 	guarded := guard(response.Body, cancelHead, client.options.Timeout)
 	body := &splitBody{
 		client:       client,
-		credentials:  cache,
 		ctx:          ctx,
 		cancel:       cancel,
 		url:          response.Request.URL.String(),
@@ -184,15 +144,8 @@ func (client *Client) split(ctx context.Context, input application.FetchRequest,
 	return body
 }
 
-// work fetches chunks until they run out. A worker blocks handing one over
-// until the reader has caught up, which is what keeps a fast worker from
-// running far ahead of the hash and buffering the whole asset.
-//
-// A worker that fails stops claiming chunks, so the last chunks can end up with
-// nobody to fetch them. That cannot strand the reader: chunks are claimed in
-// order and a worker always hands over the chunk it claimed, so every chunk
-// before an unclaimed one carries a result, and the failure among them is what
-// the reader stops at.
+// work fetches chunks until they run out.
+// A worker that fails stops claiming chunks, so the last chunks can end up with nobody to fetch them.
 func (body *splitBody) work() {
 	defer body.workers.Done()
 	for {
@@ -207,18 +160,13 @@ func (body *splitBody) work() {
 			return
 		}
 		if err != nil {
-			// The reader will report this chunk and stop. Leaving the rest
-			// unclaimed lets the other workers finish what they hold rather
-			// than starting requests for bytes nobody will read.
+			// The reader will report this chunk and stop.
 			return
 		}
 	}
 }
 
-// Read delivers the asset in order. It keeps the error that ended the download,
-// because the chunk that reported one has already been taken off its channel,
-// and a reader that tries again would otherwise wait for bytes nobody is
-// fetching.
+// Read delivers the asset in order.
 func (body *splitBody) Read(buffer []byte) (int, error) {
 	if body.failed != nil {
 		return 0, body.failed
@@ -228,9 +176,7 @@ func (body *splitBody) Read(buffer []byte) (int, error) {
 		if err != nil {
 			body.failed = err
 		}
-		// A head that is still open has more of the first chunk to deliver, even
-		// when this read produced none of it. Only its handover falls through to
-		// the chunks the range requests carry.
+		// A head that is still open has more of the first chunk to deliver, even when this read produced none of it.
 		if count > 0 || err != nil || body.headBody != nil {
 			return count, err
 		}
@@ -259,9 +205,7 @@ func (body *splitBody) Read(buffer []byte) (int, error) {
 	return body.current.Read(buffer)
 }
 
-// readHead reads the chunk the first response carries. It reports the handover
-// to the range requests as a read of no bytes and no error, because the end of
-// that response is not the end of the asset.
+// readHead reads the chunk the first response carries.
 func (body *splitBody) readHead(buffer []byte) (int, error) {
 	count, err := body.head.Read(buffer)
 	body.headRead += int64(count)
@@ -283,8 +227,7 @@ func (body *splitBody) Close() error {
 			body.head, body.headBody = nil, nil
 		}
 		body.cancel()
-		// The workers hold the parallelism this download borrowed, so it goes
-		// back only once they have stopped using it.
+		// The workers hold the parallelism this download borrowed, so it goes back only once they have stopped using it.
 		body.workers.Wait()
 		body.release()
 	})
@@ -292,38 +235,17 @@ func (body *splitBody) Close() error {
 }
 
 // fetch downloads one chunk, retrying it on its own.
-//
-// A whole-body transfer that fails halfway is lost, because its bytes have
-// already gone to the hash. A chunk has not been handed over yet, so a retry
-// here costs one chunk rather than the asset.
+// A whole-body transfer that fails halfway is lost, because its bytes have already gone to the hash.
 func (body *splitBody) fetch(index int) ([]byte, error) {
 	start := int64(index) * chunkSize
 	end := min(start+chunkSize, body.length) - 1
-	var lastErr error
-	reauthorized := false
-	for attempt := 0; ; {
-		data, err := body.attempt(start, end)
-		if err == nil {
-			return data, nil
-		}
-		lastErr = err
-		// A credential the origin rejected is worth one more request with a
-		// fresh one, and exactly one. A transfer long enough to need a thousand
-		// chunks is long enough to outlive the token it started with, and this
-		// is the only sign of that DAC gets. A second rejection is the origin
-		// answering about the credentials rather than about their age.
-		if !reauthorized && rejectedCredentials(err) && body.credentials.reset() {
-			reauthorized = true
-			continue
-		}
-		if attempt >= body.client.options.Retries || !retryable(err) || body.ctx.Err() != nil {
-			return nil, &RequestError{URL: body.url, Status: statusOf(lastErr), Err: lastErr}
-		}
-		if err := sleep(body.ctx, backoff(attempt, err)); err != nil {
-			return nil, &RequestError{URL: body.url, Err: err}
-		}
-		attempt++
+	data, _, err := retry(body.ctx, body.client.options.Retries, func() ([]byte, error) {
+		return body.attempt(start, end)
+	}, nil)
+	if err != nil {
+		return nil, &RequestError{URL: body.url, Status: statusOf(err), Err: err}
 	}
+	return data, nil
 }
 
 func (body *splitBody) attempt(start, end int64) ([]byte, error) {
@@ -336,24 +258,15 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	request.Header.Set(body.precondition.name, body.precondition.value)
-	credentials := body.credentials.authorizer()
-	if err := credentials.apply(requestCtx, request); err != nil {
-		return nil, err
-	}
-
-	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(requestCtx, body.insecure, credentials)}
-	// The body is closed by the guard below, which takes ownership of it and
-	// closes it along with stopping its timer. bodyclose follows the response
-	// only as far as the wrapper, so it cannot see that.
+	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(body.insecure)}
+	// The body is closed by the guard below, which takes ownership of it and closes it along with stopping its timer.
 	response, err := httpClient.Do(request) //nolint:bodyclose // guard owns and closes it
 	if err != nil {
 		return nil, err
 	}
 	body.client.options.Logger.Debug("range", "url", body.url,
 		"start", start, "end", end, "status", response.StatusCode)
-	// A chunk gets the same stall guard as a whole transfer, and its own
-	// cancellation with it, so one slow connection fails and is retried instead
-	// of holding up the download behind it.
+	// Each range has a stall guard so one slow connection can fail and retry.
 	guarded := guard(response.Body, cancel, body.client.options.Timeout)
 	defer func() { _ = guarded.Close() }()
 	if err := checkRange(response, start, end); err != nil {
@@ -366,9 +279,7 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	return data, nil
 }
 
-// checkRange refuses a response that is not the range that was asked for. The
-// digest check would catch a misassembled asset in the end, but it could only
-// report that the bytes were wrong, and the reason they were wrong is here.
+// checkRange refuses a response that is not the range that was asked for.
 func checkRange(response *http.Response, start, end int64) error {
 	if response.StatusCode != http.StatusPartialContent {
 		return &statusError{kind: "range", statusCode: response.StatusCode, retryAfter: retryAfter(response)}
@@ -413,11 +324,7 @@ func contentRange(value string) (int64, int64, error) {
 }
 
 // acquire takes up to want range-request slots and reports how many it got.
-//
-// The slots are the whole client's, so the parallelism an operator asks for is
-// a budget rather than a multiplier: one large asset splits every way it can,
-// while a pull of many assets spends the same budget across the transfers it
-// already runs side by side instead of opening the product of the two.
+// A client-wide range budget prevents asset and range concurrency from multiplying connections.
 func (client *Client) acquire(want int) int {
 	taken := 0
 	for taken < want {

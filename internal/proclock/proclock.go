@@ -1,10 +1,7 @@
 //go:build unix
 
 // Package proclock coordinates DAC processes with file locks.
-//
-// DAC targets Unix. The build constraint makes that explicit, so a Windows
-// build fails with a missing-package error instead of a missing-symbol error
-// from deep inside the cache.
+// DAC targets Unix.
 package proclock
 
 import (
@@ -49,10 +46,7 @@ func Acquire(ctx context.Context, path string) (*Lock, error) {
 }
 
 // Release releases the process lock.
-//
-// It always releases: closing the file drops the lock even when the explicit
-// unlock fails, so the returned error only ever describes a file descriptor
-// the caller has finished with, and never a lock that is still held.
+// Closing the file releases the lock even when explicit unlock reports an error.
 func (lock *Lock) Release() error {
 	unlockErr := syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
 	closeErr := lock.file.Close()

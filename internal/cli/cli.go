@@ -3,7 +3,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -40,9 +39,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if runner.writeFailed {
 		return ExitFailure
 	}
-	// A failure that never reached a command action -- an unknown command, an
-	// argument the parser refused -- has had no palette settled for it, and it
-	// still has to be legible.
+	// Parser failures need a palette because no command action initialized one.
 	runner.styles()
 	if writeErr := output.New(stdout, stderr, runner.json, runner.stderrPalette).Failure(runner.commandName, err); writeErr != nil {
 		return ExitFailure
@@ -60,14 +57,11 @@ type runner struct {
 	commandName string
 	usage       bool
 	writeFailed bool
-	// args is the command line this run was given, which the writer decision
-	// below has to read before urfave has parsed anything.
+	// args is the command line this run was given, which the writer decision below has to read before urfave has parsed anything.
 	args []string
-	// colour is the --color value as it was written. It is checked where a bad
-	// argument is reported rather than where it is read: see styles.
+	// colour is the --color value as it was written.
 	colour string
-	// The palettes for this run's two streams: command summaries go to standard
-	// output, and error messages, help, and progress go to standard error.
+	// The palettes for this run's two streams: command summaries go to standard output, and error messages, help, and progress go to standard error.
 	stdoutPalette style.Palette
 	stderrPalette style.Palette
 
@@ -77,19 +71,9 @@ type runner struct {
 }
 
 // styles settles how this run colours each of its two streams.
-//
-// They are settled separately because they are separate destinations, and
-// routinely different kinds of destination: `dac pull > log` leaves a terminal
-// on standard error and a file on standard output, so one decision for the
-// process would fill the file with sequences to match the terminal.
-//
-// JSON mode colours neither. Standard output carries a parsed contract, and the
-// human error message that would have carried the colour on standard error is
-// not written at all.
-//
-// A value neither this nor style.ParseMode understands falls back to auto here
-// rather than failing, because this runs on the path that reports the failure.
-// checkColor is where a bad one is refused.
+// Each stream gets a palette because stdout and stderr can have different destinations.
+// JSON mode colours neither.
+// A value neither this nor style.ParseMode understands falls back to auto here rather than failing, because this runs on the path that reports the failure.
 func (runner *runner) styles() {
 	if runner.json {
 		runner.stdoutPalette, runner.stderrPalette = style.Palette{}, style.Palette{}
@@ -100,9 +84,7 @@ func (runner *runner) styles() {
 	runner.stderrPalette = style.New(runner.stderr, mode)
 }
 
-// checkColor refuses a --color value DAC does not understand, rather than
-// leaving somebody who typed --color=alwyas to conclude their terminal is at
-// fault.
+// checkColor refuses a --color value DAC does not understand, rather than leaving somebody who typed --color=alwyas to conclude their terminal is at fault.
 func (runner *runner) checkColor() error {
 	if _, err := style.ParseMode(runner.colour); err != nil {
 		return fault.Wrap("invalid_arguments", "The color option is invalid.", err)
@@ -110,21 +92,9 @@ func (runner *runner) checkColor() error {
 	return nil
 }
 
-// completing reports whether this run is about shell completion rather than
-// about an asset.
-//
-// Two invocations are, and they are easy to mistake for each other: the
-// completion command, which writes the script a shell sources, and the hidden
-// flag that script sends back to ask what the next word could be.
-//
-// Both have to reach standard output, and neither did. urfave sends both
-// through Root().Writer, which DAC points at standard error so that help never
-// lands on the stream carrying the output contract. So `dac completion bash`
-// wrote its script where `$(...)` could not capture it, and the suggestions
-// went where every generated script discards them -- bash asks through
-// `$(... 2>/dev/null)`, zsh and fish do the same. The feature installed
-// cleanly and did nothing, with nothing printed to say so.
-//
+// completing reports whether this run is about shell completion rather than about an asset.
+// Completion includes both the script command and the hidden suggestion request.
+// Both have to reach standard output, and neither did.
 // Help never prints during either one, so the two uses of Writer never collide.
 func completing(app *urfave.Command, args []string) bool {
 	if slices.Contains(args, "--"+urfave.GenerateShellCompletionFlag.Names()[0]) {
@@ -133,24 +103,18 @@ func completing(app *urfave.Command, args []string) bool {
 	return commandName(app, args) == completionCommand
 }
 
-// completionCommand is the name urfave gives the command that writes a shell
-// completion script. It builds that command itself, so this is the one place
-// DAC has to spell it.
+// completionCommand is the name urfave gives the command that writes a shell completion script.
 const completionCommand = "completion"
 
-// commandName returns the first argument naming a command, stepping over the
-// global options in front of it and the values they take.
-//
-// It reads the option set from the command rather than from a list kept beside
-// it, so a global option added later is accounted for by existing.
+// commandName returns the first argument naming a command, stepping over the global options in front of it and the values they take.
+// It reads the option set from the command rather than from a list kept beside it, so a global option added later is accounted for by existing.
 func commandName(app *urfave.Command, args []string) string {
 	for index := 0; index < len(args); index++ {
 		value := args[index]
 		if !strings.HasPrefix(value, "-") {
 			return value
 		}
-		// An option spelled --name=value carries its own value; one spelled
-		// --name takes the argument after it, unless it is a boolean.
+		// An option spelled --name=value carries its own value; one spelled --name takes the argument after it, unless it is a boolean.
 		if !strings.Contains(value, "=") && takesValue(app.Flags, value) {
 			index++
 		}
@@ -158,8 +122,7 @@ func commandName(app *urfave.Command, args []string) string {
 	return ""
 }
 
-// takesValue reports whether an option is followed by its value. Every option
-// is except a boolean one, which carries its answer in whether it is present.
+// takesValue reports whether an option is followed by its value.
 func takesValue(flags []urfave.Flag, option string) bool {
 	name := strings.TrimLeft(option, "-")
 	for _, flag := range flags {
@@ -173,12 +136,7 @@ func takesValue(flags []urfave.Flag, option string) bool {
 }
 
 // config reads the configuration for this run, once.
-//
-// It is lazy because the path it reads comes from a flag, so it cannot be
-// settled before parsing, and because the commands that touch neither the
-// network nor the cache have no reason to read a file at all -- dac unpack runs
-// anywhere the archive does, and a config it never consults should not be able
-// to stop it.
+// It is lazy because the path comes from a parsed flag and some commands do not need configuration.
 func (runner *runner) config(current *urfave.Command) (*config.Config, error) {
 	runner.loadOnce.Do(func() {
 		runner.settings, runner.loadErr = config.Load(current.String("config"))
@@ -198,9 +156,7 @@ func (runner *runner) app() *urfave.Command {
 		Description:     "DAC stores remote files by their SHA-256 digest.",
 		Version:         application.Version,
 		HideHelpCommand: true,
-		// Completion writes to stdout by design, so it is the one command whose
-		// output is not a DAC command result. It stays outside the output
-		// contract for that reason: a shell evaluates it, nothing parses it.
+		// Completion writes shell data to stdout outside the JSON contract.
 		EnableShellCompletion: true,
 		Writer:                runner.stderr,
 		ErrWriter:             runner.stderr,
@@ -210,12 +166,7 @@ func (runner *runner) app() *urfave.Command {
 			&urfave.StringFlag{Name: "cache-dir", Sources: urfave.EnvVars("DAC_CACHE_DIR"), Usage: "Use this cache directory."},
 			&urfave.StringFlag{Name: "config", Sources: urfave.EnvVars("DAC_CONFIG"), Usage: "Read this config file instead of the ones the XDG search path finds."},
 			&urfave.BoolFlag{Name: "json", Aliases: []string{"j"}, Destination: &runner.json, Usage: "Write command results as JSON."},
-			// Colour is a global flag for the reason --json is one: it says how
-			// a result is written rather than what it says, so every command
-			// answers to it. The alias is there because the option is spelled
-			// color everywhere a script would expect to find it -- git, ls,
-			// grep, NO_COLOR itself -- and this project is written in the other
-			// English.
+			// Colour is a global flag for the reason --json is one: it says how a result is written rather than what it says, so every command answers to it.
 			&urfave.StringFlag{
 				Name:        "color",
 				Aliases:     []string{"colour"},
@@ -224,14 +175,11 @@ func (runner *runner) app() *urfave.Command {
 				Destination: &runner.colour,
 				Usage:       "Colour human-readable output: auto, always, or never.",
 			},
-			// Tracing is a global flag because the question it answers -- what
-			// did this actually do -- is asked of whichever command just
-			// surprised somebody, and having to find out which of them carries
-			// it is part of the problem.
+			// Debug is global because every command can need request and cache traces.
 			&urfave.BoolFlag{
 				Name:    "debug",
 				Sources: urfave.EnvVars("DAC_DEBUG"),
-				Usage:   "Write a trace of requests, credentials, and cache decisions to standard error.",
+				Usage:   "Write a trace of requests and cache decisions to standard error.",
 			},
 		},
 		Action: runner.helpOrInvalid,
@@ -245,7 +193,6 @@ func (runner *runner) app() *urfave.Command {
 		runner.pullCommand(),
 		runner.pathCommand(),
 		runner.verifyCommand(),
-		runner.packCommand(),
 		runner.unpackCommand(),
 		runner.cacheCommand(),
 		runner.configCommand(),
@@ -290,24 +237,7 @@ func (runner *runner) helpOrInvalid(_ context.Context, current *urfave.Command) 
 	if !runner.json {
 		_ = urfave.ShowRootCommandHelp(current)
 	}
-	// Only at the root, which is where the retired spellings were. This is also
-	// the action a bare `dac cache <nonsense>` reaches, and answering that with
-	// where a top-level command went would be a non sequitur.
-	if moved, exists := movedCommands[name]; exists && current == current.Root() {
-		return fault.New("invalid_arguments", moved)
-	}
 	return fault.New("invalid_arguments", "The command is not valid.")
-}
-
-// movedCommands maps each command version 8 retired to where its work went.
-//
-// It is the same reasoning movedFlags is written from: telling somebody with
-// `dac import` in a script that there is no such command is true and useless,
-// and the one question they have is where it went. Both of these are answered
-// by one archive doing the job two used to.
-var movedCommands = map[string]string{
-	"import": "dac import is now dac cache import, and it reads a dacpack rather than a cache bundle.",
-	"export": "dac export is now dac pack. A dacpack carries the same objects, and dac cache import installs them.",
 }
 
 func (runner *runner) usageError(_ context.Context, current *urfave.Command, err error, _ bool) error {
@@ -320,45 +250,5 @@ func (runner *runner) usageError(_ context.Context, current *urfave.Command, err
 			_ = urfave.ShowSubcommandHelp(current)
 		}
 	}
-	if moved := movedFlag(err); moved != "" {
-		return fault.Wrap("invalid_arguments",
-			fmt.Sprintf("The %s option moved into the config file, as %s. Run dac config path to find it.", moved, movedFlags[moved]), err)
-	}
 	return fault.Wrap("invalid_arguments", "The command arguments are invalid.", err)
-}
-
-// movedFlags maps each option that version 7 took off the command line to the
-// config key that replaced it.
-//
-// Answering "that is not a flag" for an option somebody has in a script would
-// be true and useless. These say where the setting went, which is the one
-// question an operator hitting this actually has.
-var movedFlags = map[string]string{
-	"--timeout":           "transfer.timeout",
-	"--retries":           "transfer.retries",
-	"--download-parts":    "transfer.download-parts",
-	"--max-size":          "transfer.max-size",
-	"--credential-helper": "the credentials table",
-	"--progress":          "transfer.progress, or --no-progress for one run",
-	"--distdir":           "an argument to dac cache import",
-}
-
-// movedFlag reports which retired option a parse error is about, if any.
-func movedFlag(err error) string {
-	text := err.Error()
-	for name := range movedFlags {
-		// urfave spells the failure as `flag provided but not defined: -timeout`,
-		// with one dash whatever the caller wrote, so match on the bare name and
-		// require a dash before it and a boundary after -- otherwise --max-size
-		// would answer for --max-age.
-		bare := strings.TrimLeft(name, "-")
-		index := strings.Index(text, bare)
-		if index <= 0 || text[index-1] != '-' {
-			continue
-		}
-		if rest := text[index+len(bare):]; rest == "" || rest[0] == ' ' || rest[0] == '=' {
-			return name
-		}
-	}
-	return ""
 }

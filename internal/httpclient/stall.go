@@ -11,19 +11,8 @@ import (
 )
 
 // stallGuard cancels a request when body reads stop making progress.
-//
-// Once the timer has fired, stalled stays set and every later error is reported
-// as a stall, io.EOF included. Both halves of that are deliberate, and both look
-// like bugs from close up.
-//
-// The flag is one way because what it pairs with is: the timer cancels the
-// request, so nothing after it is going to succeed, and there is no state to
-// return to. Converting io.EOF matters more. A stall that truncates a body can
-// surface as a clean end of stream, and for an asset the manifest does not pin
-// there is no digest waiting to catch it -- DAC would lock the bytes it got.
-// Exempting io.EOF trades a rare false failure, on a transfer that finished in
-// the same instant the timer fired, for a rare silent wrong answer. A retry
-// costs a download; a lock file naming half an asset costs whatever runs next.
+// Once the timer has fired, stalled stays set and every later error is reported as a stall, io.EOF included.
+// The one-way flag cancels a request after the stall timer fires.
 type stallGuard struct {
 	body    io.ReadCloser
 	cancel  context.CancelFunc

@@ -1,19 +1,12 @@
 package application
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
-	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
-// The state words an info result reports. They are exported because they are
-// part of the output contract and two packages now depend on the same spelling:
-// this one writes them into the JSON, and the command line decides from them
-// which states a terminal should draw attention to.
+// The state words an info result reports.
 const (
 	LockCurrent      = "current"
 	LockMissing      = "missing"
@@ -22,83 +15,24 @@ const (
 	CacheMissing     = "missing"
 	CacheCorrupt     = "corrupt"
 	CacheUnavailable = "unavailable"
-	RequestAllowed   = "allowed"
-	RequestBlocked   = "blocked"
 )
 
-// InfoOptions selects the assets and rewrite config for one inspection.
+// InfoOptions selects the assets for one inspection.
 type InfoOptions struct {
 	// Selection narrows the assets to one coordinate or one asset's versions.
-	// A zero Selection covers the whole project.
 	Selection Selection
-	Rewriter  *rewrite.Config
 }
 
-// Selection is the asset filter one inspection applies.
-//
-// A project can hold several versions of an asset now, so "which versions of
-// this do I have" is a question with an answer, and info is the command that
-// has it. The two narrower forms are the coordinate every other command takes
-// and the namespace/name it belongs to.
-//
-// Its fields are unexported and reached only through the three constructors, so
-// there is no way to build one that means nothing in particular. Its zero value
-// is the whole project, which is the reading that fails safe: a filter nobody
-// set should show everything rather than silently match one thing.
-type Selection struct {
-	kind       selectionKind
-	coordinate coord.Coordinate
-	group      coord.Group
-}
-
-type selectionKind int
-
-const (
-	selectEvery selectionKind = iota
-	selectExact
-	selectGroup
-)
-
-// The two things a selection is resolved against, as the noun a refusal names.
-//
-// A selection is a filter over coordinates, and coordinates key more than a
-// manifest: unpack applies the same argument to the index of a dacpack, which
-// is a file that arrived from somewhere else and that no project has to be
-// behind at all. Naming the wrong one would point somebody at a manifest the
-// command never opened.
-const (
-	subjectProject = "project"
-	subjectPack    = "dacpack"
-)
-
-// EverySelection selects the whole project.
-func EverySelection() Selection { return Selection{kind: selectEvery} }
-
-// ExactSelection selects one coordinate.
-func ExactSelection(name coord.Coordinate) Selection {
-	return Selection{kind: selectExact, coordinate: name}
-}
-
-// GroupSelection selects every version of one asset.
-func GroupSelection(group coord.Group) Selection {
-	return Selection{kind: selectGroup, group: group}
-}
-
-// InfoAsset combines manifest, request, lock, and cache information.
+// InfoAsset combines manifest, lock, and cache information.
 type InfoAsset struct {
-	Coordinate    string `json:"coordinate"`
-	Namespace     string `json:"namespace"`
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	SourceURL     string `json:"sourceUrl"`
-	RequestURL    string `json:"requestUrl"`
-	RequestStatus string `json:"requestStatus"`
-	Rewritten     bool   `json:"rewritten"`
-	CacheStatus   string `json:"cacheStatus"`
-	Integrity     string `json:"integrity,omitempty"`
-	// Filename is what the origin calls this asset. It comes from the lock, so
-	// it is absent for the same reason digest and size are: a missing or stale
-	// lock holds nothing that describes the manifest in front of it.
+	Coordinate  string `json:"coordinate"`
+	Namespace   string `json:"namespace"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	SourceURL   string `json:"sourceUrl"`
+	CacheStatus string `json:"cacheStatus"`
+	Integrity   string `json:"integrity,omitempty"`
+	// Filename is what the origin calls this asset.
 	Filename string `json:"filename,omitempty"`
 	Digest   string `json:"digest,omitempty"`
 	Size     *int64 `json:"size,omitempty"`
@@ -111,25 +45,21 @@ type InfoResult struct {
 	Summary InfoSummary `json:"summary"`
 }
 
-// InfoSummary counts the states worth acting on. It deliberately omits an
-// allowed count: the interesting number is how many assets a config refuses,
-// and the rest is arithmetic on the asset count.
+// InfoSummary counts the states worth acting on.
 type InfoSummary struct {
 	AssetCount   int    `json:"assetCount"`
 	CachedCount  int    `json:"cachedCount"`
 	CorruptCount int    `json:"corruptCount"`
-	BlockedCount int    `json:"blockedCount"`
 	LockStatus   string `json:"lockStatus"`
 }
 
-// Info inspects manifest assets without network access. It ignores lock data
-// when the lock is missing or stale because that data does not describe the manifest.
+// Info inspects manifest assets without network access.
 func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	manifest, err := service.readManifest()
 	if err != nil {
 		return InfoResult{}, err
 	}
-	names, err := selected(subjectProject, manifest.Assets, options.Selection)
+	names, err := selected(manifest.Assets, options.Selection)
 	if err != nil {
 		return InfoResult{}, err
 	}
@@ -142,7 +72,7 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 		Summary: InfoSummary{AssetCount: len(names), LockStatus: lockStatus},
 	}
 	for _, name := range names {
-		asset, err := service.infoAsset(name, manifest.Assets[name], lock, lockStatus, options.Rewriter)
+		asset, err := service.infoAsset(name, manifest.Assets[name], lock, lockStatus)
 		if err != nil {
 			return InfoResult{}, err
 		}
@@ -152,115 +82,9 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 		case CacheCorrupt:
 			result.Summary.CorruptCount++
 		}
-		if asset.RequestStatus == RequestBlocked {
-			result.Summary.BlockedCount++
-		}
 		result.Assets = append(result.Assets, asset)
 	}
 	return result, nil
-}
-
-// selected returns the coordinates one filter covers, in a stable order.
-//
-// It takes any coordinate-keyed set rather than a manifest, because the two
-// commands that narrow themselves narrow against different things: a pull reads
-// the project, and an unpack reads the index of an archive. Both are maps keyed
-// by the same coordinate, and the filter is the same filter.
-func selected[V any](subject string, assets map[coord.Coordinate]V, selection Selection) ([]coord.Coordinate, error) {
-	switch selection.kind {
-	case selectExact:
-		if _, exists := assets[selection.coordinate]; !exists {
-			return nil, unknownCoordinate(subject, selection.coordinate, assets)
-		}
-		return []coord.Coordinate{selection.coordinate}, nil
-	case selectGroup:
-		names := coord.InGroup(assets, selection.group)
-		if len(names) == 0 {
-			return nil, &fault.Error{
-				Code:    "asset_unknown",
-				Message: "The " + subject + " does not have this asset.",
-				Details: map[string]any{"asset": selection.group.String()},
-			}
-		}
-		return names, nil
-	default:
-		return coord.Sorted(assets), nil
-	}
-}
-
-// chosen returns the coordinates a list of selections covers, in the order the
-// set being filtered has and without repeats. An empty list covers all of it.
-//
-// The order is the manifest's or the index's rather than the command line's, so
-// that a result reads the same whether or not it was narrowed, and two
-// selections that overlap -- an asset named once whole and once by its group --
-// name it once.
-func chosen[V any](subject string, assets map[coord.Coordinate]V, selections []Selection) ([]coord.Coordinate, error) {
-	if len(selections) == 0 {
-		return coord.Sorted(assets), nil
-	}
-	wanted := make(map[coord.Coordinate]struct{}, len(selections))
-	for _, selection := range selections {
-		names, err := selected(subject, assets, selection)
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range names {
-			wanted[name] = struct{}{}
-		}
-	}
-	names := make([]coord.Coordinate, 0, len(wanted))
-	for _, name := range coord.Sorted(assets) {
-		if _, found := wanted[name]; found {
-			names = append(names, name)
-		}
-	}
-	return names, nil
-}
-
-// onlyAsset resolves a selection to the single asset it names.
-//
-// It is the reading half of selected, for a command whose answer is one asset
-// rather than a list. Leaving the version off is convenient exactly when the
-// project holds one version, and a guess the rest of the time -- so it is
-// answered when there is nothing to guess and refused when there is.
-//
-// DAC could not pick "the latest" even if it wanted to. It does not order
-// versions: a version is whatever the publisher calls a release, and DAC has no
-// idea whether "10" follows "9" or whether either is a number. The refusal is
-// not caution about a hard problem, it is the absence of one to be careful
-// about.
-func onlyAsset[V any](selection Selection, assets map[coord.Coordinate]V) (coord.Coordinate, error) {
-	switch selection.kind {
-	case selectExact:
-		if _, exists := assets[selection.coordinate]; !exists {
-			return coord.Coordinate{}, unknownCoordinate(subjectProject, selection.coordinate, assets)
-		}
-		return selection.coordinate, nil
-	case selectGroup:
-		names := coord.InGroup(assets, selection.group)
-		switch len(names) {
-		case 0:
-			return coord.Coordinate{}, &fault.Error{
-				Code:    "asset_unknown",
-				Message: "The project does not have this asset.",
-				Details: map[string]any{"asset": selection.group.String()},
-			}
-		case 1:
-			return names[0], nil
-		}
-		versions := coord.Versions(names)
-		return coord.Coordinate{}, &fault.Error{
-			Code:    "asset_ambiguous",
-			Message: "The project has more than one version of this asset. Name the version you mean.",
-			Details: map[string]any{"asset": selection.group.String(), "versions": versions},
-			Cause:   fmt.Errorf("%s has %s", selection.group, strings.Join(versions, ", ")),
-		}
-	}
-	// The whole-project selection has no single answer, and no command that
-	// takes one argument can produce it.
-	return coord.Coordinate{}, fault.New("invalid_arguments",
-		"Specify one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 }
 
 // infoLock classifies a readable lock. A stale lock does not cause a command error.
@@ -278,27 +102,16 @@ func (service *Service) infoLock(manifest project.Manifest) (project.Lock, strin
 	return lock, LockCurrent, nil
 }
 
-// infoAsset combines one manifest asset with its request and cache states.
-func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string, config *rewrite.Config) (InfoAsset, error) {
-	decision, err := config.Evaluate(source.URL)
-	if err != nil {
-		return InfoAsset{}, withAsset(fault.Wrap("rewrite_failed", "DAC could not apply the rewrite config.", err), name.String())
-	}
-	requestStatus := RequestAllowed
-	if decision.Blocked {
-		requestStatus = RequestBlocked
-	}
+// infoAsset combines one manifest asset with its lock and cache states.
+func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string) (InfoAsset, error) {
 	result := InfoAsset{
-		Coordinate:    name.String(),
-		Namespace:     name.Namespace,
-		Name:          name.Name,
-		Version:       name.Version,
-		SourceURL:     source.URL,
-		RequestURL:    decision.URL,
-		RequestStatus: requestStatus,
-		Rewritten:     decision.Rewritten,
-		CacheStatus:   CacheUnavailable,
-		Integrity:     source.Integrity,
+		Coordinate:  name.String(),
+		Namespace:   name.Namespace,
+		Name:        name.Name,
+		Version:     name.Version,
+		SourceURL:   source.URL,
+		CacheStatus: CacheUnavailable,
+		Integrity:   source.Integrity,
 	}
 	if lockStatus != LockCurrent {
 		return result, nil
