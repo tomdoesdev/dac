@@ -19,7 +19,11 @@ type AddOptions struct {
 	AllowInsecureHTTP bool
 	// Filename is the project name that overrides origin names during later resolutions.
 	Filename string
-	Force    bool
+	// Concurrency bounds the assets one add resolves at a time. An add resolves the
+	// asset it was given and every entry a hand edit left the lock file no longer
+	// describing, and that second set is the same work lock does.
+	Concurrency int
+	Force       bool
 	// Pin records the digest the asset resolves to as its integrity value, so that every later command holds the publisher to the bytes this add saw.
 	Pin     bool
 	MaxSize int64
@@ -109,8 +113,9 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 
 	// Reconciling the updated manifest resolves the new asset, which no lock file can describe yet, and any asset a hand edit left behind, in one pass.
 	reconciled, err := service.reconcile(ctx, updated, lock, reconcileOptions{
-		maxSize: options.MaxSize,
-		mode:    resolveChanged,
+		concurrency: options.Concurrency,
+		maxSize:     options.MaxSize,
+		mode:        resolveChanged,
 	})
 	if err != nil {
 		return AddResult{}, err

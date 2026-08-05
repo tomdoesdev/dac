@@ -65,8 +65,15 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 		return old, "not_modified", nil
 	}
 	service.Reporter.Start(name, response.Length)
-	reader := &progressReader{name: name, reader: response.Body, reporter: service.Reporter}
+	reader := &transferReader{name: name, reader: response.Body, reporter: service.Reporter}
 	// A pinned asset is normally installed against its publisher digest, so bytes that fail it never reach the cache.
+	// Observing drops that check, because reporting what an origin now serves means
+	// receiving it: bytes that fail a pin are what verify --refresh exists to find,
+	// and it cannot compare what it refused to accept. Those bytes do land in the
+	// cache, under the digest they actually have rather than the one the lock file
+	// names, so nothing can resolve to them and collection takes them as it takes
+	// anything else nothing referenced. The cost is that a check can leave up to one
+	// asset's worth of unreferenced bytes behind per drifted asset.
 	expect := source.Integrity
 	if options.mode == resolveObserve {
 		expect = ""

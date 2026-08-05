@@ -40,6 +40,7 @@ func (runner *runner) addCommand() *urfave.Command {
 			}
 			service := runner.projectService(current)
 			var maxSize int64
+			var concurrency int
 			if !current.Bool("offline") {
 				var client *httpclient.Client
 				service, client, err = runner.networkService(ctx, current, false)
@@ -51,6 +52,13 @@ func (runner *runner) addCommand() *urfave.Command {
 				if err != nil {
 					return nil, "", err
 				}
+				// Add carries no --concurrency flag: the asset it was asked for is one
+				// request, and the parallelism is for the entries it settles on the way
+				// past, which nobody invoked it to think about.
+				concurrency, err = runner.concurrency(current)
+				if err != nil {
+					return nil, "", err
+				}
 			}
 			result, err := service.Add(ctx, application.AddOptions{
 				Coordinate:        name,
@@ -58,6 +66,7 @@ func (runner *runner) addCommand() *urfave.Command {
 				Integrity:         current.String("integrity"),
 				Filename:          current.String("name"),
 				AllowInsecureHTTP: current.Bool("allow-insecure-http"),
+				Concurrency:       concurrency,
 				Force:             current.Bool("force"),
 				Pin:               current.Bool("pin"),
 				MaxSize:           maxSize,

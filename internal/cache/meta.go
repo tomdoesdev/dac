@@ -1,10 +1,20 @@
 package cache
 
-// This file implements the sidecar that makes the object store tamper-evident.
+// This file implements the sidecar that makes the object store damage-evident.
 // A content-addressed store names an object after its bytes, which makes that name a claim rather than a fact.
 // So each object carries a sidecar recording the size and modification time it had when DAC installed it.
+//
+// Damage-evident rather than tamper-evident, and the difference is the whole
+// security value of this file: a sidecar sits beside the object it describes and
+// is writable by whatever could have written the object, so anything that can
+// change an object can restate the claim about it. What this catches is a cache
+// that decayed -- a truncated write, a bad sector, an editor saving over a path it
+// found. What catches the other case is Verify in cache.go, which hashes the bytes
+// and ignores every claim anything has made about them, and which dac cache scrub
+// is the command for.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -66,6 +76,19 @@ func writeMeta(path string, value meta) error {
 	return jsonfile.WriteAtomic(path, data, metaFileMode)
 }
 
+// cancelReader stops a hash when the command that asked for it ends.
+type cancelReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader *cancelReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buffer)
+}
+
 // check confirms that an object still holds the bytes DAC installed.
 // The cheap path is a stat compared against the sidecar.
 func (store *Store) check(value, path string, info os.FileInfo) error {
@@ -80,12 +103,15 @@ func (store *Store) check(value, path string, info os.FileInfo) error {
 		store.remember(value, info)
 		return nil
 	}
-	return store.verify(value, path)
+	// A lookup carries no context: Stat answers questions that several commands ask
+	// without one, and this hash is at most one object that a sidecar could not
+	// vouch for rather than the whole cache a scrub walks.
+	return store.verify(context.Background(), value, path)
 }
 
 // verify hashes an object and either records what it found or reports the object as corrupt.
-func (store *Store) verify(value, path string) error {
-	actual, info, err := hashFile(path)
+func (store *Store) verify(ctx context.Context, value, path string) error {
+	actual, info, err := hashFile(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -100,14 +126,15 @@ func (store *Store) verify(value, path string) error {
 
 // hashFile hashes an object and reports the file information for the exact bytes it read.
 // That information comes from the open descriptor rather than from the path, because an install renames a new object over the old one.
-func hashFile(path string) (string, os.FileInfo, error) {
+// The context stops part way through a large object, because a scrub is one command over a whole cache and somebody has to be able to change their mind about it.
+func hashFile(ctx context.Context, path string) (string, os.FileInfo, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", nil, err
 	}
 	defer func() { _ = file.Close() }()
 	hashValue := sha256.New()
-	if _, err := io.Copy(hashValue, file); err != nil {
+	if _, err := io.Copy(hashValue, &cancelReader{ctx: ctx, reader: file}); err != nil {
 		return "", nil, err
 	}
 	info, err := file.Stat()

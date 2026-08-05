@@ -102,6 +102,8 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		// Everything is older than a cutoff in the far future.
 		cutoff = time.Now().Add(farFuture)
 	}
+	// A temporary file is never taken on the age cutoff alone. See temporaryGrace.
+	temporaryCutoff := earlier(cutoff, time.Now().Add(-temporaryGrace))
 	// collected names the objects this run took, so the sidecar sweep can tell the pairs it removed itself from the sidecars that were already alone.
 	collected := map[string]struct{}{}
 
@@ -144,13 +146,13 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 	slices.Sort(result.Digests)
 
-	temporary, err := store.collectTemporary(cutoff, options.DryRun)
+	temporary, err := store.collectTemporary(temporaryCutoff, options.DryRun)
 	if err != nil {
 		return application.GCResult{}, err
 	}
 	result.TempCount = temporary
 
-	sidecars, abandoned, err := store.collectSidecars(ctx, blobs, entries, collected, cutoff, options.DryRun)
+	sidecars, abandoned, err := store.collectSidecars(ctx, blobs, entries, collected, cutoff, temporaryCutoff, options.DryRun)
 	if err != nil {
 		return application.GCResult{}, err
 	}
@@ -280,6 +282,23 @@ func (store *Store) evictable(ctx context.Context, collected map[string]struct{}
 // farFuture is the cutoff an unconditional collection uses.
 const farFuture = 100 * 365 * 24 * time.Hour
 
+// temporaryGrace is how long a temporary file is left alone whatever the collection age is.
+// A download in flight is an open file in a directory this sweep walks, and the
+// age cutoff says nothing about whether somebody is still writing to it: clearing
+// the cache takes every object by design, but taking a transfer's temporary file
+// out from under it fails a download that was doing nothing wrong. Nothing here is
+// urgent enough to be worth that, because a leftover this run leaves is one the
+// next run removes.
+const temporaryGrace = time.Hour
+
+// earlier returns whichever of two cutoffs collects less.
+func earlier(first, second time.Time) time.Time {
+	if first.Before(second) {
+		return first
+	}
+	return second
+}
+
 // Describe reports an object's size and when a project last used it.
 // It touches nothing.
 func (store *Store) Describe(value string) (application.ObjectDescription, bool, error) {
@@ -366,7 +385,8 @@ func (store *Store) collect(ctx context.Context, value string, unused func(time.
 // collectSidecars removes sidecars left without an object, along with the temporary files an interrupted sidecar write leaves behind.
 // Collection removes an object and its sidecar together, so one that survives on its own describes an object something outside DAC deleted.
 // The entries come from a listing taken before the objects were collected, so collected names the ones this run removed.
-func (store *Store) collectSidecars(ctx context.Context, directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff time.Time, dryRun bool) (int, int, error) {
+// A temporary file answers to its own cutoff, because one that is still being written belongs to a process rather than to an age.
+func (store *Store) collectSidecars(ctx context.Context, directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff, temporaryCutoff time.Time, dryRun bool) (int, int, error) {
 	sidecars, abandoned := 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
@@ -382,7 +402,7 @@ func (store *Store) collectSidecars(ctx context.Context, directory string, entri
 			if err != nil {
 				return 0, 0, err
 			}
-			if !info.ModTime().Before(cutoff) {
+			if !info.ModTime().Before(temporaryCutoff) {
 				continue
 			}
 			abandoned++
@@ -488,7 +508,7 @@ func (store *Store) collectTemporary(cutoff time.Time, dryRun bool) (int, error)
 
 // Verify hashes one object and reports what it holds.
 // It deliberately ignores both the sidecar and the in-process record of what this run has already hashed.
-func (store *Store) Verify(_ context.Context, value string) (application.Object, bool, error) {
+func (store *Store) Verify(ctx context.Context, value string) (application.Object, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
 		return application.Object{}, false, err
@@ -498,7 +518,7 @@ func (store *Store) Verify(_ context.Context, value string) (application.Object,
 	} else if err != nil {
 		return application.Object{}, false, err
 	}
-	actual, info, err := hashFile(path)
+	actual, info, err := hashFile(ctx, path)
 	if err != nil {
 		return application.Object{}, false, err
 	}

@@ -280,28 +280,47 @@ func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 	}
 }
 
+// helpOrInvalid answers an invocation that names no operation to run: dac on its
+// own, one of the commands that only group others, or either of those followed by
+// a word that is not one of their commands.
+//
+// A bare command is somebody asking what it can do, so it gets help and succeeds.
+// JSON mode is the exception rather than a second spelling of the same thing:
+// there is no help to write into a document, and a caller that asked for one has
+// to get one, so the same invocation is reported as the usage error it is.
 func (runner *runner) helpOrInvalid(_ context.Context, current *urfave.Command) error {
-	name := current.Args().First()
-	if name == "" {
-		return urfave.ShowRootCommandHelp(current)
+	if name := current.Args().First(); name == "" && !runner.json {
+		runner.showHelp(current)
+		return nil
 	}
-	runner.commandName = name
+	runner.commandName = commandPath(current)
 	runner.usage = true
 	if !runner.json {
-		_ = urfave.ShowRootCommandHelp(current)
+		runner.showHelp(current)
 	}
 	return fault.New("invalid_arguments", "The command is not valid.")
 }
 
 func (runner *runner) usageError(_ context.Context, current *urfave.Command, err error, _ bool) error {
-	runner.commandName = strings.TrimPrefix(strings.Join(current.Path()[1:], "."), ".")
+	runner.commandName = commandPath(current)
 	runner.usage = true
 	if !runner.json {
-		if current == current.Root() {
-			_ = urfave.ShowRootCommandHelp(current)
-		} else {
-			_ = urfave.ShowSubcommandHelp(current)
-		}
+		runner.showHelp(current)
 	}
 	return fault.Wrap("invalid_arguments", "The command arguments are invalid.", err)
+}
+
+// showHelp writes the help for one command, which is the root's only when that is the command.
+// A group that showed the root's help would answer "what can dac trust do" with the list of things dac can do, and never name its own commands at all.
+func (runner *runner) showHelp(current *urfave.Command) {
+	if current == current.Root() {
+		_ = urfave.ShowRootCommandHelp(current)
+		return
+	}
+	_ = urfave.ShowSubcommandHelp(current)
+}
+
+// commandPath names the command a usage failure happened in, in the dotted form every other result reports.
+func commandPath(current *urfave.Command) string {
+	return strings.TrimPrefix(strings.Join(current.Path()[1:], "."), ".")
 }
