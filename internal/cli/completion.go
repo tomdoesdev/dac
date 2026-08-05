@@ -23,6 +23,34 @@ func (runner *runner) completeCoordinates() urfave.ShellCompleteFunc {
 	return runner.completeAssets(true)
 }
 
+// completeHosts suggests the trusted hosts, leaving out the ones already named.
+// Withdrawing trust is the one trust command whose argument has to match something
+// that already exists, so it is the one worth completing.
+func (runner *runner) completeHosts() urfave.ShellCompleteFunc {
+	return func(ctx context.Context, current *urfave.Command) {
+		given := current.Args().Slice()
+		if len(given) > 0 && strings.HasPrefix(given[len(given)-1], "-") {
+			urfave.DefaultCompleteWithFlags(ctx, current)
+			return
+		}
+		_, list, err := runner.trustFile(current)
+		if err != nil {
+			// Completion runs wherever somebody presses tab, and a file it cannot read is not the moment to say so.
+			return
+		}
+		named := make(map[string]struct{}, len(given))
+		for _, value := range given {
+			named[value] = struct{}{}
+		}
+		for _, host := range list.Sorted() {
+			if _, taken := named[host]; taken {
+				continue
+			}
+			_, _ = fmt.Fprintf(runner.stdout, "%s:%s\n", host, usedText(list.Hosts[host].LastUsed))
+		}
+	}
+}
+
 // completeAssets writes the coordinates a command could still be given.
 // It suggests the whole coordinate and never the bare <namespace>/<name> that path and info also accept.
 func (runner *runner) completeAssets(repeatable bool) urfave.ShellCompleteFunc {

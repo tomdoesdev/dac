@@ -19,6 +19,7 @@ func (runner *runner) addCommand() *urfave.Command {
 		&urfave.StringFlag{Name: "name", Usage: "Call the asset this instead of the name its origin gives."},
 		&urfave.BoolFlag{Name: "pin", Usage: "Record the resolved digest as the asset integrity value."},
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
+		&urfave.BoolFlag{Name: "trust", Usage: "Add the source URL's host to the trusted-hosts file."},
 		&urfave.BoolFlag{Name: "force", Usage: "Replace the source of an asset version the manifest already has."},
 		&urfave.BoolFlag{Name: "offline", Usage: "Write only the manifest without network access."},
 	)
@@ -31,6 +32,11 @@ func (runner *runner) addCommand() *urfave.Command {
 			name, source, err := coordinateAndSource(current)
 			if err != nil {
 				return nil, "", err
+			}
+			if current.Bool("trust") {
+				if err := runner.trustSource(ctx, current, source); err != nil {
+					return nil, "", err
+				}
 			}
 			service := runner.projectService(current)
 			var maxSize int64

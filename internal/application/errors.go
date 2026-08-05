@@ -18,6 +18,28 @@ var ErrTooLarge = errors.New("asset is larger than the permitted size")
 // ErrStalled marks a response that stopped transferring bytes.
 var ErrStalled = errors.New("asset transfer stalled")
 
+// ErrHostNotTrusted marks a request DAC refused because the trusted-hosts file does not name its host.
+var ErrHostNotTrusted = errors.New("host is not in the trusted-hosts file")
+
+// HostError names the host behind a trust refusal.
+// It is declared here rather than beside the trust list so that the HTTP client
+// can classify a refusal without importing the package that raises it.
+type HostError struct {
+	Host string
+}
+
+func (value *HostError) Error() string { return fmt.Sprintf("%s %v", value.Host, ErrHostNotTrusted) }
+
+func (value *HostError) Unwrap() error { return ErrHostNotTrusted }
+
+// Details returns the stable JSON details for one refused host.
+func (value *HostError) Details() map[string]any {
+	if value.Host == "" {
+		return nil
+	}
+	return map[string]any{"host": value.Host}
+}
+
 // Unknown marks a ContentError size that DAC could not determine.
 const Unknown = int64(-1)
 
@@ -118,6 +140,7 @@ type RequestDetail interface {
 
 func networkError(err error) error {
 	code, message := "network_error", "The asset request failed."
+	var host *HostError
 	var network net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -126,6 +149,11 @@ func networkError(err error) error {
 		code, message = "timeout", "The network request timed out."
 	case errors.Is(err, urlpolicy.ErrNotPermitted):
 		code, message = "url_not_permitted", "The asset URL is not permitted."
+	// A refusal is reported before the timeout case below because the transport
+	// wraps every round-trip error in one that answers to net.Error.
+	case errors.As(err, &host):
+		code = "host_not_trusted"
+		message = fmt.Sprintf("DAC will not download from %s. Run dac trust add %s.", host.Host, host.Host)
 	case errors.As(err, &network) && network.Timeout():
 		code, message = "timeout", "The network request timed out."
 	}
@@ -134,17 +162,22 @@ func networkError(err error) error {
 
 // requestDetails names the request behind a transport failure.
 // Request details keep JSON consumers from parsing status and URL from error text.
+// A refused redirect carries both: the URL is the asset that was asked for, and
+// the host is the hop it was refused at.
 func requestDetails(err error) map[string]any {
-	var detail RequestDetail
-	if !errors.As(err, &detail) {
-		return nil
-	}
 	details := map[string]any{}
-	if value := detail.RequestURL(); value != "" {
-		details["url"] = value
+	var detail RequestDetail
+	if errors.As(err, &detail) {
+		if value := detail.RequestURL(); value != "" {
+			details["url"] = value
+		}
+		if value := detail.StatusCode(); value != 0 {
+			details["status"] = value
+		}
 	}
-	if value := detail.StatusCode(); value != 0 {
-		details["status"] = value
+	var host *HostError
+	if errors.As(err, &host) {
+		maps.Copy(details, host.Details())
 	}
 	if len(details) == 0 {
 		return nil

@@ -24,14 +24,17 @@ func TestInfoCommandCombinesManifestAndCacheState(t *testing.T) {
 	human := run(t, appendArgs(paths.base, "info"))
 	expected := "app/first@1\n" +
 		"source: https://one.example.com/asset\n" +
+		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
 		"app/second@2\n" +
 		"source: https://two.example.com/asset\n" +
+		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
 		"app/third@3\n" +
 		"source: https://three.example.com/asset\n" +
+		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n"
 	if human.status != ExitOK || human.stdout != expected || human.stderr != "" {
@@ -73,6 +76,7 @@ func TestInfoCommandCombinesManifestAndCacheState(t *testing.T) {
 	singleHuman := run(t, appendArgs(paths.base, "info", "app/third@3"))
 	expectedSingle := "app/third@3\n" +
 		"source: https://three.example.com/asset\n" +
+		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n"
 	if singleHuman.status != ExitOK || singleHuman.stdout != expectedSingle || singleHuman.stderr != "" {

@@ -17,6 +17,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/httpclient"
 	"github.com/tomdoesdev/dac/internal/progress"
+	"github.com/tomdoesdev/dac/internal/trust"
 )
 
 // projectPaths returns the manifest and lock file this run acts on.
@@ -39,10 +40,18 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 	if err != nil {
 		return nil, err
 	}
+	// The trust list is read here rather than only by the commands that download,
+	// because info reports what a download would do without making one.
+	_, list, err := runner.trustFile(current)
+	if err != nil {
+		return nil, err
+	}
 	manifest, lock := projectPaths(current)
 	store := cache.New(root)
 	store.Logger = runner.trace(current)
-	return application.New(manifest, lock, store, nil, nil), nil
+	service := application.New(manifest, lock, store, nil, nil)
+	service.Trust = list
+	return service, nil
 }
 
 // trace returns the logger for this run.
@@ -78,12 +87,20 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	if err != nil {
 		return nil, nil, err
 	}
+	store, list, err := runner.trustFile(current)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The refusal is a transport stage because that is the one place every request
+	// passes through: the asset, each redirect it follows, and each range of a split.
+	runner.gate = trust.NewGate(store, list, current.Bool("insecure-trust-all"))
 	trace := runner.trace(current)
 	client := httpclient.New(httpclient.Options{
-		Timeout:     settings.Timeout,
-		Retries:     settings.Retries,
-		Parallelism: settings.DownloadParts,
-		Logger:      trace,
+		Timeout:             settings.Timeout,
+		Retries:             settings.Retries,
+		Parallelism:         settings.DownloadParts,
+		TransportDecorators: []httpclient.TransportDecorator{runner.gate.Decorate},
+		Logger:              trace,
 	})
 	service.Fetcher = client
 	// A trace and a progress bar share standard error, and mpb redraws in place.
@@ -96,6 +113,9 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 	flags := []urfave.Flag{
 		&urfave.BoolFlag{Name: "no-progress", Usage: "Do not write transfer progress to standard error."},
+		// This flag takes no environment variable on purpose: a variable that turns
+		// off a refusal turns it off for everything a shell later runs, silently.
+		&urfave.BoolFlag{Name: "insecure-trust-all", Usage: "Download from any host, ignoring the trusted-hosts file."},
 	}
 	if withConcurrency {
 		flags = append(flags, &urfave.IntFlag{
