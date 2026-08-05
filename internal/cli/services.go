@@ -20,9 +20,7 @@ import (
 )
 
 // projectPaths returns the manifest and lock file this run acts on.
-//
-// The lock file follows the manifest unless it was named. A project is its two
-// files together. The lock follows an explicitly selected manifest.
+// The lock file follows the manifest unless it was named.
 func projectPaths(current *urfave.Command) (string, string) {
 	manifest := current.String("manifest")
 	if current.IsSet("lock") {
@@ -47,15 +45,12 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 	return application.New(manifest, lock, store, nil, nil), nil
 }
 
-// trace returns the logger for this run. It writes to standard error, where
-// help and progress already go, because standard output carries the output
-// contract and a trace is not a command result.
+// trace returns the logger for this run.
 func (runner *runner) trace(current *urfave.Command) *slog.Logger {
 	return debug.New(runner.stderr, current.Bool("debug"))
 }
 
-// cacheRoot resolves the cache directory from the flag, then the config file,
-// then the XDG cache location.
+// cacheRoot resolves the cache directory from the flag, then the config file, then the XDG cache location.
 func (runner *runner) cacheRoot(current *urfave.Command) (string, error) {
 	selected := current.String("cache-dir")
 	if selected == "" {
@@ -73,12 +68,7 @@ func (runner *runner) cacheRoot(current *urfave.Command) (string, error) {
 }
 
 // networkService builds one application service for a network command.
-// suppressProgress disables progress regardless of --progress, which JSON mode
-// needs so that pull writes exactly one document to standard output.
-//
-// The context is the command's, and it reaches the progress reporter as well as
-// the transfers: an interrupt has to end the display along with the downloads
-// it was following.
+// The command context controls transfers and their progress reporter together.
 func (runner *runner) networkService(ctx context.Context, current *urfave.Command, suppressProgress bool) (*application.Service, *httpclient.Client, error) {
 	settings, err := runner.config(current)
 	if err != nil {
@@ -96,16 +86,13 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 		Logger:      trace,
 	})
 	service.Fetcher = client
-	// A trace and a progress bar share standard error, and mpb redraws in
-	// place. Two writers to one terminal produce a display that is neither, so
-	// asking what happened turns the bars off the way JSON mode does.
+	// A trace and a progress bar share standard error, and mpb redraws in place.
 	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug")
 	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled, runner.stderrPalette)
 	return service, client, nil
 }
 
 // networkFlags returns the request options that a user can select for one run.
-// Stable transfer limits stay in the config file so commands share one policy.
 func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 	flags := []urfave.Flag{
 		&urfave.BoolFlag{Name: "no-progress", Usage: "Do not write transfer progress to standard error."},
@@ -115,9 +102,7 @@ func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 			Name:    "concurrency",
 			Sources: urfave.EnvVars("DAC_CONCURRENCY"),
 			Usage:   "Set the number of concurrent assets.",
-			// The flag carries no value of its own, so urfave would advertise
-			// the zero one. What it actually falls back to is the config file,
-			// and saying so is the only way somebody finds out where to set it.
+			// The flag carries no value of its own, so urfave would advertise the zero one.
 			DefaultText: "transfer.concurrency, or " + strconv.Itoa(config.DefaultConcurrency),
 		})
 	}

@@ -31,12 +31,7 @@ type invocation struct {
 }
 
 // TestMain points the config search path at an empty directory.
-//
-// DAC reads a config file from the XDG base directories, so without this every
-// test in this package would read whatever the machine running it has
-// installed, and a developer with a config would get different results from
-// CI. Setting it once for the process rather than per test keeps t.Setenv out
-// of tests that would otherwise be free to run in parallel.
+// DAC reads a config file from the XDG base directories, so without this every test in this package would read whatever the machine running it has installed, and a developer with a config would get different results from CI.
 func TestMain(main *testing.M) {
 	root, err := os.MkdirTemp("", "dac-cli-test")
 	if err != nil {
@@ -65,9 +60,7 @@ func TestCommandLifecycle(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		writer.Header().Set("ETag", "\"asset-1\"")
-		// The server URL carries no path, so the header is the only thing that
-		// names this asset. It covers the whole chain from response to lock
-		// entry to reported field.
+		// The server URL carries no path, so the header is the only thing that names this asset.
 		writer.Header().Set("Content-Disposition", `attachment; filename="geo.bin"`)
 		_, _ = writer.Write(content)
 	}))
@@ -198,9 +191,7 @@ func TestCommandLifecycle(t *testing.T) {
 	if len(manifest.Assets) != 0 || len(lock.Assets) != 0 {
 		t.Fatalf("remove left assets: %#v %#v", manifest.Assets, lock.Assets)
 	}
-	// One request for the add, none for the lock or the pull that follows it
-	// because the add already locked and cached the asset, and one for each pull
-	// that had to replace the object this test deleted.
+	// One request for the add, none for the lock or the pull that follows it because the add already locked and cached the asset, and one for each pull that had to replace the object this test deleted.
 	if requests.Load() != 4 {
 		t.Fatalf("expected the add and three pull requests, got %d", requests.Load())
 	}
@@ -243,27 +234,22 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 
 	for _, args := range [][]string{
 		appendArgs(base, "add", "app/bad@@1", "https://example.com/asset"),
-		// The source is an argument rather than a flag, so an add that names no
-		// source is an add with the wrong number of arguments.
+		// The source is an argument rather than a flag, so an add that names no source is an add with the wrong number of arguments.
 		appendArgs(base, "add", "app/asset@1"),
 		appendArgs(base, "add"),
 		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "https://example.com/other"),
 		appendArgs(base, "add", "app/asset@1", "  "),
-		// A version is not optional where a command writes: an add that picked
-		// one for itself would rewrite whichever version it guessed.
+		// A version is not optional where a command writes: an add that picked one for itself would rewrite whichever version it guessed.
 		appendArgs(base, "add", "app/asset", "https://example.com/asset"),
 		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--rewrite-config", filepath.Join(directory, "rewrite")),
 		appendArgs(base, "info", "asset"),
 		appendArgs(base, "info", "app/asset@1", "app/other@1"),
 		appendArgs(base, "list"),
 		appendArgs(base, "rewrite"),
-		// Offline mode resolves nothing, so it has nothing to write a lock file
-		// from. The lock command takes no --offline at all rather than accepting
-		// one and leaving the file as it found it.
+		// Offline mode resolves nothing, so it has nothing to write a lock file from.
 		appendArgs(base, "lock", "--offline"),
 		appendArgs(base, "lock", "--refresh", "--offline"),
-		// The transfer tuning options moved into the config file, so the
-		// command line no longer answers to them at all.
+		// The transfer tuning options moved into the config file, so the command line no longer answers to them at all.
 		appendArgs(base, "pull", "--max-size", "1GiB"),
 		appendArgs(base, "pull", "--timeout", "1m"),
 		appendArgs(base, "pull", "--retries", "1"),
@@ -272,13 +258,16 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		appendArgs(base, "pull", "--no-rewrite"),
 		appendArgs(base, "pull", "--distdir", directory),
 		appendArgs(base, "pull", "--progress=false"),
-		// Every lock operation lives on the lock command, so pull no longer
-		// answers to the flags that used to spell them.
+		// Every lock operation lives on the lock command, so pull no longer answers to the flags that used to spell them.
 		appendArgs(base, "pull", "--update-lock"),
 		appendArgs(base, "pull", "--refresh-lock"),
-		appendArgs(base, "pull", "--rebind"),
-		// Pull is the command that installs, so the lock command does not take
-		// the flags that only mean something to an installation.
+		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--rebind"),
+		appendArgs(base, "lock", "--rebind"),
+		appendArgs(base, "pack"),
+		appendArgs(base, "cache", "import", "delivery"),
+		appendArgs(base, "unpack", "--tree"),
+		appendArgs(base, "unpack", "delivery.dacpack"),
+		// Pull is the command that installs, so the lock command does not take the flags that only mean something to an installation.
 		appendArgs(base, "lock", "--distdir", directory),
 	} {
 		result := runJSON(t, args)
@@ -471,10 +460,6 @@ func appendArgs(base []string, values ...string) []string {
 }
 
 // configFlags writes a config file and returns the flags that select it.
-//
-// The transfer settings live in a file now, so a test that needs one goes
-// through the same --config path a deployment does rather than through a
-// command line that no longer accepts them.
 func configFlags(t *testing.T, text string) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -499,8 +484,7 @@ func assertError(t *testing.T, result invocation, code string) {
 	}
 }
 
-// projectFlags sets up a manifest, lock, and cache under one directory and
-// returns the global flags that point DAC at them.
+// projectFlags sets up a manifest, lock, and cache under one directory and returns the global flags that point DAC at them.
 type projectFlags struct {
 	base         []string
 	manifestPath string
@@ -524,13 +508,7 @@ func newProject(t *testing.T) projectFlags {
 	return flags
 }
 
-// TestPathAcceptsAnAssetWithoutItsVersion covers the shorter form and the one
-// case it must refuse. A project that carries one version of a thing has
-// nothing to choose between, and repeating a version the manifest already holds
-// is noise inside a shell substitution. A project that carries two does have
-// something to choose between, and DAC does not order versions -- it has no
-// idea whether "17" follows "11" -- so there is no latest to fall back on and
-// picking either one would be inventing an answer.
+// TestPathAcceptsAnAssetWithoutItsVersion covers the shorter form and the one case it must refuse.
 func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.WriteString(writer, "bytes for "+request.URL.Path)
@@ -551,8 +529,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	if versioned.stdout != bare.stdout {
 		t.Fatalf("the two spellings disagree: %q and %q", versioned.stdout, bare.stdout)
 	}
-	// The result names the version it resolved to, so a caller that left it off
-	// can still tell which asset answered.
+	// The result names the version it resolved to, so a caller that left it off can still tell which asset answered.
 	result := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
 	assertSuccess(t, result, "path")
 	if data := result.value["data"].(map[string]any); data["coordinate"] != "java/sdk@11" || data["version"] != "11" {
@@ -576,8 +553,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 			t.Fatalf("path java/sdk@%s returned %#v", version, named)
 		}
 	}
-	// An asset the project does not have is a different answer from one it has
-	// too many of, and it keeps the code it always had.
+	// An asset the project does not have is a different answer from one it has too many of, and it keeps the code it always had.
 	assertError(t, runJSON(t, appendArgs(paths.base, "path", "java/nope")), "asset_unknown")
 	assertError(t, runJSON(t, appendArgs(paths.base, "path", "not-a-coordinate")), "invalid_arguments")
 	assertError(t, runJSON(t, appendArgs(paths.base, "path")), "invalid_arguments")
@@ -636,11 +612,7 @@ func TestCacheGCHumanSummary(t *testing.T) {
 	}
 }
 
-// TestColourAddsNothingButColour is the property that makes colour safe to add
-// at all: a result read on a terminal and the same result read anywhere else
-// say the same thing, word for word. If a summary ever earns a word by being
-// coloured -- a status dropped because red already said it -- the other half of
-// DAC's readership loses it silently.
+// TestColourAddsNothingButColour is the property that makes colour safe to add at all: a result read on a terminal and the same result read anywhere else say the same thing, word for word.
 func TestColourAddsNothingButColour(t *testing.T) {
 	content := []byte("colourful asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -654,9 +626,7 @@ func TestColourAddsNothingButColour(t *testing.T) {
 		assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 		return base
 	}
-	// The two runs take a project from the same source, which for a command
-	// that only reads is the same project twice: a cache listing reports a last
-	// use, and two caches filled a moment apart do not agree about it.
+	// The two runs take a project from the same source, which for a command that only reads is the same project twice: a cache listing reports a last use, and two caches filled a moment apart do not agree about it.
 	compare := func(base func() []string, command ...string) {
 		t.Helper()
 		coloured := run(t, appendArgs(base(), append([]string{"--color=always"}, command...)...))
@@ -679,30 +649,24 @@ func TestColourAddsNothingButColour(t *testing.T) {
 	compare(reused, "cache", "list")
 	compare(reused, "cache", "scrub")
 	compare(reused, "pull", "--no-progress")
-	// A removal is not idempotent, so it gets a project per run. Nothing it
-	// reports depends on which one.
+	// A removal is not idempotent, so it gets a project per run.
 	compare(newAssetProject, "remove", "app/geo@1")
 }
 
-// The default is auto, and the writers a test hands DAC are buffers rather than
-// terminals -- which is the same thing every pipe, file, and CI job is.
+// The default is auto, and the writers a test hands DAC are buffers rather than terminals -- which is the same thing every pipe, file, and CI job is.
 func TestColourStaysOffWhereNothingWillRenderIt(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	if human := run(t, appendArgs(base, "verify")); strings.Contains(human.stdout, "\x1b") {
 		t.Fatalf("auto coloured a buffer: %q", human.stdout)
 	}
-	// Forcing it is the whole reason the option exists: a pager or a CI log
-	// viewer renders sequences that the pipe in front of it cannot admit to.
-	// The British spelling is an alias, because this is a British project and
-	// every script that has ever passed this option spells it the other way.
+	// Forcing it is the whole reason the option exists: a pager or a CI log viewer renders sequences that the pipe in front of it cannot admit to.
 	if human := run(t, appendArgs(base, "--colour=always", "verify")); !strings.Contains(human.stdout, "\x1b[") {
 		t.Fatalf("--colour=always wrote no colour: %q", human.stdout)
 	}
 }
 
-// JSON is parsed. Nothing about it is negotiable, including by an operator who
-// asked for colour in the same breath.
+// JSON is parsed.
 func TestJSONIgnoresForcedColour(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
@@ -732,148 +696,6 @@ func TestCacheGCRejectsAnInvalidAge(t *testing.T) {
 	}
 }
 
-// TestPackAndCacheImportMoveObjectsBetweenCaches covers the air-gap round trip.
-// One machine packs what it locked, another installs those objects into its
-// cache and can then answer dac path with no network at all. The archive is the
-// one dac unpack reads, so the machine on the far side of the gap is not
-// required to run DAC to get anything out of it.
-func TestPackAndCacheImportMoveObjectsBetweenCaches(t *testing.T) {
-	content := []byte("portable asset bytes")
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write(content)
-	}))
-	defer server.Close()
-
-	paths := newProject(t)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
-
-	archive := filepath.Join(t.TempDir(), "delivery.dacpack")
-	result := runJSON(t, appendArgs(paths.base, "pack", archive))
-	assertSuccess(t, result, "pack")
-	if result.value["data"].(map[string]any)["assetCount"].(float64) != 1 {
-		t.Fatalf("unexpected pack: %#v", result.value)
-	}
-
-	// A second project starts with a cold cache and receives the archive.
-	server.Close()
-	offline := newProject(t)
-	copyInto(t, paths.manifestPath, offline.manifestPath)
-	copyInto(t, paths.lockPath, offline.lockPath)
-	result = runJSON(t, appendArgs(offline.base, "cache", "import", archive))
-	assertSuccess(t, result, "cache.import")
-	data := result.value["data"].(map[string]any)
-	if data["source"] != archive || data["itemCount"] != float64(1) ||
-		data["objectCount"] != float64(1) || data["byteCount"] != float64(len(content)) {
-		t.Fatalf("unexpected import: %#v", data)
-	}
-	if human := run(t, appendArgs(offline.base, "path", "app/geo@1")); human.status != ExitOK {
-		t.Fatalf("the dacpack did not populate the cache: %#v", human)
-	}
-
-	// The source is an argument and has no default to fall back on. Leaving it
-	// off, naming two, or handing over the empty string a shell makes from a
-	// variable nobody set are all mistakes rather than requests to guess at a
-	// file name.
-	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import", archive, "extra")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(offline.base, "cache", "import", "  ")), "invalid_arguments")
-}
-
-// TestRetiredArchiveCommandsSayWhereTheyWent covers the two spellings a script
-// written against version 7 has. Answering "that is not a command" would be
-// true and useless: both of them named work DAC still does, under one archive
-// rather than two.
-func TestRetiredArchiveCommandsSayWhereTheyWent(t *testing.T) {
-	base := newProject(t).base
-	for command, replacement := range map[string]string{
-		"import": "dac cache import",
-		"export": "dac pack",
-	} {
-		result := runJSON(t, appendArgs(base, command, "delivery.dacpack"))
-		assertError(t, result, "invalid_arguments")
-		message, _ := result.value["error"].(map[string]any)["message"].(string)
-		if !strings.Contains(message, replacement) {
-			t.Fatalf("dac %s does not point at %s: %q", command, replacement, message)
-		}
-		if result.status != ExitUsage {
-			t.Fatalf("dac %s exited %d, want %d", command, result.status, ExitUsage)
-		}
-	}
-}
-
-// TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory covers the two
-// defaults that make the pair usable without arguments: the archive both halves
-// agree on, and the directory unpack materializes into. Neither is a flag,
-// because a dacpack is a build output a project makes one of rather than a
-// thing being moved to a destination somebody had to choose.
-func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
-	content := []byte("materialized asset bytes")
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write(content)
-	}))
-	defer server.Close()
-
-	paths := newProject(t)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		server.URL+"/geo.bin", "--no-progress")), "add")
-
-	// Both defaults are relative, so they land where the command was run, which
-	// is what a script controls by choosing where it runs. t.Chdir restores the
-	// directory afterwards and refuses to run in a parallel test, which is the
-	// part that would otherwise make this unsafe for its neighbours.
-	working := t.TempDir()
-	t.Chdir(working)
-
-	result := runJSON(t, appendArgs(paths.base, "pack"))
-	assertSuccess(t, result, "pack")
-	archive := filepath.Join(working, "dac.dacpack")
-	if written := result.value["data"].(map[string]any)["pack"]; written != archive {
-		t.Fatalf("pack wrote %v, want the default beside the caller: %s", written, archive)
-	}
-
-	// Unpack reads no project files and needs no cache, so nothing here points
-	// it at either. It answers with files on disk rather than a warm cache.
-	result = runJSON(t, []string{"unpack"})
-	assertSuccess(t, result, "unpack")
-	data := result.value["data"].(map[string]any)
-	// The file itself, in the directory the command ran in. The archive's own
-	// layout is how it keeps two assets apart inside itself, and it stops there.
-	target := filepath.Join(working, "geo.bin")
-	if data["pack"] != archive || data["directory"] != working ||
-		data["itemCount"] != float64(1) || data["fileCount"] != float64(1) ||
-		data["byteCount"] != float64(len(content)) {
-		t.Fatalf("unexpected unpack: %#v", data)
-	}
-	files := data["files"].([]any)
-	if len(files) != 1 || files[0].(map[string]any)["path"] != target ||
-		files[0].(map[string]any)["coordinate"] != "app/geo@1" {
-		t.Fatalf("unexpected file report: %#v", files)
-	}
-	written, err := os.ReadFile(target)
-	if err != nil || !bytes.Equal(written, content) {
-		t.Fatalf("the unpack wrote %q to %s: %v", written, target, err)
-	}
-
-	// Unpacking again would replace what the first one wrote, so it stops.
-	assertError(t, runJSON(t, []string{"unpack"}), "unpack_destination_occupied")
-	assertSuccess(t, runJSON(t, []string{"unpack", "--force"}), "unpack")
-
-	// The archive named as the argument, the destination as the option that
-	// takes one.
-	named := filepath.Join(t.TempDir(), "named.dacpack")
-	elsewhere := t.TempDir()
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", named)), "pack")
-	assertSuccess(t, runJSON(t, []string{"unpack", named, "--dest", elsewhere}), "unpack")
-	if _, err := os.Stat(filepath.Join(elsewhere, "geo.bin")); err != nil {
-		t.Fatalf("the named destination is empty: %v", err)
-	}
-	// A pack writes one archive, so a second path is a mistake rather than
-	// something to guess at.
-	assertError(t, runJSON(t, appendArgs(paths.base, "pack", named, "extra")), "invalid_arguments")
-}
-
 func TestMissingConfigFileIsAnError(t *testing.T) {
 	base := append([]string{"--config", filepath.Join(t.TempDir(), "absent.toml")}, newProject(t).base...)
 	result := runJSON(t, appendArgs(base, "pull"))
@@ -897,33 +719,6 @@ func TestRemovedRequestSettingsAreInvalid(t *testing.T) {
 	} {
 		base := append(configFlags(t, settings), newProject(t).base...)
 		assertError(t, runJSON(t, appendArgs(base, "pull")), "config_invalid")
-	}
-}
-
-// Every option version 7 took off the command line says where it went. "That is
-// not a flag" would be true and useless to somebody with it in a script.
-func TestRetiredFlagsNameTheirConfigKey(t *testing.T) {
-	base := newProject(t).base
-	for flag, want := range map[string]string{
-		"--timeout":        "transfer.timeout",
-		"--retries":        "transfer.retries",
-		"--download-parts": "transfer.download-parts",
-		"--max-size":       "transfer.max-size",
-		"--progress":       "transfer.progress",
-	} {
-		result := run(t, appendArgs(base, "pull", flag, "1"))
-		if result.status != ExitUsage {
-			t.Errorf("%s: status = %d, want %d", flag, result.status, ExitUsage)
-			continue
-		}
-		if !strings.Contains(result.stderr, want) {
-			t.Errorf("%s: stderr does not name %s: %q", flag, want, result.stderr)
-		}
-	}
-	// A surviving flag whose name starts the same way must not be mistaken for
-	// a retired one.
-	if result := run(t, appendArgs(base, "cache", "gc", "--max-age", "1s")); result.status != ExitOK {
-		t.Errorf("cache gc --max-age: status = %d, stderr = %q", result.status, result.stderr)
 	}
 }
 
@@ -980,8 +775,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 	if details["expectedDigest"] != digest.Bytes(locked) {
 		t.Fatalf("unexpected expectedDigest %v", details["expectedDigest"])
 	}
-	// The failure has to name the asset, or a multi-asset pull reports a digest
-	// pair without saying which asset it belongs to.
+	// The failure has to name the asset, or a multi-asset pull reports a digest pair without saying which asset it belongs to.
 	if details["asset"] != "app/geo@1" {
 		t.Fatalf("the details lost the asset name: %v", details)
 	}
@@ -1006,19 +800,7 @@ func objectPathFor(t *testing.T, paths projectFlags, name coord.Coordinate) stri
 	return path
 }
 
-func copyInto(t *testing.T, source, target string) {
-	t.Helper()
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// corruptObject rewrites a cache object in place, keeping its size, which is
-// the damage that used to pass every check DAC made.
+// corruptObject rewrites a cache object in place, keeping its size, which is the damage that used to pass every check DAC made.
 func corruptObject(t *testing.T, cacheRoot, value string) {
 	t.Helper()
 	path := filepath.Join(cacheRoot, "blobs", "sha256", strings.TrimPrefix(value, digest.Prefix))
@@ -1037,8 +819,7 @@ func corruptObject(t *testing.T, cacheRoot, value string) {
 	}
 }
 
-// TestCorruptCacheObjectIsCaughtEndToEnd walks the failure the store used to
-// hand back without comment: a cache object edited in place, keeping its size.
+// TestCorruptCacheObjectIsCaughtEndToEnd walks the failure the store used to hand back without comment: a cache object edited in place, keeping its size.
 func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	content := []byte("mini dac asset")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -1057,10 +838,9 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
-	// path used to return this object, and every script downstream would have
-	// read the wrong bytes without ever being told.
+	// path used to return this object, and every script downstream would have read the wrong bytes without ever being told.
 	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
-	assertError(t, runJSON(t, appendArgs(base, "pack", filepath.Join(directory, "damaged.dacpack"))), "cache_object_corrupt")
+	assertError(t, runJSON(t, appendArgs(base, "unpack", "--dest", filepath.Join(directory, "unpacked"))), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "cache", "scrub")), "cache_object_corrupt")
 
 	info := runJSON(t, appendArgs(base, "info"))
@@ -1125,10 +905,7 @@ func TestCacheDirReportsTheResolvedRoot(t *testing.T) {
 	}
 }
 
-// TestJSONErrorsCarryTheirCause covers the failure an operator actually meets
-// in CI: a pull that cannot reach its origin. The stable code says what kind of
-// failure it was, and nothing else in the document used to say which URL or
-// what the server answered.
+// TestJSONErrorsCarryTheirCause covers the failure an operator actually meets in CI: a pull that cannot reach its origin.
 func TestJSONErrorsCarryTheirCause(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNotFound)
@@ -1175,18 +952,13 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
-	// The content-check message used to print its detail twice, once inside the
-	// message and once again as the cause. The status is counted with the word
-	// in front of it, because the line also carries a port that httptest picks
-	// at random and that is sometimes 40483.
+	// The content-check message used to print its detail twice, once inside the message and once again as the cause.
 	if strings.Count(result.stderr, "HTTP 404") != 1 {
 		t.Fatalf("the cause was printed more than once: %q", result.stderr)
 	}
 }
 
-// The path a project takes when its lock file is not committed, or when someone
-// edits the manifest by hand: a plain pull says what to run, and that command
-// writes the file and names what it locked.
+// The path a project takes when its lock file is not committed, or when someone edits the manifest by hand: a plain pull says what to run, and that command writes the file and names what it locked.
 func TestLockWritesAMissingLockFile(t *testing.T) {
 	content := []byte("asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -1219,21 +991,17 @@ func TestLockWritesAMissingLockFile(t *testing.T) {
 		t.Fatalf("unexpected human lock: %#v", human)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
-	// Locking resolves, and resolving installs, so the pull behind it has
-	// nothing left to fetch.
+	// Locking resolves, and resolving installs, so the pull behind it has nothing left to fetch.
 	pulled := run(t, appendArgs(base, "pull", "--no-progress"))
 	if pulled.status != ExitOK || pulled.stdout != "Pulled 1 asset.\n" {
 		t.Fatalf("unexpected human pull: %#v", pulled)
 	}
-	// A second lock over an unchanged project resolves nothing and leaves the
-	// file alone, which is the run a CI check makes.
+	// A second lock over an unchanged project resolves nothing and leaves the file alone, which is the run a CI check makes.
 	again := run(t, appendArgs(base, "lock", "--no-progress"))
 	if again.status != ExitOK || again.stdout != "The lock file already describes 1 asset.\n" {
 		t.Fatalf("unexpected repeated lock: %#v", again)
 	}
-	// A refresh reaches the origin for every asset whatever it finds there, so it
-	// reports what it resolved and that the file did not move. Announcing a lock
-	// would describe a diff nobody is going to find.
+	// A refresh reaches the origin for every asset whatever it finds there, so it reports what it resolved and that the file did not move.
 	refreshed := run(t, appendArgs(base, "lock", "--refresh", "--no-progress"))
 	if refreshed.status != ExitOK || refreshed.stdout != "Resolved app/geo@1. The lock file is unchanged.\n" {
 		t.Fatalf("unexpected refresh: %#v", refreshed)
@@ -1266,26 +1034,17 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("--refresh rewrote the lock file")
 	}
-	// The command that writes refuses the same drift, because a locked version
-	// names one set of bytes. Accepting the change is a decision, and --rebind is
-	// where an operator makes it.
-	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress")), "version_rebind")
-	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("a refused rebind rewrote the lock file")
-	}
-	rebound := runJSON(t, appendArgs(base, "lock", "--refresh", "--rebind", "--no-progress"))
-	assertSuccess(t, rebound, "lock")
-	if rebound.value["data"].(map[string]any)["changed"] != true {
-		t.Fatalf("the rebind did not report a changed lock file: %#v", rebound.value)
+	refreshed := runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress"))
+	assertSuccess(t, refreshed, "lock")
+	if refreshed.value["data"].(map[string]any)["changed"] != true {
+		t.Fatalf("the refresh did not report a changed lock file: %#v", refreshed.value)
 	}
 	if bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--rebind left the lock file as it found it")
+		t.Fatal("lock --refresh left the lock file as it found it")
 	}
 }
 
-// TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound checks the guard from
-// both ends. It has to stop a response nothing else bounds, and the only way to
-// switch it off has to be a word an operator typed on purpose.
+// TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound checks the guard from both ends.
 func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	content := bytes.Repeat([]byte("asset"), 1024)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -1307,12 +1066,7 @@ func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(unbounded, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 }
 
-// TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check
-// was least able to report on. A pinned asset used to be resolved against its
-// publisher digest even here, so a moved origin failed the download with
-// content_mismatch before anything compared it to the lock -- and lock_drift,
-// the code a scheduled job branches on, never appeared for the assets somebody
-// cared enough about to pin. Pull keeps enforcing the pin, because pull writes.
+// TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check was least able to report on.
 func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	var body atomic.Value
 	body.Store([]byte("first bytes"))
@@ -1343,8 +1097,7 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("--refresh rewrote the lock file")
 	}
-	// The same origin against the same pin, from the command that writes: a pin
-	// is a rule there, and bytes that fail it must not reach the lock file.
+	// The same origin against the same pin, from the command that writes: a pin is a rule there, and bytes that fail it must not reach the lock file.
 	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress")), "content_mismatch")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("a failed lock --refresh rewrote the lock file")
@@ -1371,8 +1124,7 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	}
 }
 
-// A project is its two files together. An explicit manifest keeps its lock in
-// the same directory.
+// A project is its two files together.
 func TestLockFileFollowsTheManifest(t *testing.T) {
 	directory := t.TempDir()
 	nested := filepath.Join(directory, "sub")
@@ -1391,8 +1143,7 @@ func TestLockFileFollowsTheManifest(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify")), "verify")
 }
 
-// Naming the lock file explicitly still puts it exactly where it was asked for,
-// which is what lets a caller keep the two apart on purpose.
+// Naming the lock file explicitly still puts it exactly where it was asked for, which is what lets a caller keep the two apart on purpose.
 func TestExplicitLockFlagWins(t *testing.T) {
 	directory := t.TempDir()
 	nested := filepath.Join(directory, "sub")
@@ -1407,10 +1158,7 @@ func TestExplicitLockFlagWins(t *testing.T) {
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
-// The cache had no management surface: collection removed objects by an age
-// nobody could inspect, emptying it meant a collection with an age short enough
-// that everything fell outside it, and dropping one asset was not possible at
-// all.
+// The cache had no management surface: collection removed objects by an age nobody could inspect, emptying it meant a collection with an age short enough that everything fell outside it, and dropping one asset was not possible at all.
 func TestCacheListReportsWhatTheCacheHolds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write(bytes.Repeat([]byte(request.URL.Path), 100))
@@ -1444,9 +1192,7 @@ func TestCacheListReportsWhatTheCacheHolds(t *testing.T) {
 		t.Fatalf("the listing did not name the assets: %#v", objects)
 	}
 
-	// A listing must not count as using the cache. Reaching an object refreshes
-	// the liveness timestamp collection runs on, so a listing built that way
-	// would quietly keep everything alive.
+	// A listing must not count as using the cache.
 	before := lastUsedTimes(t, paths)
 	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "list")), "cache.list")
 	for value, when := range lastUsedTimes(t, paths) {
@@ -1508,9 +1254,7 @@ func TestCacheClearEmptiesTheCache(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
 }
 
-// Two coordinates that resolved to the same bytes share one object, so removing
-// one can uncache the other. The cache is the one place DAC deletes data, so
-// that needs saying out loud rather than discovering afterwards.
+// Two coordinates that resolved to the same bytes share one object, so removing one can uncache the other.
 func TestCacheRemoveRefusesToUncacheAnUnnamedAsset(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = writer.Write([]byte("shared" + request.URL.Path))
@@ -1562,8 +1306,7 @@ func TestCacheRemoveRejectsAssetsTheProjectDoesNotHave(t *testing.T) {
 	}
 }
 
-// Config merged across the XDG search path raises two questions a person cannot
-// answer by looking: which files was it, and what did they settle on.
+// Config merged across the XDG search path raises two questions a person cannot answer by looking: which files was it, and what did they settle on.
 func TestConfigReportsItsFilesAndEffectiveValues(t *testing.T) {
 	settings := configFlags(t, "[transfer]\nretries = 5\nconcurrency = 2\n")
 	base := append(settings, newProject(t).base...)
@@ -1592,8 +1335,7 @@ func TestConfigReportsItsFilesAndEffectiveValues(t *testing.T) {
 	}
 }
 
-// A flag beats the config file, which is the whole point of leaving one on the
-// command line.
+// A flag beats the config file, which is the whole point of leaving one on the command line.
 func TestConcurrencyFlagBeatsTheConfigFile(t *testing.T) {
 	var peak, current atomic.Int32
 	release := make(chan struct{})
@@ -1617,18 +1359,12 @@ func TestConcurrencyFlagBeatsTheConfigFile(t *testing.T) {
 	for _, name := range []string{"app/one@1", "app/two@1", "app/three@1"} {
 		assertSuccess(t, runJSON(t, appendArgs(base, "add", name, server.URL+"/"+name, "--no-progress")), "add")
 	}
-	// The config says one asset at a time; the flag says three. Both spellings
-	// have to reach the same place, and the flag has to win.
+	// The config says one asset at a time; the flag says three.
 	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "clear")), "cache.clear")
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--concurrency", "3", "--no-progress")), "pull")
 }
 
-// TestAddNameCarriesThroughToTheUnpackedFile covers the whole reason --name
-// exists. A cache path is a digest, so the name is what decides where an asset
-// lands once anything materializes it -- and an origin that spells its name
-// with a version, a build number, or an opaque endpoint gives one that no
-// consuming script wants. The flag is where a project says otherwise, and this
-// follows that answer from the manifest to a file on disk.
+// TestAddNameCarriesThroughToTheUnpackedFile covers the whole reason --name exists.
 func TestAddNameCarriesThroughToTheUnpackedFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Disposition", `attachment; filename="geo-database-2026.08-final.bin"`)
@@ -1653,17 +1389,15 @@ func TestAddNameCarriesThroughToTheUnpackedFile(t *testing.T) {
 		t.Fatalf("the manifest declares %q", declared)
 	}
 
-	archive := filepath.Join(t.TempDir(), "project.dacpack")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pack", archive)), "pack")
 	destination := t.TempDir()
-	assertSuccess(t, runJSON(t, []string{"unpack", archive, "--dest", destination}), "unpack")
-	if written := unpackedFiles(t, destination); len(written) != 1 || written[0] != "geo.db" {
-		t.Fatalf("the unpack wrote %v, want the declared name", written)
+	result = runJSON(t, appendArgs(paths.base, "unpack", "--dest", destination))
+	assertSuccess(t, result, "unpack")
+	if written, err := os.ReadFile(filepath.Join(destination, "geo.db")); err != nil || string(written) != "asset bytes" {
+		t.Fatalf("the unpack wrote %q: %v", written, err)
 	}
 }
 
-// An add that leaves --name off names the asset exactly as it did before the
-// flag existed, which is the flag's whole compatibility claim.
+// An add that leaves --name off names the asset exactly as it did before the flag existed, which is the flag's whole compatibility claim.
 func TestAddWithoutNameKeepsTheOriginNaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Disposition", `attachment; filename="database.bin"`)
@@ -1692,9 +1426,7 @@ func TestAddWithoutNameKeepsTheOriginNaming(t *testing.T) {
 	}
 }
 
-// A name DAC will not write fails the add rather than being repaired into one
-// it will. The manifest is where a name is somebody's answer, so the two
-// choices are recording what was asked for or saying it will not be.
+// A name DAC will not write fails the add rather than being repaired into one it will.
 func TestAddRefusesANameThatIsNotAFileName(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")

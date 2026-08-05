@@ -1,8 +1,5 @@
 // Package urlpolicy decides which asset URLs DAC is willing to request.
-//
-// The rule belongs to neither the project file nor the HTTP client: the
-// manifest applies it when it validates an asset, and the client applies it
-// again to every redirect target, so it sits below both of them.
+// Manifest validation and every redirect use this shared URL rule.
 package urlpolicy
 
 import (
@@ -12,8 +9,7 @@ import (
 	"net/url"
 )
 
-// ErrNotPermitted marks a URL that DAC refuses on policy grounds. Callers use
-// it to tell a permanent rejection apart from a transient network failure.
+// ErrNotPermitted marks a URL that DAC refuses on policy grounds.
 var ErrNotPermitted = errors.New("URL is not permitted")
 
 // ParseAndCheck parses a URL and applies the request policy.
@@ -28,8 +24,7 @@ func ParseAndCheck(rawURL string, allowInsecure bool) (*url.URL, error) {
 	return parsed, nil
 }
 
-// Check applies the HTTP permission rule to a URL. HTTPS is always permitted,
-// and HTTP only for a loopback host or when the asset opts in.
+// Check applies the HTTP permission rule to a URL.
 func Check(value *url.URL, allowInsecure bool) error {
 	if value.User != nil {
 		return fmt.Errorf("%w: URL credentials are not supported", ErrNotPermitted)

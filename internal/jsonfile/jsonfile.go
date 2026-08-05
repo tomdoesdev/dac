@@ -39,9 +39,7 @@ func DecodeStrict(data []byte, value any) error {
 	return nil
 }
 
-// TempPrefix names the temporary files WriteAtomic creates. It is exported so
-// that a caller sweeping a directory DAC writes into can recognize the ones an
-// interrupted write left behind.
+// TempPrefix names the temporary files WriteAtomic creates.
 const TempPrefix = ".dac-"
 
 // WriteAtomic writes data through a synced temporary file and one rename.
@@ -75,14 +73,7 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 }
 
 // maxDepth bounds how deeply the duplicate-key scan will nest.
-//
-// The scan walks the document with one stack frame per level, so without a
-// bound a document of nothing but open brackets exhausts the goroutine stack --
-// which the runtime reports as a fatal error rather than a panic, so nothing
-// above can turn it into a failed command. A cache bundle's index arrives from
-// wherever the bundle came from, and the index size cap alone leaves room for
-// millions of levels. Project files nest three deep, so this is far past
-// anything a real document reaches.
+// The depth bound prevents open brackets from exhausting the goroutine stack.
 const maxDepth = 128
 
 func rejectDuplicateKeys(data []byte) error {

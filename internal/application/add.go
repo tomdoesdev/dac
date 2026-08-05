@@ -17,38 +17,23 @@ type AddOptions struct {
 	URL               string
 	Integrity         string
 	AllowInsecureHTTP bool
-	// Filename is the name the project chooses for this asset, which the
-	// manifest records and every later resolution uses in place of whatever the
-	// origin calls it. It is optional: an add that names nothing leaves the
-	// naming to the origin, which is what every add did before this existed.
+	// Filename is the project name that overrides origin names during later resolutions.
 	Filename string
 	Force    bool
-	// Pin records the digest the asset resolves to as its integrity value, so
-	// that every later command holds the publisher to the bytes this add saw.
+	// Pin records the digest the asset resolves to as its integrity value, so that every later command holds the publisher to the bytes this add saw.
 	Pin     bool
 	MaxSize int64
 	Offline bool
-	// AllowRebind accepts a new source for a coordinate the lock file already
-	// binds to different bytes. Replacing the entry is what --force permits;
-	// changing what the version means is a second decision.
-	AllowRebind bool
 }
 
 // AddResult reports one manifest addition.
 type AddResult struct {
 	Asset
 	// Siblings names the other versions of this asset the project already had.
-	// Adding a version no longer retires the one before it, so this is how an
-	// operator sees that a project now carries two rather than discovering it in
-	// the manifest diff.
 	Siblings []string `json:"siblings"`
-	// SharedSources names the sibling versions served from the same URL as this
-	// one. Only one set of bytes can be at a URL, so at most one of those
-	// versions can ever be restored to a cold cache.
+	// SharedSources names the sibling versions served from the same URL as this one.
 	SharedSources []string `json:"sharedSources"`
-	// Locked names the other assets this add had to resolve, which is every
-	// asset a hand edit left the lock file no longer describing. An add is
-	// allowed to settle them, but not to settle them silently.
+	// Locked names the other assets this add had to resolve, which is every asset a hand edit left the lock file no longer describing.
 	Locked []string `json:"locked"`
 }
 
@@ -65,12 +50,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	if err != nil {
 		return AddResult{}, err
 	}
-	// An add reads whatever lock file is there and settles the difference
-	// itself, so adding an asset to a project that has never been locked works
-	// the same as adding one to a project that has. The manifest is the file it
-	// will not create: that is the declaration that a project exists here, and
-	// inventing one would turn a mistyped --manifest path into a new project
-	// instead of an error.
+	// Add settles stale manifest entries while it resolves the new asset.
 	var lock project.Lock
 	if !options.Offline {
 		lock, err = service.readLockIfPresent()
@@ -78,10 +58,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			return AddResult{}, err
 		}
 	}
-	// A coordinate is the whole identity of an asset, so this asks only about
-	// the exact version. Adding another version of an asset the project already
-	// has is an addition rather than a replacement, and it needs no --force:
-	// nothing that referred to the old coordinate stops working.
+	// A coordinate is the whole identity of an asset, so this asks only about the exact version.
 	if _, exists := manifest.Assets[options.Coordinate]; exists && !options.Force {
 		return AddResult{}, fault.New("asset_exists", "The manifest already has this asset version. Use --force to replace its source.")
 	}
@@ -92,11 +69,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			return AddResult{}, fault.Wrap("invalid_arguments", "The integrity value is invalid.", err)
 		}
 	}
-	// A name is refused here rather than repaired, and refused by itself rather
-	// than as part of the manifest, so that a caller who asked for a name DAC
-	// will not write is told that is what happened. Validate would catch it a few
-	// lines later and answer that the asset is invalid, which is true and does
-	// not say which part.
+	// Add reports an invalid requested name instead of hiding it in a manifest error.
 	name := filename.Clean(options.Filename)
 	if strings.TrimSpace(options.Filename) != "" && name == "" {
 		return AddResult{}, fault.New("invalid_arguments",
@@ -113,8 +86,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	if err := updated.Validate(); err != nil {
 		return AddResult{}, fault.Wrap("invalid_arguments", "The asset is invalid.", err)
 	}
-	// Both lists describe the project as it stands after this addition, so they
-	// are read from the updated manifest with the new coordinate itself dropped.
+	// Both lists describe the project as it stands after this addition, so they are read from the updated manifest with the new coordinate itself dropped.
 	siblings := coord.Versions(others(coord.InGroup(updated.Assets, options.Coordinate.Group()), options.Coordinate))
 	shared := sharedSources(updated, options.Coordinate, options.URL)
 	if options.Offline {
@@ -128,38 +100,27 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 			Version:    options.Coordinate.Version,
 			URL:        asset.URL,
 			Integrity:  asset.Integrity,
-			// A declared name is the one thing about an unresolved asset that is
-			// already settled, because the manifest is where it was decided. An
-			// offline add that reports nothing here would have the same asset
-			// gain a name later for no reason anybody could see.
+			// A declared name is the one thing about an unresolved asset that is already settled, because the manifest is where it was decided.
 			Filename: asset.Filename,
 			Status:   "unlocked",
 		}
 		return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: []string{}}, nil
 	}
 
-	// Reconciling the updated manifest resolves the new asset, which no lock
-	// file can describe yet, and any asset a hand edit left behind, in one pass.
-	// Adding one asset to a project whose manifest someone edited would
-	// otherwise write a lock file that every later command rejects as stale.
+	// Reconciling the updated manifest resolves the new asset, which no lock file can describe yet, and any asset a hand edit left behind, in one pass.
 	reconciled, err := service.reconcile(ctx, updated, lock, reconcileOptions{
-		maxSize:     options.MaxSize,
-		mode:        resolveChanged,
-		allowRebind: options.AllowRebind,
+		maxSize: options.MaxSize,
+		mode:    resolveChanged,
 	})
 	if err != nil {
 		return AddResult{}, err
 	}
 	resolved := reconciled.assets[options.Coordinate]
 	if options.Pin {
-		// Pinning after resolution is what makes it useful: the digest comes
-		// from the bytes this command actually received, which is the value an
-		// operator would otherwise copy out of the summary and paste back in.
+		// Pin records the digest from the bytes that this command received.
 		asset.Integrity = resolved.Digest
 		updated.Assets[options.Coordinate] = asset
-		// A pinned asset neither sends nor records an ETag, so drop the one this
-		// resolution collected. Leaving it would make the next pull rewrite the
-		// file for no reason and report drift that never happened.
+		// A pinned asset neither sends nor records an ETag, so drop the one this resolution collected.
 		resolved.ETag = ""
 		reconciled.assets[options.Coordinate] = resolved
 	}
@@ -178,8 +139,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: locked}, nil
 }
 
-// others drops one coordinate from a list, leaving the assets a command
-// settled or already held on the way to the one it was asked about.
+// others drops one coordinate from a list, leaving the assets a command settled or already held on the way to the one it was asked about.
 func others(names []coord.Coordinate, name coord.Coordinate) []coord.Coordinate {
 	rest := make([]coord.Coordinate, 0, len(names))
 	for _, value := range names {

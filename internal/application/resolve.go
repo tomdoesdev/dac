@@ -12,18 +12,12 @@ import (
 func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options reconcileOptions) (project.LockAsset, string, error) {
 	name := coordinate.String()
 	oldMatches := old.URL == source.URL && (source.Integrity == "" || old.Digest == source.Integrity)
-	// Only an asset the manifest leaves unpinned is ever revalidated. A
-	// publisher digest already settles which bytes are correct, so a pinned
-	// asset is answered from the cache or downloaded outright, and it neither
-	// sends nor records an ETag.
+	// Only an asset the manifest leaves unpinned is ever revalidated.
 	conditional := source.Integrity == ""
-	// A publisher digest that the cache already satisfies lets lock finish
-	// without a request, which also means it never proves the URL still serves
-	// those bytes. Refresh trades that speed for a check against the origin.
+	// A publisher digest that the cache already satisfies lets lock finish without a request, which also means it never proves the URL still serves those bytes.
 	if source.Integrity != "" && options.mode == resolveChanged {
 		object, found, err := service.Store.Stat(source.Integrity)
-		// A corrupt object cannot answer the request, but lock can: it falls
-		// through to the origin and installs good bytes over the bad ones.
+		// A corrupt object cannot answer the request, but lock can: it falls through to the origin and installs good bytes over the bad ones.
 		if err != nil && !corrupted(err) {
 			return project.LockAsset{}, "", cacheReadError(err)
 		}
@@ -38,12 +32,7 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 			}, "cached", nil
 		}
 	}
-	// Refresh does not suppress the hint. An origin that answers 304 to the
-	// stored ETag has confirmed the asset just as well as one that sends the
-	// bytes again, and for a large asset that is the difference between a check
-	// that runs on a schedule and one nobody runs at all. What refresh does
-	// suppress is the shortcut above, which answers without asking the origin
-	// anything at all.
+	// Refresh does not suppress the hint.
 	oldValid := false
 	if oldMatches {
 		var err error
@@ -67,14 +56,7 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 		if response.ETag != "" {
 			old.ETag = response.ETag
 		}
-		// A name the manifest declares is applied here too, because it is the
-		// project's own answer and a 304 says nothing about it either way.
-		// Otherwise a name already recorded stands. The origin has just said
-		// these bytes are the ones the lock describes, and a 304 carries no body
-		// and rarely repeats the header that named them -- so taking the
-		// response's answer would quietly trade a name the origin once gave for
-		// whatever the URL happens to spell. Only an entry that has no name at
-		// all gains one.
+		// A name the manifest declares is applied here too, because it is the project's own answer and a 304 says nothing about it either way.
 		if declared := filename.Clean(source.Filename); declared != "" {
 			old.Filename = declared
 		} else if old.Filename == "" {
@@ -84,11 +66,7 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	}
 	service.Reporter.Start(name, response.Length)
 	reader := &progressReader{name: name, reader: response.Body, reporter: service.Reporter}
-	// A pinned asset is normally installed against its publisher digest, so
-	// bytes that fail it never reach the cache. A caller that is observing wants
-	// the digest the origin actually served, because the difference between that
-	// and the locked one is its whole answer, and the store cannot report it
-	// while it is also refusing it.
+	// A pinned asset is normally installed against its publisher digest, so bytes that fail it never reach the cache.
 	expect := source.Integrity
 	if options.mode == resolveObserve {
 		expect = ""
@@ -112,25 +90,9 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 }
 
 // resolvedFilename returns the best name known for an asset.
-//
-// A name the manifest declares wins outright, because it is the one name here
-// that somebody chose rather than observed: a project that says what to call an
-// asset is not asking to be told. After it comes the name the origin supplied,
-// then the one the lock already holds for this same URL, then the one the URL
-// itself spells. Every source is optional, so the answer may be empty, and
-// nothing downstream may require it: an asset answered from the cache never
-// asked the origin anything, and it has to record the same kind of value as one
-// that did.
-//
-// A name is only carried over from the old entry while the URL is unchanged. A
-// manifest that repoints an asset has replaced the source the old name
-// described, and keeping it would attach a stale label to different bytes.
-//
-// Both the declared and the supplied name are cleaned again here rather than
-// trusted. Fetcher is an interface, so a name reaching this point has only been
-// through whichever adapter produced it; a manifest is a file somebody edits;
-// and a lock entry is the one place this value is written down for other tools
-// to use.
+// A manifest name wins because it is an explicit project decision.
+// A name is only carried over from the old entry while the URL is unchanged.
+// Both the declared and the supplied name are cleaned again here rather than trusted.
 func resolvedFilename(supplied string, source project.Asset, old project.LockAsset) string {
 	if name := filename.Clean(source.Filename); name != "" {
 		return name

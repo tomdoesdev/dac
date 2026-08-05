@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/cache"
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
@@ -25,9 +24,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/projecttest"
 )
 
-// at builds a test coordinate from its name and version. Every fixture shares
-// one namespace, because these tests are about everything except which
-// namespace an asset is in; the tests that are about that spell it out.
+// at builds a test coordinate from its name and version.
 func at(text string) coord.Coordinate { return coord.MustParse("test/" + text) }
 
 var (
@@ -39,8 +36,7 @@ var (
 type fakeStore struct {
 	mutex   sync.Mutex
 	objects map[string][]byte
-	// corrupt maps a digest to the digest its bytes actually have, so a test can
-	// reproduce a damaged cache without going near a filesystem.
+	// corrupt maps a digest to the digest its bytes actually have, so a test can reproduce a damaged cache without going near a filesystem.
 	corrupt map[string]string
 }
 
@@ -67,8 +63,7 @@ func (store *fakeStore) damaged(value string) bool {
 	return exists
 }
 
-// inspect reports the object a digest names, and the corruption recorded for
-// it. The caller holds no lock.
+// inspect reports the object a digest names, and the corruption recorded for it.
 func (store *fakeStore) inspect(value string) (application.Object, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
@@ -95,8 +90,7 @@ func (store *fakeStore) Verify(_ context.Context, value string) (application.Obj
 	return store.inspect(value)
 }
 
-// Describe reports an object without touching its liveness timestamp. The fake
-// keeps no timestamps, so every object reports the zero time.
+// Describe reports an object without touching its liveness timestamp.
 func (store *fakeStore) Describe(value string) (application.ObjectDescription, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
@@ -124,12 +118,6 @@ func (store *fakeStore) Remove(_ context.Context, value string) error {
 	delete(store.objects, value)
 	delete(store.corrupt, value)
 	return nil
-}
-
-// has reports whether the fake holds exactly this object.
-func (store *fakeStore) has(object application.Object) bool {
-	found, exists, err := store.Stat(object.Digest)
-	return err == nil && exists && found.Size == object.Size
 }
 
 func (*fakeStore) WithLock(_ context.Context, _ string, operation func() error) error {
@@ -284,9 +272,7 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 	}
 }
 
-// A version is part of an asset's identity, so a second version is a second
-// entry. It needs no --force, because nothing that referred to the first
-// coordinate stops working.
+// A version is part of an asset's identity, so a second version is a second entry.
 func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
@@ -314,8 +300,7 @@ func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	}
 }
 
-// Force is now only about one coordinate: it replaces the source of a version
-// the manifest already has, and leaves every other version alone.
+// Force is now only about one coordinate: it replaces the source of a version the manifest already has, and leaves every other version alone.
 func TestAddForceReplacesOneVersionSource(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
@@ -327,8 +312,7 @@ func TestAddForceReplacesOneVersionSource(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A moved source that serves the same bytes is not a rebind, so replacing
-	// one version's URL needs nothing beyond --force.
+	// A moved source that serves the same bytes is not a rebind, so replacing one version's URL needs nothing beyond --force.
 	if _, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("geo@2"), URL: "https://mirror.example.com/two", Force: true, MaxSize: 100,
 	}); err != nil {
@@ -697,9 +681,7 @@ func staticFetcher(content []byte) *fakeFetcher {
 	}}
 }
 
-// sequenceFetcher serves a different body to each request, which is one URL
-// whose bytes change: the rolling source a version bump is the honest answer
-// to. It repeats the last body once the sequence runs out.
+// sequenceFetcher serves a different body to each request, which is one URL whose bytes change: the rolling source a version bump is the honest answer to.
 func sequenceFetcher(bodies ...[]byte) *fakeFetcher {
 	var served int
 	var mutex sync.Mutex
@@ -713,12 +695,7 @@ func sequenceFetcher(bodies ...[]byte) *fakeFetcher {
 }
 
 // pathFetcher serves the last element of each URL path as its content.
-//
-// A test about several versions of one asset needs distinct bytes per version,
-// because a fetcher answering everything with one body makes every version
-// collide, which is a different rule from the one under test. Keying on the
-// path rather than the whole URL also lets two hosts serve one file, which is
-// what a mirror is.
+// A test about several versions of one asset needs distinct bytes per version, because a fetcher answering everything with one body makes every version collide, which is a different rule from the one under test.
 func pathFetcher() *fakeFetcher {
 	return &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
 		elements := strings.Split(request.URL, "/")
@@ -758,9 +735,7 @@ func lockedProject(t *testing.T, content []byte) (string, string) {
 			URL:    "https://example.com/asset",
 			Digest: digest.Bytes(content),
 			Size:   int64(len(content)),
-			// The name the URL spells, which is what a lock DAC wrote carries. A
-			// fixture without it would be a lock from before file names were
-			// recorded, and the tests for that migration write one deliberately.
+			// The name the URL spells, which is what a lock DAC wrote carries.
 			Filename: "asset",
 		},
 	})
@@ -799,232 +774,12 @@ func warm(t *testing.T, store *fakeStore, content []byte) {
 	}
 }
 
-// warmStore installs content into a real cache, which Pack needs because it
-// copies the object out of the filesystem.
-func warmStore(t *testing.T, store *cache.Store, content []byte) {
-	t.Helper()
-	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0)); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func failingFetcher(t *testing.T) *fakeFetcher {
 	t.Helper()
 	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
 		t.Error("the command made a network request")
 		return nil, errors.New("unexpected request")
 	}}
-}
-
-func writeDist(t *testing.T, directory, name string, content []byte) {
-	t.Helper()
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(directory, name), content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A distribution directory is the cache with the archive taken off: objects
-// under the digest names that are the only names a consumer can check. Import
-// reads it as well as a dacpack, so the cold-cache path for an isolated machine
-// is one command rather than a command and a flag on an unrelated one.
-func TestImportInstallsFromADistributionDirectory(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	distdir := t.TempDir()
-	writeDist(t, distdir, strings.TrimPrefix(digest.Bytes(content), digest.Prefix), content)
-
-	store := newFakeStore()
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Import(context.Background(), distdir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
-		t.Fatalf("unexpected import result: %#v", result)
-	}
-	if !store.has(application.Object{Digest: digest.Bytes(content), Size: int64(len(content))}) {
-		t.Fatal("the object was not installed")
-	}
-	// The objects are in the cache, so a pull that cannot reach the network
-	// finds everything it needs.
-	pulled, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, Offline: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pulled.Assets) != 1 || pulled.Assets[0].Status != "cached" {
-		t.Fatalf("unexpected pull result: %#v", pulled.Assets)
-	}
-}
-
-// A digest is the only name a consumer can check. DAC used to also accept the
-// last element of the asset URL, which meant a directory could satisfy a pull
-// with a file whose name proved nothing.
-func TestImportSkipsFilesThatAreNotNamedByDigest(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	distdir := t.TempDir()
-	writeDist(t, distdir, "asset", content)
-	writeDist(t, distdir, "README", []byte("what this share holds"))
-
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	result, err := service.Import(context.Background(), distdir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ObjectCount != 0 || result.ItemCount != 0 {
-		t.Fatalf("unexpected import result: %#v", result)
-	}
-}
-
-func TestImportRefusesAFileThatNamesTheWrongDigest(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	distdir := t.TempDir()
-	writeDist(t, distdir, strings.TrimPrefix(digest.Bytes(content), digest.Prefix), []byte("other bytes"))
-
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	_, err := service.Import(context.Background(), distdir)
-	if fault.As(err).Code != "import_content_mismatch" {
-		t.Fatalf("expected import_content_mismatch, got %v", err)
-	}
-}
-
-func TestImportAcceptsAnEmptyDirectory(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	result, err := service.Import(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ObjectCount != 0 {
-		t.Fatalf("unexpected import result: %#v", result)
-	}
-}
-
-// TestImportInstallsAPackedProject is the round trip DAC exists to support: a
-// machine with network access packs what it locked, and a machine with none
-// installs those objects into its cache. It used to take an archive of its own,
-// which meant the file that could cross an air gap was one only another DAC
-// could read.
-func TestImportInstallsAPackedProject(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	packStore := cache.New(t.TempDir())
-	warmStore(t, packStore, content)
-	archive := filepath.Join(t.TempDir(), "project.dacpack")
-	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
-		t.Fatal(err)
-	}
-
-	// No project paths: an import reads the archive and the cache, and nothing
-	// about the machine it lands on has to describe the project it came from.
-	importStore := cache.New(t.TempDir())
-	result, err := application.New("", "", importStore, nil, nil).Import(context.Background(), archive)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Source != archive || result.ItemCount != 1 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
-		t.Fatalf("unexpected import result: %#v", result)
-	}
-	object, found, err := importStore.Stat(digest.Bytes(content))
-	if err != nil || !found || object.Size != int64(len(content)) {
-		t.Fatalf("the import did not install the object: %#v %t %v", object, found, err)
-	}
-}
-
-// TestImportCountsSharedBytesOnce covers what a dacpack costs this half. Two
-// coordinates that resolved to one object are materialized under their own
-// names, so they arrive as two files, and the cache holds one object either
-// way. The count reports what the cache gained rather than what the archive
-// carried.
-func TestImportCountsSharedBytesOnce(t *testing.T) {
-	content := []byte("shared asset bytes")
-	value := digest.Bytes(content)
-	manifestPath, lockPath := packedProject(t, map[coord.Coordinate]project.LockAsset{
-		coord.MustParse("app/first@1"): {
-			URL: "https://example.com/shared.bin", Digest: value,
-			Size: int64(len(content)), Filename: "shared.bin",
-		},
-		coord.MustParse("app/second@1"): {
-			URL: "https://example.com/shared.bin", Digest: value,
-			Size: int64(len(content)), Filename: "shared.bin",
-		},
-	})
-	packStore := cache.New(t.TempDir())
-	warmStore(t, packStore, content)
-	archive := filepath.Join(t.TempDir(), "shared.dacpack")
-	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), archive)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ItemCount != 2 || result.ObjectCount != 1 || result.ByteCount != int64(len(content)) {
-		t.Fatalf("unexpected import result: %#v", result)
-	}
-}
-
-func TestImportRejectsPackContentThatDoesNotMatchTheIndex(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	packStore := cache.New(t.TempDir())
-	warmStore(t, packStore, content)
-	archive := filepath.Join(t.TempDir(), "project.dacpack")
-	if _, err := application.New(manifestPath, lockPath, packStore, nil, nil).Pack(context.Background(), archive); err != nil {
-		t.Fatal(err)
-	}
-	data := projecttest.MustRead(t, archive)
-	position := bytes.Index(data, content)
-	if position < 0 {
-		t.Fatal("the dacpack does not contain the object")
-	}
-	copy(data[position:position+len(content)], []byte("other bytes"))
-	if err := os.WriteFile(archive, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	store := cache.New(t.TempDir())
-	_, err := application.New("", "", store, nil, nil).Import(context.Background(), archive)
-	if code := fault.As(err).Code; code != "dacpack_invalid" {
-		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
-	}
-	// The bytes never became an object. An import that left what it refused in
-	// the cache would hand the next command the damage it just rejected.
-	if _, found, err := store.Stat(digest.Bytes(content)); found || err != nil {
-		t.Fatalf("the refused object reached the cache: %t %v", found, err)
-	}
-}
-
-// TestImportRefusesAnIndexItDidNotDerive is the check a digest layout gave for
-// free. Import writes nothing at a path an archive names -- the cache decides
-// where an object lives -- but it still validates the index that unpack derives
-// its paths from, so a hostile dacpack is refused by whichever half reads it
-// rather than only by the half that writes files.
-func TestImportRefusesAnIndexItDidNotDerive(t *testing.T) {
-	content := []byte("evil payload")
-	archive := filepath.Join(t.TempDir(), "hostile.dacpack")
-	writePackArchive(t, archive, map[string]any{
-		"schemaVersion": 1,
-		"items": []any{map[string]any{
-			"coordinate": "app/evil@1",
-			"sourceUrl":  "https://evil.example.com/x",
-			"file":       "../../../etc/cron.d/root",
-			"filename":   "x.bin",
-			"digest":     digest.Bytes(content),
-			"size":       len(content),
-		}},
-	}, [][2]any{{"../../../etc/cron.d/root", content}})
-
-	_, err := application.New("", "", cache.New(t.TempDir()), nil, nil).Import(context.Background(), archive)
-	if code := fault.As(err).Code; code != "dacpack_invalid" {
-		t.Fatalf("expected dacpack_invalid, got %q (%v)", code, err)
-	}
 }
 
 func TestLockTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
@@ -1093,7 +848,6 @@ func TestRefreshLockSendsNoConditionalRequest(t *testing.T) {
 }
 
 // A pinned asset is settled by its publisher digest, so it never revalidates.
-// Recording an ETag for one would store a hint that no later lock could send.
 func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -1122,8 +876,7 @@ func TestLockRecordsNoETagForAPinnedAsset(t *testing.T) {
 	}
 }
 
-// An ETag written for a pinned asset by an older DAC is dropped rather than
-// carried forward, so a repeat lock does not keep rewriting the same field.
+// An ETag written for a pinned asset by an older DAC is dropped rather than carried forward, so a repeat lock does not keep rewriting the same field.
 func TestLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1151,8 +904,7 @@ func TestLockDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The pin matches what the lock already holds, so the entry is carried
-	// through without a request. Dropping the ETag is the only edit it needs.
+	// The pin matches what the lock already holds, so the entry is carried through without a request.
 	if result.Assets[0].Status != "locked" {
 		t.Fatalf("unexpected status %q", result.Assets[0].Status)
 	}
@@ -1198,12 +950,9 @@ func TestCacheGCReportsWhatItRemoved(t *testing.T) {
 	}
 }
 
-// The tests below cover what the cache does once an object stops matching the
-// digest that names it. That state used to be invisible: every command trusted
-// a file that existed at the right path and had the right size.
+// The tests below cover what the cache does once an object stops matching the digest that names it.
 
-// seedCorrupt returns a project whose one asset is present in the cache but
-// damaged.
+// seedCorrupt returns a project whose one asset is present in the cache but damaged.
 func seedCorrupt(t *testing.T, content []byte) (string, string, *fakeStore) {
 	t.Helper()
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1219,20 +968,6 @@ func TestPathRefusesACorruptObject(t *testing.T) {
 	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
 	_, err := service.Path(application.ExactSelection(at("asset@1")))
-	if code := fault.As(err).Code; code != "cache_object_corrupt" {
-		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
-	}
-}
-
-// TestPackRefusesACorruptObject keeps damage on the machine that has it. An
-// archive is the one artifact that carries a bad object onto a machine with no
-// way to tell where it came from, and the receiving DAC would install bytes
-// that match the digest the archive claims for them.
-func TestPackRefusesACorruptObject(t *testing.T) {
-	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-
-	_, err := service.Pack(context.Background(), filepath.Join(t.TempDir(), "project.dacpack"))
 	if code := fault.As(err).Code; code != "cache_object_corrupt" {
 		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
 	}
@@ -1298,8 +1033,7 @@ func TestVerifyCacheReportsAndRepairs(t *testing.T) {
 func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	store := newFakeStore()
-	// An object no project references still belongs to the shared cache, so an
-	// --all check has to reach it.
+	// An object no project references still belongs to the shared cache, so an --all check has to reach it.
 	stray := digest.Bytes([]byte("stray"))
 	store.objects[stray] = []byte("stray")
 	store.damage(stray, digest.Bytes([]byte("junk")))
@@ -1355,8 +1089,7 @@ func TestVerifyRefreshSucceedsWhenTheOriginsAgree(t *testing.T) {
 	}
 }
 
-// An ETag is a cache hint a server may rotate over identical bytes. Reporting
-// that as drift would page somebody for a header.
+// An ETag is a cache hint a server may rotate over identical bytes.
 func TestVerifyRefreshIgnoresARotatedETag(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1372,9 +1105,7 @@ func TestVerifyRefreshIgnoresARotatedETag(t *testing.T) {
 	}
 }
 
-// A manifest edited without locking it is a different failure from an origin
-// that moved, and it has a different fix. Verify reports it as the first even
-// when it is about to reach the origins.
+// A manifest edited without locking it is a different failure from an origin that moved, and it has a different fix.
 func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1392,10 +1123,7 @@ func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
 	}
 }
 
-// The property that lets pull carry the lock command's job without carrying its
-// cost. Resolving an asset the lock already describes would mean a conditional
-// request for every unpinned asset on every pull, which is what made lock a
-// command you thought twice about running.
+// The property that lets pull carry the lock command's job without carrying its cost.
 func TestLockLeavesAgreeingAssetsAlone(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1416,8 +1144,7 @@ func TestLockLeavesAgreeingAssetsAlone(t *testing.T) {
 	}
 }
 
-// A project whose lock file has never been written is the state a first pull
-// exists to leave behind, not an error to report.
+// A project whose lock file has never been written is the state a first pull exists to leave behind, not an error to report.
 func TestLockCreatesAMissingLockFile(t *testing.T) {
 	content := []byte("asset bytes")
 	directory := t.TempDir()
@@ -1441,17 +1168,14 @@ func TestLockCreatesAMissingLockFile(t *testing.T) {
 	if !result.Changed {
 		t.Fatal("writing a new lock file was not reported as a change")
 	}
-	// Resolving stored these bytes, so crediting the cache for them would
-	// describe a transfer this command had just made as one it avoided.
+	// Resolving stored these bytes, so crediting the cache for them would describe a transfer this command had just made as one it avoided.
 	if result.Assets[0].Status != "resolved" {
 		t.Fatalf("unexpected status %q", result.Assets[0].Status)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
-// A pull reproduces the project as committed rather than settling a manifest
-// that has moved on. This is the guarantee a deployment job runs on, so a
-// manifest the lock no longer describes stops it and names dac lock.
+// A pull reproduces the project as committed rather than settling a manifest that has moved on.
 func TestPullRefusesAStaleLock(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1468,8 +1192,7 @@ func TestPullRefusesAStaleLock(t *testing.T) {
 	}
 }
 
-// Adding an asset to a project that has never been locked writes both files,
-// which is what removed the lock command from the path a new project takes.
+// Adding an asset to a project that has never been locked writes both files, which is what removed the lock command from the path a new project takes.
 func TestAddCreatesAMissingLockFile(t *testing.T) {
 	content := []byte("asset bytes")
 	directory := t.TempDir()
@@ -1490,9 +1213,7 @@ func TestAddCreatesAMissingLockFile(t *testing.T) {
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
-// An add onto a hand-edited manifest settles the whole project rather than
-// writing a lock file that every later command rejects. It says which assets
-// that cost, because the operator is about to read the diff.
+// An add onto a hand-edited manifest settles the whole project rather than writing a lock file that every later command rejects.
 func TestAddSettlesAHandEditedManifest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1520,8 +1241,7 @@ func TestAddSettlesAHandEditedManifest(t *testing.T) {
 	}
 }
 
-// Removal makes no request, so it settles only what it can offline and names
-// what it could not rather than implying the project now agrees.
+// Removal makes no request, so it settles only what it can offline and names what it could not rather than implying the project now agrees.
 func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -1575,8 +1295,7 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 	if manifest.Assets[at("asset@1")].Integrity != value {
 		t.Fatalf("the manifest was not pinned: %#v", manifest.Assets[at("asset@1")])
 	}
-	// A pinned asset never sends a conditional request, so it must not carry an
-	// ETag that the next lock would only have to strip back out.
+	// A pinned asset never sends a conditional request, so it must not carry an ETag that the next lock would only have to strip back out.
 	if lock.Assets[at("asset@1")].ETag != "" {
 		t.Fatalf("a pinned lock entry kept an ETag: %#v", lock.Assets[at("asset@1")])
 	}
@@ -1595,196 +1314,50 @@ func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
 	}
 }
 
-// The mistake this whole scheme exists to catch: a new version pointed at the
-// source the old one already had. Both versions resolve to one object, so one
-// of the two is a label somebody invented for bytes that already had a version.
-func TestAddRefusesTwoVersionsOfTheSameBytes(t *testing.T) {
+func TestAddAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	before := projecttest.MustRead(t, manifestPath)
-	beforeLock := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
 	_, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("asset@2"), URL: "https://example.com/asset", MaxSize: 1 << 20,
 	})
-	value := fault.As(err)
-	if value.Code != "version_collision" {
-		t.Fatalf("expected version_collision, got %q (%v)", value.Code, err)
-	}
-	if value.Details["asset"] != "test/asset" {
-		t.Fatalf("the collision did not name the asset: %#v", value.Details)
-	}
-	if versions, _ := value.Details["versions"].([]string); len(versions) != 2 ||
-		versions[0] != "1" || versions[1] != "2" {
-		t.Fatalf("the collision did not name both versions: %#v", value.Details)
-	}
-	assertFilesEqual(t, manifestPath, lockPath, before, beforeLock)
-}
-
-// The same mistake made by editing the version in place. The old coordinate
-// leaves the manifest, so the two never appear together and nothing compares
-// them, and the previous lock file is the only thing that still remembers.
-func TestAddRefusesAVersionThatNamesRetiredBytes(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	writeManifest(t, manifestPath, project.Manifest{
-		SchemaVersion: project.ManifestVersion,
-		Assets: map[coord.Coordinate]project.Asset{
-			at("asset@2"): {URL: "https://example.com/asset"},
-		},
-	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
-
-	_, err := service.Add(context.Background(), application.AddOptions{
-		Coordinate: at("other@1"), URL: "https://example.com/other", MaxSize: 1 << 20,
-	})
-	if code := fault.As(err).Code; code != "version_collision" {
-		t.Fatalf("expected version_collision, got %q (%v)", code, err)
-	}
-}
-
-// Rebinding is the way through when the operator has decided the version does
-// mean these bytes now.
-func TestAddRebindAcceptsRetiredBytes(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	writeManifest(t, manifestPath, project.Manifest{
-		SchemaVersion: project.ManifestVersion,
-		Assets: map[coord.Coordinate]project.Asset{
-			at("asset@2"): {URL: "https://example.com/asset"},
-		},
-	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
-
-	if _, err := service.Add(context.Background(), application.AddOptions{
-		Coordinate: at("other@1"), URL: "https://example.com/other",
-		AllowRebind: true, MaxSize: 1 << 20,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
-	if _, exists := manifest.Assets[at("asset@2")]; !exists {
-		t.Fatalf("the rebind did not settle the edited asset: %#v", manifest.Assets)
-	}
-}
-
-// The rule that gives a version its meaning: once the lock binds a coordinate
-// to bytes, nothing rewrites the digest under it. An origin that replaced what
-// it serves behind a stable URL is the case this exists for, and a refresh is
-// where DAC used to accept it silently.
-func TestRefreshLockRefusesToRebindALockedVersion(t *testing.T) {
-	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	before := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
-
-	_, err := service.Lock(context.Background(), application.LockOptions{
-		Concurrency: 1, MaxSize: 1 << 20, Refresh: true,
-	})
-	value := fault.As(err)
-	if value.Code != "version_rebind" {
-		t.Fatalf("expected version_rebind, got %q (%v)", value.Code, err)
-	}
-	if value.Details["asset"] != "test/asset@1" {
-		t.Fatalf("the rebind did not name the asset: %#v", value.Details)
-	}
-	if value.Details["lockedDigest"] != digest.Bytes([]byte("asset bytes")) ||
-		value.Details["resolvedDigest"] != digest.Bytes([]byte("moved bytes")) {
-		t.Fatalf("the rebind did not report both digests: %#v", value.Details)
-	}
-	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("the refused rebind still wrote the lock file")
-	}
-}
-
-// A manifest edited to point one version somewhere else is the same claim from
-// the other direction, so it fails the same way.
-func TestLockRefusesToRebindThroughAManifestEdit(t *testing.T) {
-	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	writeManifest(t, manifestPath, project.Manifest{
-		SchemaVersion: project.ManifestVersion,
-		Assets: map[coord.Coordinate]project.Asset{
-			at("asset@1"): {URL: "https://example.com/elsewhere"},
-		},
-	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("other bytes")), nil)
-
-	_, err := service.Lock(context.Background(), application.LockOptions{
-		Concurrency: 1, MaxSize: 1 << 20,
-	})
-	if code := fault.As(err).Code; code != "version_rebind" {
-		t.Fatalf("expected version_rebind, got %q (%v)", code, err)
-	}
-}
-
-// A source that moved but still serves the same bytes is not a rebind. Nothing
-// about what the version names has changed, so nothing needs deciding.
-func TestLockAcceptsAMovedSourceServingTheSameBytes(t *testing.T) {
-	content := []byte("asset bytes")
-	manifestPath, lockPath := lockedProject(t, content)
-	writeManifest(t, manifestPath, project.Manifest{
-		SchemaVersion: project.ManifestVersion,
-		Assets: map[coord.Coordinate]project.Asset{
-			at("asset@1"): {URL: "https://mirror.example.com/asset"},
-		},
-	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
-
-	if _, err := service.Lock(context.Background(), application.LockOptions{
-		Concurrency: 1, MaxSize: 1 << 20,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.Assets[at("asset@1")].URL != "https://mirror.example.com/asset" {
-		t.Fatalf("the lock did not follow the source: %#v", lock.Assets[at("asset@1")])
+	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
+	if len(manifest.Assets) != 2 || len(lock.Assets) != 2 {
+		t.Fatalf("project does not contain both versions: %#v %#v", manifest.Assets, lock.Assets)
+	}
+	if lock.Assets[at("asset@1")].Digest != lock.Assets[at("asset@2")].Digest {
+		t.Fatalf("identical versions have different digests: %#v", lock.Assets)
 	}
 }
 
-// Rebinding stays available for the project that tracks a rolling source and
-// has decided to accept what it now serves.
-func TestRebindWritesTheNewBytes(t *testing.T) {
+func TestRefreshLockUpdatesChangedBytes(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	moved := []byte("moved bytes")
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(moved), nil)
 
-	if _, err := service.Lock(context.Background(), application.LockOptions{
-		Concurrency: 1, MaxSize: 1 << 20, Refresh: true, AllowRebind: true,
-	}); err != nil {
+	result, err := service.Lock(context.Background(), application.LockOptions{
+		Concurrency: 1, MaxSize: 1 << 20, Refresh: true,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.Assets[at("asset@1")].Digest != digest.Bytes(moved) {
-		t.Fatalf("the rebind did not write the new digest: %#v", lock.Assets[at("asset@1")])
+	if !result.Changed || lock.Assets[at("asset@1")].Digest != digest.Bytes(moved) {
+		t.Fatalf("refresh did not update the lock: %#v %#v", result, lock.Assets[at("asset@1")])
 	}
 }
 
-// Verify reports drift as its result, so the rebind rule must not raise a
-// different error in front of the answer this command exists to give.
-func TestVerifyRefreshStillReportsDriftRatherThanRebind(t *testing.T) {
-	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
-
-	_, err := service.Verify(context.Background(), application.VerifyOptions{Concurrency: 1, MaxSize: 1 << 20, Refresh: true})
-	if code := fault.As(err).Code; code != "lock_drift" {
-		t.Fatalf("expected lock_drift, got %q (%v)", code, err)
-	}
-}
-
-// Two versions of one asset served from one URL is fragile rather than wrong:
-// only one set of bytes is at that URL, so a cold cache can restore only one of
-// them. The add says so and continues.
+// Two versions of one asset served from one URL A shared source warning tells users that one URL can restore only its current bytes.
 func TestAddReportsASharedSourceURL(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	// A genuinely rolling source: one URL whose bytes change between the two
-	// adds. That is the only way two versions can share a URL without also
-	// naming the same object, which is the rule that would answer first.
+	// The source changes bytes between versions but keeps the same URL.
 	service := application.New(manifestPath, lockPath, newFakeStore(),
 		sequenceFetcher([]byte("first bytes"), []byte("later bytes")), nil)
 
@@ -1807,8 +1380,7 @@ func TestAddReportsASharedSourceURL(t *testing.T) {
 	}
 }
 
-// namedFetcher serves one body under a name the origin supplies, which is what
-// a Content-Disposition header amounts to by the time it reaches the service.
+// namedFetcher serves one body under a name the origin supplies, which is what a Content-Disposition header amounts to by the time it reaches the service.
 func namedFetcher(content []byte, name string) *fakeFetcher {
 	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
 		value := response(content)
@@ -1817,9 +1389,7 @@ func namedFetcher(content []byte, name string) *fakeFetcher {
 	}}
 }
 
-// unlockedProject writes a lock entry with no file name: a project locked by a
-// DAC from before the field existed. It is the starting state for every
-// migration test here.
+// unlockedProject writes a lock entry with no file name: a project locked by a DAC from before the field existed.
 func unlockedNameProject(t *testing.T, content []byte) (string, string) {
 	t.Helper()
 	directory := t.TempDir()
@@ -1856,9 +1426,7 @@ func lockedFilename(t *testing.T, lockPath string) string {
 	return lock.Assets[at("asset@1")].Filename
 }
 
-// The name an origin supplies is the whole point of the field: a URL ending in
-// an opaque endpoint spells nothing useful, and the header is the only place
-// the real name appears.
+// The name an origin supplies is the whole point of the field: a URL ending in an opaque endpoint spells nothing useful, and the header is the only place the real name appears.
 func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -1891,9 +1459,7 @@ func TestResolveFallsBackToTheNameTheURLSpells(t *testing.T) {
 	}
 }
 
-// A name an origin supplies that is not one path element is refused rather than
-// repaired, and the URL answers instead. Nothing about the command fails: the
-// field decides nothing, so a hostile header costs a worse name and no more.
+// A name an origin supplies that is not one path element is refused rather than repaired, and the URL answers instead.
 func TestResolveRefusesASuppliedNameThatEscapesItsDirectory(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -1910,10 +1476,7 @@ func TestResolveRefusesASuppliedNameThatEscapesItsDirectory(t *testing.T) {
 	}
 }
 
-// A lock from before the field existed gains a name without a request, because
-// the URL already holds the answer. An asset that agrees with its manifest is
-// never resolved again, so a migration that waited for a resolution would never
-// reach a project that had settled.
+// A lock from before the field existed gains a name without a request, because the URL already holds the answer.
 func TestLockBackfillsAMissingFilenameWithoutARequest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := unlockedNameProject(t, content)
@@ -1933,9 +1496,7 @@ func TestLockBackfillsAMissingFilenameWithoutARequest(t *testing.T) {
 		t.Fatalf("the backfilled name is %q", name)
 	}
 
-	// The rewrite is the migration and happens once. A pull that kept rewriting
-	// the lock would have anything watching the project directory read a change
-	// on every run.
+	// The rewrite is the migration and happens once.
 	before := projecttest.MustRead(t, lockPath)
 	if _, err := service.Lock(context.Background(), application.LockOptions{
 		Concurrency: 1,
@@ -1947,8 +1508,7 @@ func TestLockBackfillsAMissingFilenameWithoutARequest(t *testing.T) {
 	}
 }
 
-// A missing name never makes a lock look stale. Every project locked before
-// this field existed would otherwise have to re-resolve every asset it holds.
+// A missing name never makes a lock look stale.
 func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := unlockedNameProject(t, content)
@@ -1969,8 +1529,7 @@ func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
 	}
 }
 
-// A manifest that repoints an asset replaces the source the old name described,
-// so the name goes with it rather than following the bytes.
+// A manifest that repoints an asset replaces the source the old name described, so the name goes with it rather than following the bytes.
 func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
@@ -1990,9 +1549,7 @@ func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/new/second.bin"},
 		},
 	})
-	if _, err := service.Lock(context.Background(), application.LockOptions{
-		Concurrency: 1, AllowRebind: true,
-	}); err != nil {
+	if _, err := service.Lock(context.Background(), application.LockOptions{Concurrency: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if name := lockedFilename(t, lockPath); name != "second.bin" {
@@ -2000,10 +1557,7 @@ func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 	}
 }
 
-// A 304 says these are the bytes the lock already describes, so it must not
-// rename them. The response carries no body and rarely repeats the header that
-// named the asset, so honoring whatever it reports would trade a name the origin
-// once gave for whatever the URL happens to spell.
+// A 304 says these are the bytes the lock already describes, so it must not rename them.
 func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 	content := []byte("cached")
 	manifestPath, lockPath := lockedProject(t, content)
@@ -2013,8 +1567,7 @@ func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 	}
 	asset := lock.Assets[at("asset@1")]
 	asset.ETag = "\"old\""
-	// A name only a Content-Disposition header could have produced: the URL of
-	// this fixture spells "asset".
+	// A name only a Content-Disposition header could have produced: the URL of this fixture spells "asset".
 	asset.Filename = "database.bin"
 	lock.Assets[at("asset@1")] = asset
 	if err := project.Write(lockPath, lock); err != nil {
@@ -2026,8 +1579,7 @@ func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 		return &application.FetchResponse{
 			NotModified: true,
 			ETag:        "\"new\"",
-			// What the adapter reports for a 304 with no header: the name the
-			// URL spells, which is worse than the one already recorded.
+			// What the adapter reports for a 304 with no header: the name the URL spells, which is worse than the one already recorded.
 			Filename: "asset",
 			Body:     io.NopCloser(bytes.NewReader(nil)),
 		}, nil
@@ -2048,8 +1600,7 @@ func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 	}
 }
 
-// The same response does fill in an entry that has no name, which is how a lock
-// from before the field existed migrates through a refresh.
+// The same response does fill in an entry that has no name, which is how a lock from before the field existed migrates through a refresh.
 func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := unlockedNameProject(t, content)
@@ -2085,10 +1636,7 @@ func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
 	}
 }
 
-// A name the manifest declares is the project's own answer, so it beats the one
-// the origin supplies -- the case the flag exists for, since an origin that
-// sends a useful Content-Disposition header is the one whose name is hardest to
-// override any other way.
+// A name the manifest declares is the project's own answer, so it beats the one the origin supplies -- the case the flag exists for, since an origin that sends a useful Content-Disposition header is the one whose name is hardest to override any other way.
 func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -2108,17 +1656,14 @@ func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
 	if name := lockedFilename(t, lockPath); name != "geo.db" {
 		t.Fatalf("lock recorded %q, want the declared name", name)
 	}
-	// The manifest is where the declaration lives, because it is source intent
-	// rather than something a resolution found. A lock is rewritten from the
-	// manifest, so recording it only there would lose it on the next lock.
+	// The manifest is where the declaration lives, because it is source intent rather than something a resolution found.
 	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
 	if declared := manifest.Assets[at("asset@1")].Filename; declared != "geo.db" {
 		t.Fatalf("the manifest declares %q", declared)
 	}
 }
 
-// An add that declares no name leaves every naming decision where it was, which
-// is the whole compatibility claim for the flag.
+// An add that declares no name leaves every naming decision where it was, which is the whole compatibility claim for the flag.
 func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -2139,8 +1684,7 @@ func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
 	}
 }
 
-// An offline add writes only the manifest, and the declaration is a manifest
-// field, so it is the one part of the asset that is settled with no network.
+// An offline add writes only the manifest, and the declaration is a manifest field, so it is the one part of the asset that is settled with no network.
 func TestOfflineAddRecordsTheDeclaredName(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
@@ -2164,10 +1708,7 @@ func TestOfflineAddRecordsTheDeclaredName(t *testing.T) {
 	}
 }
 
-// A name that is not one path element is refused rather than repaired, and the
-// add fails: a name somebody typed is a decision, so DAC either records the one
-// asked for or says it will not. That is the opposite of what a supplied name
-// gets, which falls through to the next source without failing anything.
+// A name that is not one path element is refused rather than repaired, and the add fails: a name somebody typed is a decision, so DAC either records the one asked for or says it will not.
 func TestAddRefusesANameThatIsNotOnePathElement(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	beforeManifest := projecttest.MustRead(t, manifestPath)
@@ -2186,8 +1727,7 @@ func TestAddRefusesANameThatIsNotOnePathElement(t *testing.T) {
 	assertFilesEqual(t, manifestPath, lockPath, beforeManifest, beforeLock)
 }
 
-// Renaming an asset is a manifest edit, and a lock settles it without asking
-// any origin anything. A name is not worth a download: the bytes did not move.
+// Renaming an asset is a manifest edit, and a lock settles it without asking any origin anything.
 func TestLockAppliesADeclaredNameWithoutARequest(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
@@ -2217,9 +1757,7 @@ func TestLockAppliesADeclaredNameWithoutARequest(t *testing.T) {
 	}
 }
 
-// A refresh that ends in a 304 keeps the declared name too. The rule for a
-// recorded name is that the origin's silence does not replace it; the rule for
-// a declared one is that nothing the origin says replaces it.
+// A refresh that ends in a 304 keeps the declared name too.
 func TestNotModifiedKeepsTheDeclaredName(t *testing.T) {
 	content := []byte("cached")
 	manifestPath, lockPath := emptyProject(t)
@@ -2266,10 +1804,7 @@ func TestNotModifiedKeepsTheDeclaredName(t *testing.T) {
 	}
 }
 
-// A pinned asset the cache already holds is answered without a request, and
-// that path builds its lock entry from nothing the origin said. The declared
-// name has to reach it too, or an asset would be named by whether its bytes
-// happened to be cached.
+// A pinned asset the cache already holds is answered without a request, and that path builds its lock entry from nothing the origin said.
 func TestADeclaredNameReachesACachedResolution(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)

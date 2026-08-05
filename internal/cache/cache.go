@@ -24,16 +24,12 @@ import (
 )
 
 // Store manages one filesystem cache.
-//
-// A store must not be copied: verified carries the objects this process has
-// already hashed, and a copy would hash them all over again.
+// A store must not be copied: verified carries the objects this process has already hashed, and a copy would hash them all over again.
 type Store struct {
 	Root string
-	// Logger traces what the cache answered for each object. A nil logger
-	// traces nothing, so the zero value is a store that says nothing.
+	// Logger traces what the cache answered for each object.
 	Logger *slog.Logger
-	// verified maps a digest to the file information of the bytes this process
-	// hashed for it. See trusted in meta.go.
+	// verified maps a digest to the file information of the bytes this process hashed for it.
 	verified sync.Map
 }
 
@@ -70,10 +66,7 @@ func (store *Store) Path(value string) (string, error) {
 	return filepath.Join(store.Root, "blobs", "sha256", hexValue), nil
 }
 
-// Stat returns the object stored for a digest and confirms that it still holds
-// the bytes DAC installed. It reports a CorruptError for an object that does
-// not, which is the one answer a content-addressed store must never guess at.
-//
+// Stat returns the object stored for a digest and confirms that it still holds the bytes DAC installed.
 // It usually reads no object bytes at all: see check in meta.go.
 func (store *Store) Stat(value string) (application.Object, bool, error) {
 	path, err := store.Path(value)
@@ -97,16 +90,8 @@ func (store *Store) Stat(value string) (application.Object, bool, error) {
 	return application.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
-// GC removes objects that nothing has used for longer than MaxAge, along with
-// temporary files abandoned by an interrupted download and sidecars whose
-// object is gone.
-//
-// Age is the only liveness signal a content-addressed store has, and it now
-// lives in each object's sidecar rather than on the object itself, so that a
-// cache hit can record use without disturbing the timestamp that proves the
-// object has not been written to. Digest lock files are never removed:
-// unlinking a lock file that another process holds would let a later process
-// take the same lock through a new inode.
+// GC removes old objects, abandoned temporary files, and orphaned sidecars.
+// Sidecars record cache use without changing the object timestamp that proves immutability.
 func (store *Store) GC(ctx context.Context, options application.GCOptions) (application.GCResult, error) {
 	if options.MaxAge < 0 {
 		return application.GCResult{}, errors.New("the maximum age must not be negative")
@@ -114,16 +99,10 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	result := application.GCResult{Digests: []string{}, DryRun: options.DryRun}
 	cutoff := time.Now().Add(-options.MaxAge)
 	if options.All {
-		// Everything is older than a cutoff in the far future. Clearing the
-		// cache therefore reuses the whole of collection -- the digest locks,
-		// the sidecar pairing, and the abandoned-download sweep -- rather than
-		// reimplementing removal beside it and having the two drift.
+		// Everything is older than a cutoff in the far future.
 		cutoff = time.Now().Add(farFuture)
 	}
-	// collected names the objects this run took, so the sidecar sweep can tell
-	// the pairs it removed itself from the sidecars that were already alone. The
-	// sweep reads a directory listing taken before any of this, where the two
-	// look identical.
+	// collected names the objects this run took, so the sidecar sweep can tell the pairs it removed itself from the sidecars that were already alone.
 	collected := map[string]struct{}{}
 
 	blobs := filepath.Join(store.Root, "blobs", "sha256")
@@ -178,8 +157,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	result.SidecarCount = sidecars
 	result.TempCount += abandoned
 
-	// Clearing takes everything regardless, so there is no bound left to be
-	// over.
+	// Clearing takes everything regardless, so there is no bound left to be over.
 	if options.MaxSize > 0 && !options.All {
 		if err := store.evict(ctx, options, collected, &result); err != nil {
 			return application.GCResult{}, err
@@ -188,28 +166,15 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	return result, nil
 }
 
-// olderThan is the collection question: has nothing used this object since the
-// cutoff.
+// olderThan is the collection question: has nothing used this object since the cutoff.
 func olderThan(cutoff time.Time) func(time.Time) bool {
 	return func(used time.Time) bool { return used.Before(cutoff) }
 }
 
-// evict removes the least recently used objects until the cache is inside its
-// size bound.
-//
-// Age and size are different questions, and a cache answers to both. Age asks
-// whether anything is still using an object; a bound asks whether there is
-// room. A machine whose projects genuinely use more than the disk it has to
-// spare has nothing old enough to collect and is still too full, and until now
-// the only lever was to guess an age short enough to hurt.
-//
-// So this runs after collection, on what collection left, and takes live
-// objects oldest first -- the only order that spends a full cache on the assets
-// something is actually reaching for.
-//
-// It is a bound on collection rather than a quota on the cache. Nothing here
-// stands between a download and the disk: a single pull larger than the bound
-// still lands, and the next collection brings the cache back under.
+// evict removes the least recently used objects until the cache is inside its size bound.
+// Age and size are different questions, and a cache answers to both.
+// Eviction runs after collection and removes live objects from oldest to newest.
+// It is a bound on collection rather than a quota on the cache.
 func (store *Store) evict(ctx context.Context, options application.GCOptions, collected map[string]struct{}, result *application.GCResult) error {
 	objects, total, err := store.evictable(ctx, collected)
 	if err != nil {
@@ -218,8 +183,7 @@ func (store *Store) evict(ctx context.Context, options application.GCOptions, co
 	if total <= options.MaxSize {
 		return nil
 	}
-	// Oldest first, and by digest between objects that share a timestamp so
-	// that two runs over one cache make the same choices.
+	// Oldest first, and by digest between objects that share a timestamp so that two runs over one cache make the same choices.
 	slices.SortFunc(objects, func(left, right candidate) int {
 		if left.used.Equal(right.used) {
 			return strings.Compare(left.digest, right.digest)
@@ -236,11 +200,7 @@ func (store *Store) evict(ctx context.Context, options application.GCOptions, co
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Waiting for the digest lock takes time, and an object something
-		// reached for in the meantime is the last one worth taking: it is now
-		// the most recently used thing in the cache rather than the least.
-		// Leaving it can end the run still over the bound, which the next
-		// collection settles.
+		// An object used while eviction waits becomes recent and is not removed.
 		size, removed, err := store.collect(ctx, candidate.digest, unusedSince(candidate.used), options.DryRun)
 		if err != nil {
 			return err
@@ -261,14 +221,12 @@ func (store *Store) evict(ctx context.Context, options application.GCOptions, co
 	return nil
 }
 
-// unusedSince is the eviction question: has nothing reached this object since
-// the run looked at it.
+// unusedSince is the eviction question: has nothing reached this object since the run looked at it.
 func unusedSince(observed time.Time) func(time.Time) bool {
 	return func(used time.Time) bool { return !used.After(observed) }
 }
 
-// stored is one object a size bound may have to take, and what decides whether
-// it goes.
+// stored is one object a size bound may have to take, and what decides whether it goes.
 type candidate struct {
 	digest string
 	size   int64
@@ -276,10 +234,7 @@ type candidate struct {
 }
 
 // evictable reports the objects collection left behind and what they come to.
-//
-// It skips the ones collection took. On a dry run those are still on disk, and
-// counting them would have the run report evicting objects it has already said
-// it would collect.
+// It skips the ones collection took.
 func (store *Store) evictable(ctx context.Context, collected map[string]struct{}) ([]candidate, int64, error) {
 	blobs := filepath.Join(store.Root, "blobs", "sha256")
 	entries, err := os.ReadDir(blobs)
@@ -322,16 +277,11 @@ func (store *Store) evictable(ctx context.Context, collected map[string]struct{}
 	return objects, total, nil
 }
 
-// farFuture is the cutoff an unconditional collection uses. A century is not a
-// magic number so much as a statement that no object's timestamp is after it.
+// farFuture is the cutoff an unconditional collection uses.
 const farFuture = 100 * 365 * 24 * time.Hour
 
 // Describe reports an object's size and when a project last used it.
-//
-// It touches nothing. Stat refreshes the liveness timestamp, because reaching
-// an object is the signal collection runs on -- so a listing built from Stat
-// would make every object look freshly used and quietly defeat the next
-// collection. Asking what is in the cache is not using what is in the cache.
+// It touches nothing.
 func (store *Store) Describe(value string) (application.ObjectDescription, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
@@ -351,10 +301,7 @@ func (store *Store) Describe(value string) (application.ObjectDescription, bool,
 	return application.ObjectDescription{Digest: value, Size: info.Size(), LastUsed: used}, true, nil
 }
 
-// lastUsed reports when a project last referenced an object. The sidecar
-// carries that signal. An object from a cache DAC wrote before the sidecar
-// format falls back to its own timestamp, which is what the older format
-// refreshed on every hit, so collection stays correct across the migration.
+// lastUsed reports when a project last referenced an object.
 func (store *Store) lastUsed(objectPath string) (time.Time, error) {
 	info, err := os.Stat(metaPath(objectPath))
 	if err == nil {
@@ -370,16 +317,8 @@ func (store *Store) lastUsed(objectPath string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
-// collect removes one object and its sidecar while it holds that object's
-// digest lock, so a concurrent install cannot rename a new copy into place
-// mid-removal. It re-checks under the lock because waiting for it takes time
-// during which another process may have used the object.
-//
-// What that re-check asks is the caller's to decide, because the two removals
-// this store makes ask different questions of the same timestamp. Collection
-// asks whether the object is older than a cutoff. Eviction asks whether it has
-// been used since the run picked it, which is a cutoff nothing knows in advance
-// -- it is whatever that object's timestamp read a moment ago.
+// collect removes one object and its sidecar while it holds that object's digest lock, so a concurrent install cannot rename a new copy into place mid-removal.
+// What that re-check asks is the caller's to decide, because the two removals this store makes ask different questions of the same timestamp.
 func (store *Store) collect(ctx context.Context, value string, unused func(time.Time) bool, dryRun bool) (int64, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
@@ -424,20 +363,9 @@ func (store *Store) collect(ctx context.Context, value string, unused func(time.
 	return size, removed, nil
 }
 
-// collectSidecars removes sidecars left without an object, along with the
-// temporary files an interrupted sidecar write leaves behind.
-//
-// Collection removes an object and its sidecar together, so one that survives
-// on its own describes an object something outside DAC deleted. The temporary
-// files are the sidecar equivalent of an abandoned download: a write that dies
-// between creating its temporary file and renaming it leaves one here, where
-// the download sweep does not look.
-//
-// The entries come from a listing taken before the objects were collected, so
-// collected names the ones this run removed. Without it every collected object
-// would be reported a second time as an orphaned sidecar, which is the one
-// number in the summary that is supposed to mean something went wrong outside
-// DAC.
+// collectSidecars removes sidecars left without an object, along with the temporary files an interrupted sidecar write leaves behind.
+// Collection removes an object and its sidecar together, so one that survives on its own describes an object something outside DAC deleted.
+// The entries come from a listing taken before the objects were collected, so collected names the ones this run removed.
 func (store *Store) collectSidecars(ctx context.Context, directory string, entries []os.DirEntry, collected map[string]struct{}, cutoff time.Time, dryRun bool) (int, int, error) {
 	sidecars, abandoned := 0, 0
 	for _, entry := range entries {
@@ -478,24 +406,14 @@ func (store *Store) collectSidecars(ctx context.Context, directory string, entri
 }
 
 // collectSidecar removes one sidecar that outlived the object it described.
-//
-// It takes that object's digest lock and re-checks under it, like every other
-// removal in this store. The listing it works from was taken before any of the
-// collection, and between the listing and this removal another process can
-// install the object the sidecar belongs to -- at which point the file is a
-// current record rather than a leftover, and taking it costs the next command a
-// full re-hash of an object nothing was ever in doubt about.
-//
-// It also leaves a sidecar the cutoff has not reached, exactly as the sweep
-// leaves a temporary file that new. A sidecar written while this run was walking
-// the directory is by definition too young to be anybody's leftover.
+// It takes that object's digest lock and re-checks under it, like every other removal in this store.
+// It also leaves a sidecar the cutoff has not reached, exactly as the sweep leaves a temporary file that new.
 func (store *Store) collectSidecar(ctx context.Context, directory, name string, collected map[string]struct{}, cutoff time.Time, dryRun bool) (bool, error) {
 	objectName := strings.TrimSuffix(name, metaSuffix)
 	if _, taken := collected[objectName]; taken {
 		return false, nil
 	}
-	// A name this store did not write is not a sidecar, whatever it ends with,
-	// and there is no object lock to take for it.
+	// A name this store did not write is not a sidecar, whatever it ends with, and there is no object lock to take for it.
 	value := digest.Prefix + objectName
 	if _, err := digest.Hex(value); err != nil {
 		return false, nil
@@ -569,11 +487,7 @@ func (store *Store) collectTemporary(cutoff time.Time, dryRun bool) (int, error)
 }
 
 // Verify hashes one object and reports what it holds.
-//
-// It deliberately ignores both the sidecar and the in-process record of what
-// this run has already hashed. Those exist so that ordinary commands can avoid
-// reading an object they have reason to trust, and an explicit check that
-// trusted them would only ever confirm its own bookkeeping.
+// It deliberately ignores both the sidecar and the in-process record of what this run has already hashed.
 func (store *Store) Verify(_ context.Context, value string) (application.Object, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
@@ -588,15 +502,12 @@ func (store *Store) Verify(_ context.Context, value string) (application.Object,
 	if err != nil {
 		return application.Object{}, false, err
 	}
-	// The size comes back even when the digest does not match, because the check
-	// read those bytes and a summary that reports how much it read should count
-	// them.
+	// The size comes back even when the digest does not match, because the check read those bytes and a summary that reports how much it read should count them.
 	if actual != value {
 		return application.Object{Digest: value, Size: info.Size()}, true,
 			&application.CorruptError{Digest: value, ActualDigest: actual, Path: path}
 	}
-	// A clean object has just paid for its own sidecar, so write it: an fsck
-	// over a cache DAC wrote before this format should leave it migrated.
+	// A clean object has just paid for its own sidecar, so write it: an fsck over a cache DAC wrote before this format should leave it migrated.
 	_ = writeMeta(metaPath(path), newMeta(info))
 	store.remember(value, info)
 	return application.Object{Digest: value, Size: info.Size()}, true, nil
@@ -661,8 +572,7 @@ func (store *Store) WithLock(ctx context.Context, value string, operation func()
 	return errors.Join(operationErr, lock.Release())
 }
 
-// Put installs bytes. Unless the caller already holds the digest lock, it takes
-// that lock once it has calculated the digest.
+// Put installs bytes.
 func (store *Store) Put(ctx context.Context, reader io.Reader, options application.PutOptions) (application.Object, error) {
 	temporaryDirectory := filepath.Join(store.Root, "tmp")
 	if err := os.MkdirAll(temporaryDirectory, 0o755); err != nil {
@@ -698,8 +608,7 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 		return application.Object{}, err
 	}
 	if limit >= 0 && size > limit {
-		// An expected size that the bytes overrun is a content failure. A
-		// MaxSize overrun is a limit the operator chose, not a broken asset.
+		// An expected size that the bytes overrun is a content failure.
 		if expect.Size != application.Unknown {
 			return application.Object{}, &application.ContentError{
 				ExpectedDigest: expect.Digest,
@@ -720,11 +629,7 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 	}
 	object := application.Object{Digest: actualDigest, Size: size}
 
-	// Install unconditionally rather than skipping an object that is already
-	// there. These bytes have just been hashed, so they are known good, while an
-	// object already at this path is only known to have the right name -- which
-	// is exactly the claim this store no longer takes on trust. Renaming over it
-	// repairs a corrupt object at no extra cost.
+	// Install unconditionally rather than skipping an object that is already there.
 	install := func() error {
 		path, err := store.Path(actualDigest)
 		if err != nil {

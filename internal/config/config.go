@@ -1,11 +1,6 @@
 // Package config reads DAC's machine and site configuration.
-//
-// A manifest says what a project uses. This package configures transfer and
-// cache behavior for the machine that runs DAC.
-//
-// The file lives where the XDG base directory specification says it does, so a
-// site can install one under /etc/xdg and a person can override any part of it
-// under ~/.config without either having to know about the other.
+// A manifest says what a project uses.
+// XDG paths let site and user configuration merge without shared path knowledge.
 package config
 
 import (
@@ -28,25 +23,13 @@ const FileName = "config.toml"
 // DirName is the directory that holds DAC's config in each XDG base directory.
 const DirName = "dac"
 
-// SchemaVersion is the config layout this DAC understands. The key is optional
-// -- a hand-written file should not have to carry bookkeeping to work -- but a
-// file that states a version must state one DAC knows, so a config written for
-// a later DAC fails here rather than by having its unknown keys rejected one at
-// a time.
+// SchemaVersion is the config layout this DAC understands.
 const SchemaVersion = 2
 
 // NoSizeLimit is the only max-size value that removes the download bound.
-//
-// An empty value and a zero used to do it too, and neither said so. Both are
-// what a shell produces from a variable nobody set, so the guard against a
-// runaway stream could end up disabled by a deployment that thought it was
-// leaving the default in place. Switching it off is a decision, so it needs a
-// word.
 const NoSizeLimit = "none"
 
-// Defaults are the values DAC uses when no config file names one. The ones
-// spelled as text are the same text a config file would carry, so the default
-// and a configured value go through one parser and cannot disagree.
+// Defaults are the values DAC uses when no config file names one.
 const (
 	DefaultTimeout       = "5m"
 	DefaultRetries       = 2
@@ -54,9 +37,7 @@ const (
 	DefaultDownloadParts = 4
 	DefaultMaxSize       = "2GiB"
 	DefaultMaxAge        = "30d"
-	// A cache nobody bounded is unbounded. Collection by age is the policy DAC
-	// has always had, and a size that started out set would delete objects on
-	// machines whose operators never asked for a bound.
+	// A cache nobody bounded is unbounded.
 	DefaultCacheMaxSize = NoSizeLimit
 )
 
@@ -69,14 +50,12 @@ type Config struct {
 	Retries       int
 	Concurrency   int
 	DownloadParts int
-	// MaxSize bounds a download whose size DAC does not already know. Zero
-	// means no bound.
+	// MaxSize bounds a download whose size DAC does not already know.
 	MaxSize  int64
 	Progress bool
 	CacheDir string
 	MaxAge   time.Duration
-	// CacheMaxSize bounds what the cache holds after a collection. Zero means
-	// no bound, which is what collection by age alone amounts to.
+	// CacheMaxSize bounds what the cache holds after a collection.
 	CacheMaxSize int64
 	// Files are the config files that were read, most important first.
 	Files []string
@@ -85,11 +64,7 @@ type Config struct {
 }
 
 // Load reads the config files for one DAC run.
-//
-// explicit names a file that must exist, which is what --config and DAC_CONFIG
-// pass. When it is empty the XDG search path is used instead and every file in
-// it is optional: a machine with no config is a machine that wants the
-// defaults, not a machine that is misconfigured.
+// explicit names a file that must exist, which is what --config and DAC_CONFIG pass.
 func Load(explicit string) (*Config, error) {
 	paths, err := searchPaths(explicit)
 	if err != nil {
@@ -109,11 +84,7 @@ func Load(explicit string) (*Config, error) {
 }
 
 // searchPaths returns the files to read, most important first.
-//
-// The XDG specification orders base directories by importance and asks that
-// configuration from several of them be merged rather than have the first found
-// win outright, so this returns every candidate and merge below settles each
-// setting separately.
+// Search returns all XDG candidates so merge can select each setting by priority.
 func searchPaths(explicit string) ([]string, error) {
 	if explicit != "" {
 		return []string{explicit}, nil
@@ -129,11 +100,7 @@ func searchPaths(explicit string) ([]string, error) {
 }
 
 // configHome returns $XDG_CONFIG_HOME, or ~/.config when it is unset.
-//
-// A relative XDG value is ignored rather than resolved against the working
-// directory, which is what the specification asks for and what keeps a stray
-// variable from making DAC read a file out of whatever directory a build
-// happened to run in.
+// Relative XDG paths are ignored so builds cannot load config from their work directory.
 func configHome() string {
 	if value := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(value) {
 		return value
@@ -160,9 +127,7 @@ func configDirs() []string {
 	return directories
 }
 
-// file is one parsed config file. Every scalar is a pointer so that a file
-// which does not mention a setting can be told apart from one that sets it to
-// the zero value, which is what lets a less important file supply it instead.
+// file is one parsed config file.
 type file struct {
 	path string
 	data fileData
@@ -189,10 +154,7 @@ type fileCache struct {
 	MaxSize *string `toml:"max-size"`
 }
 
-// readFile parses one config file. A missing file reports no config unless it
-// was named explicitly: a search path that finds nothing means a machine that
-// wants the defaults, while --config naming a file that is not there is a
-// deployment that thinks it configured something.
+// readFile parses one config file.
 func readFile(path string, required bool) (*file, error) {
 	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -223,7 +185,6 @@ func readFile(path string, required bool) (*file, error) {
 }
 
 // merge settles each setting from the most important file that supplies it.
-//
 // Each scalar comes from the first file that supplies it.
 func merge(files []*file) (*Config, error) {
 	config := &Config{Sources: map[string]string{}}
@@ -285,8 +246,7 @@ type setting[T any] struct {
 	source string
 }
 
-// take accepts a value only if a more important file has already supplied one,
-// which is what makes the first file in the search path win each setting.
+// take accepts a value only if a more important file has already supplied one, which is what makes the first file in the search path win each setting.
 func (current *setting[T]) take(value *T, path string) {
 	if value == nil || current.value != nil {
 		return
@@ -303,9 +263,7 @@ func scalar[T any](config *Config, current setting[T], fallback T) T {
 	return *current.value
 }
 
-// converted settles a setting written as text, such as a duration or a byte
-// count. The default goes through the same parser as a configured value, so the
-// two cannot drift apart.
+// converted settles a setting written as text, such as a duration or a byte count.
 func converted[R any](config *Config, current setting[string], fallback string, parse func(string) (R, error)) (R, error) {
 	config.Sources[current.name] = source(current.source)
 	text := fallback
@@ -326,8 +284,7 @@ func source(path string) string {
 	return path
 }
 
-// validate rejects the settings that have a meaningful range, so a bad config
-// fails when it is read rather than in the middle of a transfer.
+// validate rejects the settings that have a meaningful range, so a bad config fails when it is read rather than in the middle of a transfer.
 func (config *Config) validate() error {
 	if config.Timeout <= 0 {
 		return configError(config, "transfer.timeout", "must be positive")
@@ -361,8 +318,7 @@ type Setting struct {
 	Source string `json:"source"`
 }
 
-// Settings returns every effective value with the file that supplied it, in the
-// order the TOML form writes them.
+// Settings returns every effective value with the file that supplied it, in the order the TOML form writes them.
 func (config *Config) Settings() []Setting {
 	keys := []struct {
 		name  string
@@ -385,8 +341,7 @@ func (config *Config) Settings() []Setting {
 	return settings
 }
 
-// sizeText writes a byte bound the way a config file would, where the value
-// that removes the bound is a word rather than a zero.
+// sizeText writes a byte bound the way a config file would, where the value that removes the bound is a word rather than a zero.
 func sizeText(value int64) string {
 	if value == 0 {
 		return NoSizeLimit
@@ -395,11 +350,7 @@ func sizeText(value int64) string {
 }
 
 // FormatDuration writes a duration the way a config file would.
-//
-// Go's own form spells a month "720h0m0s", which is the number a cache policy
-// is never written in. Whole days and weeks get their own units back, and
-// anything else falls through to the Go form, which ParseDuration reads either
-// way -- so what Settings prints always loads again.
+// Go's own form spells a month "720h0m0s", which is the number a cache policy is never written in.
 func FormatDuration(value time.Duration) string {
 	for _, unit := range []struct {
 		suffix string
@@ -413,11 +364,7 @@ func FormatDuration(value time.Duration) string {
 }
 
 // TOML renders the effective config as a config file.
-//
-// The output is a file that loads back to the same settings, so the answer to
-// "what is DAC actually using" is also the starting point for changing it. Each
-// value carries the file it came from as a comment, because a merge across the
-// XDG search path is exactly the situation where that is not obvious.
+// The output is a file that loads back to the same settings, so the answer to "what is DAC actually using" is also the starting point for changing it.
 func (config *Config) TOML() string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "schema-version = %d\n\n[transfer]\n", SchemaVersion)
@@ -426,8 +373,7 @@ func (config *Config) TOML() string {
 		case "cache.dir":
 			text.WriteString("\n[cache]\n")
 			if config.CacheDir == "" {
-				// Nothing configured it, so DAC resolves it from the XDG cache
-				// location. Writing an empty string back would be a value.
+				// Nothing configured it, so DAC resolves it from the XDG cache location.
 				_, _ = fmt.Fprintf(&text, "# dir is unset, so DAC uses the XDG cache location\n")
 				continue
 			}
@@ -461,8 +407,7 @@ func ParseSize(value string) (int64, error) {
 	return size, nil
 }
 
-// ageUnits extend Go durations with the periods a cache lifetime is actually
-// written in. Nobody sets a cache policy in hours.
+// ageUnits extend Go durations with the periods a cache lifetime is actually written in.
 var ageUnits = map[string]time.Duration{"d": 24 * time.Hour, "w": 7 * 24 * time.Hour}
 
 // ParseDuration reads a Go duration, or one written in days or weeks.

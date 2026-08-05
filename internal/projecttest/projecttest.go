@@ -1,6 +1,4 @@
-// Package projecttest holds project file helpers shared by the tests of more
-// than one package. It exists because the CLI and application test packages
-// both need to assert the same invariant: a manifest and its lock agree.
+// Package projecttest holds project file helpers shared by the tests of more than one package.
 package projecttest
 
 import (

@@ -27,19 +27,15 @@ var _ application.RequestDetail = (*RequestError)(nil)
 type Options struct {
 	Timeout time.Duration
 	Retries int
-	// Parallelism is how many requests one asset may be split across when the
-	// origin serves byte ranges. It is a budget for the whole client rather than
-	// a per-download setting: see acquire in ranged.go. One disables splitting.
+	// Parallelism is how many requests one asset may be split across when the origin serves byte ranges.
 	Parallelism int
-	// TransportDecorators add optional request behavior around the base HTTP
-	// transport. The first decorator is the outermost wrapper.
+	// TransportDecorators add optional request behavior around the base HTTP transport.
 	TransportDecorators []TransportDecorator
 	// Logger traces what each transfer did. A nil logger traces nothing.
 	Logger *slog.Logger
 }
 
-// TransportDecorator adds request behavior without changing the transfer
-// engine. A future credential module can use this seam.
+// TransportDecorator adds request behavior without changing the transfer engine.
 type TransportDecorator func(http.RoundTripper) http.RoundTripper
 
 // Client owns the connections used for asset requests.
@@ -47,8 +43,7 @@ type Client struct {
 	options   Options
 	transport http.RoundTripper
 	base      *http.Transport
-	// budget holds one slot per range request the client may add to the
-	// transfers it is already running.
+	// budget holds one slot per range request the client may add to the transfers it is already running.
 	budget chan struct{}
 }
 
@@ -109,10 +104,7 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 }
 
 // RequestError names the request behind a transport failure.
-//
-// It wraps only at the boundary, so retry and backoff keep matching on the
-// error the transport actually returned, while a caller reporting the failure
-// can still say which URL it was and what the server said.
+// The boundary adds request details after retry logic inspects transport errors.
 type RequestError struct {
 	URL string
 	// Status is the HTTP status, or zero when the request never got a response.
@@ -139,10 +131,7 @@ func statusOf(err error) int {
 
 func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {
 	downloadCtx, cancelDownload := context.WithCancel(ctx)
-	// The first request gets a cancellation of its own inside the download's, so
-	// that a split download can close it once it has delivered the first chunk
-	// without cancelling the range requests that finish the asset. Cancelling
-	// the download ends both.
+	// A child context lets split mode close the first response without stopping ranges.
 	headCtx, cancelHead := context.WithCancel(downloadCtx)
 	cancel := func() { cancelHead(); cancelDownload() }
 	request, err := http.NewRequestWithContext(headCtx, http.MethodGet, input.URL, nil)
@@ -175,19 +164,12 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 }
 
 // responseFilename reports the name the origin gives an asset.
-//
-// A Content-Disposition header is the origin saying the name outright, so it
-// wins. Without one the last element of the URL is the only other thing that
-// ever spells a name, and the URL used here is the one the request finished at:
-// an asset served through a redirect to a distribution host is named there,
-// while the URL the manifest holds may be an opaque download endpoint. Both
-// answers are advisory, and either may be empty.
+// A Content-Disposition header is the origin saying the name outright, so it wins.
 func responseFilename(response *http.Response) string {
 	if name := filename.FromDisposition(response.Header.Get("Content-Disposition")); name != "" {
 		return name
 	}
-	// Request is the final request of the redirect chain, and its URL is
-	// resolved against the one before it.
+	// Request is the final request of the redirect chain, and its URL is resolved against the one before it.
 	if response.Request == nil || response.Request.URL == nil {
 		return ""
 	}

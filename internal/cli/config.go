@@ -10,12 +10,6 @@ import (
 )
 
 // configCommand builds the configuration inspection commands.
-//
-// dac cache dir exists because "where does DAC put things" is a real question
-// that used to have no answer but a path printed beside a cached asset. A
-// config file merged across the XDG search path creates the same question twice
-// over -- which files was it, and what did they settle on -- so it gets the
-// same treatment rather than leaving people to guess at a search path.
 func (runner *runner) configCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:            "config",
@@ -42,9 +36,7 @@ func (runner *runner) configPathCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			// One path per line and nothing else, so a script can read it the
-			// way it reads dac cache dir. A machine with no config file prints
-			// nothing at all rather than a sentence saying so.
+			// One path per line and nothing else, so a script can read it the way it reads dac cache dir.
 			return application.ConfigPathResult{Files: settings.Files}, strings.Join(settings.Files, "\n"), nil
 		}),
 	}
@@ -71,8 +63,7 @@ func (runner *runner) configShowCommand() *urfave.Command {
 					Source: setting.Source,
 				})
 			}
-			// The human form is a config file. The answer to "what is DAC
-			// using" is then also the starting point for changing it.
+			// The human form is a config file.
 			return result, strings.TrimRight(settings.TOML(), "\n"), nil
 		}),
 	}

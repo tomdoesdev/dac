@@ -19,17 +19,14 @@ func (value *Error) Error() string {
 	if value.Cause == nil {
 		return value.Message
 	}
-	// Messages are sentences and causes are clauses. Joining them with the
-	// message's full stop still in place reads as a typo.
+	// Messages are sentences and causes are clauses.
 	return fmt.Sprintf("%s: %v", strings.TrimSuffix(value.Message, "."), value.Cause)
 }
 
 func (value *Error) Unwrap() error { return value.Cause }
 
 // New creates an error with a stable code.
-//
-// Details stays nil. Every reader of it already has to handle the nil case, so
-// allocating an empty map here would only be a map that nobody reads.
+// Details stays nil.
 func New(code, message string) *Error {
 	return &Error{Code: code, Message: message}
 }

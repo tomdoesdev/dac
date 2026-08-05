@@ -35,10 +35,7 @@ func (runner *runner) infoCommand() *urfave.Command {
 }
 
 // infoText formats each asset as one detailed information block.
-//
-// The keys recede and the values do not. A block is eleven lines of which two
-// are usually the reason it was run, and a column of labels down the left is
-// how somebody finds the line they want without reading the ones they do not.
+// The keys recede and the values do not.
 func infoText(palette style.Palette, result application.InfoResult) string {
 	if len(result.Assets) == 0 {
 		return "No assets."
@@ -75,7 +72,6 @@ func infoText(palette style.Palette, result application.InfoResult) string {
 }
 
 // statusText adds color without changing the state value in the output.
-// It leaves unknown values plain so that new states do not look successful.
 func statusText(palette style.Palette, status string) string {
 	switch status {
 	case application.CacheCached, application.LockCurrent:
