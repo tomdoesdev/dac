@@ -111,11 +111,11 @@ downloading it, so a refresh warms the cache on its way past.
 | Command | Result |
 |---|---|
 | `dac init [--force]` | Create matching empty project files. |
-| `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--name <file>] [--force] [--rebind] [--allow-insecure-http] [--offline] [--no-rewrite]` | Add one asset version. Resolve it unless offline mode is active. |
+| `dac add <coordinate> <url> [--pin] [--integrity <digest>] [--name <file>] [--force] [--rebind] [--allow-insecure-http] [--offline]` | Add one asset version. Resolve it unless offline mode is active. |
 | `dac remove <coordinate>` | Remove one asset version without network access. |
-| `dac info [<namespace>/<name>[@<version>]]` | Show asset, request, lock, and cache information. |
-| `dac lock [--refresh] [--rebind] [--concurrency <n>] [--no-rewrite]` | Resolve the manifest assets the lock file does not describe and write it. |
-| `dac pull [<namespace>/<name>[@<version>]...] [--offline] [--concurrency <n>] [--no-rewrite]` | Download missing locked assets, or the ones named. |
+| `dac info [<namespace>/<name>[@<version>]]` | Show asset, lock, and cache information. |
+| `dac lock [--refresh] [--rebind] [--concurrency <n>]` | Resolve the manifest assets the lock file does not describe and write it. |
+| `dac pull [<namespace>/<name>[@<version>]...] [--offline] [--concurrency <n>]` | Download missing locked assets, or the ones named. |
 | `dac path <namespace>/<name>[@<version>]` | Return a verified cache path. The version may be left off when the project holds one. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check that the manifest and lock file agree, and with `--refresh` that the origins still serve the locked bytes. |
 | `dac pack [<archive>]` | Write locked assets to a dacpack under the names their origins give them. |
@@ -165,9 +165,8 @@ A namespace and a name are lowercase letters, digits, and `.`, `_`, or `-`. A
 version also takes uppercase and `+`, because it is copied from whatever the
 publisher calls a release. Every part starts and ends alphanumeric.
 
-`info` does not use the network. It reports manifest and request information
-when the lock is missing or stale. Lock and cache information is unavailable in
-that state.
+`info` does not use the network. It reports manifest information when the lock
+is missing or stale. Lock and cache information is unavailable in that state.
 
 Use `dac --help`, `dac <command> --help`, and `dac --version` for CLI
 help. DAC has no command aliases.
@@ -293,6 +292,15 @@ carry names that came from a remote server, so both readers recompute every path
 from the coordinate it belongs to and refuse an index claiming anything else.
 What it also costs is size, for a project whose assets overlap — see
 [dacpacks](#dacpacks).
+
+Version 9 removes URL rewrites, host lists, and credential helpers. These
+features changed request behavior across the CLI, config loader, inspection,
+and HTTP client. DAC now fetches each manifest URL directly and applies one
+mandatory URL policy to the first request and all redirects.
+
+The application fetcher remains the source extension point. The HTTP client
+also accepts transport decorators for request-level extensions. DAC does not
+load plugins or define an external plugin protocol.
 
 ## Project files
 
@@ -421,7 +429,6 @@ Per-command options are decisions about one run:
 |---|---|---|
 | `--concurrency` | `DAC_CONCURRENCY` | `lock`, `pull`, `verify` |
 | `--no-progress` | | `add`, `lock`, `pull`, `verify` |
-| `--no-rewrite` | | `add`, `lock`, `pull`, `verify` |
 | `--offline` | | `add`, `pull` |
 | `--refresh` | | `lock`, `verify` |
 | `--rebind` | | `add`, `lock` |
@@ -429,9 +436,8 @@ Per-command options are decisions about one run:
 The `verify` options apply only to `--refresh`. A plain `verify` reads the two
 project files and stops.
 
-Everything else lives in the [config file](#config-file), because how long this
-machine waits and which helper answers for which host are not decisions anybody
-makes per invocation. Passing one of the options that moved says where it went.
+Everything else lives in the [config file](#config-file). Transfer and cache
+settings are machine choices instead of per-command choices.
 
 ## Config file
 
@@ -442,13 +448,11 @@ DAC reads `config.toml` from the XDG base directories, most important first:
 3. `<dir>/dac/config.toml` for each `$XDG_CONFIG_DIRS` entry, or `/etc/xdg`.
 
 Files merge **per setting**, so a site can install one under `/etc/xdg` and a
-person can override one line of it without restating the rest. Tables merge by
-key; arrays replace whole, because a host policy is one policy and half of two
-of them is a policy nobody wrote. A flag beats the file, and the file beats the
-built-in default.
+person can override one line without restating the rest. A flag beats the file,
+and the file beats the built-in default.
 
 ```toml
-schema-version = 1
+schema-version = 2
 
 [transfer]
 timeout        = "5m"      # inactivity limit for one transfer
@@ -462,28 +466,11 @@ progress       = true
 dir      = "/var/cache/dac"  # absolute; unset means the XDG cache
 max-age  = "30d"             # the default dac cache gc collects by
 max-size = "20GiB"           # or "none"; what dac cache gc leaves behind
-
-[credentials]
-default             = "/usr/local/bin/dac-cred"
-"files.example.com" = "/usr/local/bin/dac-cred-artifacts"
-
-[[rewrite]]
-pattern     = '^vendor\.example\.com/(.*)$'
-replacement = "https://mirror.internal/vendor/$1"
-
-[hosts]
-block               = ["*"]
-allow               = ["releases.internal", "mirror.internal"]
-allow-insecure-http = false
 ```
 
 Unknown keys, unreadable values, and a `schema-version` DAC does not know are
 all refused rather than ignored, as they are in the project files. The
-`schema-version` key is optional; a file that carries one must carry `1`.
-
-DAC refuses a config file that group or other can write. The `credentials` table
-names programs DAC runs, so a writable config is a way to choose them — the same
-reason `ssh` refuses a writable `~/.ssh/config`.
+`schema-version` key is optional. A file that carries one must carry `2`.
 
 Two commands answer what a merged search path settled on:
 
@@ -544,9 +531,8 @@ yet, so the retry costs one piece rather than the asset.
 
 ## Seeing what happened
 
-DAC is pointed at a mirror by a rewrite rule, handed credentials by a program it
-starts, and told to retry and to split downloads across range requests. When any
-of that misbehaves, the only thing on screen is the failure at the end of it.
+DAC retries requests and can split a download across range requests. A trace
+shows these decisions when a transfer fails or uses one connection.
 
 `--debug`, or `DAC_DEBUG`, writes a trace of the decisions behind it to standard
 error:
@@ -556,19 +542,14 @@ dac --debug pull
 ```
 
 ```text
-level=DEBUG msg="rewrote request" from=https://vendor.example.com/db.bin to=https://mirror.internal/vendor/db.bin
-level=DEBUG msg="running credential helper" host=mirror.internal command=/usr/local/bin/dac-cred
-level=DEBUG msg="credential helper answered" host=mirror.internal command=/usr/local/bin/dac-cred headers="[Authorization]"
-level=DEBUG msg=fetching url=https://mirror.internal/vendor/db.bin conditional=false
-level=DEBUG msg="splitting download" url=https://mirror.internal/vendor/db.bin length=20971520 chunks=3 workers=2 precondition=If-Match
-level=DEBUG msg=range url=https://mirror.internal/vendor/db.bin start=8388608 end=16777215 status=206
+level=DEBUG msg=fetching url=https://example.com/db.bin conditional=false
+level=DEBUG msg="splitting download" url=https://example.com/db.bin length=20971520 chunks=3 workers=2 precondition=If-Match
+level=DEBUG msg=range url=https://example.com/db.bin start=8388608 end=16777215 status=206
 level=DEBUG msg=installed digest=sha256:6adfa077... size=20971520
 ```
 
-It answers the questions nothing else does: which URL was requested after a
-rewrite, which helper answered for which host, how many retries happened and
-what each one saw, whether an object came from the cache or the origin, and what
-a collection evicted.
+It shows the request URL, retries, range requests, cache decisions, and cache
+collection results.
 
 A download that arrives over one connection when it should have split says why,
 and every reason is something the origin decided rather than a setting to go and
@@ -580,110 +561,26 @@ level=DEBUG msg="streaming one response" url=... reason="origin sent no strong v
 level=DEBUG msg="streaming one response" url=... reason="no parts to spare" length=20971520
 ```
 
-Two things a trace never carries. It is not part of the [output
-contract](#output-contract) — it goes to standard error, it is written for a
-person, and its wording is free to change, so nothing should parse it. And it
-never carries what a credential helper returned: the helper's answer is the
-secret itself, and a trace reports which helper ran and which header names it
-set, never a value.
+A trace is not part of the [output contract](#output-contract). It goes to
+standard error, and its wording can change.
 
 Tracing turns progress bars off. Both write to standard error and the bars
 redraw in place, so the two together produce a display that is neither.
 
-## Credentials
+## Download pipeline
 
-DAC gets request credentials only from a credential helper, named in the config
-file's `credentials` table:
+DAC keeps the download path explicit:
 
-```toml
-[credentials]
-default             = "/usr/local/bin/dac-cred"
-"files.example.com" = "/usr/local/bin/dac-cred-artifacts"
-```
+1. Select the source from the manifest and lock state.
+2. Apply optional application fetcher decorators.
+3. Check the URL policy.
+4. Apply HTTP retry and redirect rules. Each request uses the decorated transport.
+5. Select a range or stream reader and enforce its stall limit.
+6. Verify the size and digest while the object enters the cache.
 
-`default` applies to every host. A host key applies to one, and wins over
-`default`. The table is where this lives because it is a map from host to
-command, and the flag it replaced could only say that by inventing
-`<host>=<command>` and being repeated once per host.
-
-DAC runs the helper as `<command> get`, writes one request to its standard
-input, and reads its headers from standard output:
-
-```json
-{"uri":"https://files.example.com/geo/database.bin"}
-```
-
-```json
-{"headers":{"Authorization":["Bearer ..."]}}
-```
-
-A helper has 30 seconds to answer. A failing helper fails the command. DAC never
-writes helper output to a log or an error message. DAC clears credentials on
-each redirect and asks again for the new host, so one host's credentials never
-reach another.
-
-DAC asks a helper once per URL per transfer, and keeps that answer for the range
-requests a split download is made of rather than starting the helper again for
-each one. If an origin then answers `401` or `403`, DAC forgets what it was
-holding, asks once more, and retries the request; a second rejection fails the
-command.
-
-## Rewriting and host policy
-
-A manifest records where an asset comes from upstream. Rewrite rules decide
-where DAC actually sends the request, so a site that proxies its downloads does
-not have to edit every project that uses them. The manifest and the lock file
-keep the canonical URL.
-
-Because that is a statement about a site rather than about a project, the rules
-live in the [config file](#config-file):
-
-```toml
-[[rewrite]]
-pattern     = '^vendor\.example\.com/(.*)$'
-replacement = "https://mirror.internal/vendor/$1"
-
-[hosts]
-block               = ["*"]                # refuse every host no allow permits
-allow               = ["releases.internal", "mirror.internal"]
-allow-insecure-http = false                # plain HTTP for rewritten URLs
-```
-
-A project that means to say something about itself can still carry a
-`dac-rewrite.cfg` beside its manifest, in the directive form:
-
-```text
-block *
-allow releases.internal
-rewrite ^vendor\.example\.com/(.*)$ https://mirror.internal/vendor/$1
-allow mirror.internal
-allow_insecure_http
-```
-
-That file wins outright when it exists. It is a whole policy rather than an
-addition to one, and merging it with the site's would produce rules neither
-wrote. Use `--no-rewrite` with `add`, `lock`, `pull`, or `verify --refresh` to
-disable both.
-
-Run `dac info` to show each source URL, request URL, and host policy result. Add
-an asset coordinate to show only that asset.
-
-A `rewrite` pattern is a Go regular expression. It matches `host/path` with any
-query string appended. Its replacement can use `$1` groups. A replacement
-without a scheme keeps the original URL scheme. A URL fails when multiple
-rewrite rules match it.
-
-DAC applies one rewrite before it checks `allow` and `block` rules. An `allow`
-match overrides all `block` matches. Rule order does not change this host
-policy. A host with no match is allowed. The `*` pattern matches every host.
-Other patterns match a host and its subdomains.
-
-Redirect targets use the same host policy, but DAC does not rewrite them.
-
-A rewrite cannot change what DAC accepts: `pull` still checks the locked digest,
-so a mirror that serves the wrong bytes fails exactly as a corrupted transfer
-does. Resolving an asset with no `integrity` value has no expected digest yet,
-so a rewrite config is trusted input in the same way a manifest URL is.
+The default build has no decorators. These internal extension points permit a
+future source mapper or request authorizer without a change to the transfer
+engine. DAC does not define a runtime plugin format.
 
 ## Output contract
 
@@ -694,7 +591,7 @@ detailed block for each selected asset.
 Use `--json` or `-j` to write one versioned JSON document to standard output:
 
 ```json
-{"outputVersion":6,"ok":true,"command":"path","data":{}}
+{"outputVersion":7,"ok":true,"command":"path","data":{}}
 ```
 
 `info` always returns an `assets` array in JSON mode, alongside a `summary`
@@ -719,7 +616,7 @@ the same reason `filename` was.
 JSON errors use the same stream and framing:
 
 ```json
-{"outputVersion":6,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
+{"outputVersion":7,"ok":false,"command":"pull","error":{"code":"network_error","message":"The asset request failed.","cause":"https://example.com/db: unconditional request returned HTTP 404","details":{"asset":"backend-app/geo@1.0.0","status":404,"url":"https://example.com/db"}}}
 ```
 
 `code` and `message` are stable enough to branch on, which is exactly why
@@ -732,6 +629,9 @@ versions and the object they share for a `version_collision`.
 Human errors, help, and progress go to standard error. JSON mode does not write
 human summaries or error messages. The `lock` and `pull` commands also disable
 progress in JSON mode.
+
+Output version `7` removes request URL, rewrite, and host policy fields from
+`info`. The summary no longer carries `blockedCount`.
 
 Output version `5` came with the move to a config file. `dac cache verify`
 became `dac cache scrub`, so the `command` field of that result changed, and
@@ -791,9 +691,9 @@ digests and timestamps that recede, and the three states a result can report.
 | Cyan | Coordinates, and the bar and asset name during a transfer |
 | Bold | The coordinate above an `info` block, the count in a summary |
 | Faint | Digests, timestamps, sizes in a listing, the keys in an `info` block |
-| Green | A state that needs nothing: `cached`, `current`, `allowed` |
+| Green | A state that needs nothing: `cached`, `current` |
 | Yellow | A state to act on: `missing`, `stale`, a warning, a suggested command |
-| Red | `Error:`, a corrupt object, a blocked host |
+| Red | `Error:`, a corrupt object |
 
 Colour never carries information on its own. The same result with the escape
 sequences taken out reads word for word the same, because most of what DAC

@@ -46,12 +46,10 @@ func (runner *runner) pullCommand() *urfave.Command {
 				return nil, "", err
 			}
 			result, err := service.Pull(ctx, application.PullOptions{
-				NetworkOptions: application.NetworkOptions{
-					Concurrency: concurrency,
-					MaxSize:     maxSize,
-					Offline:     current.Bool("offline"),
-				},
-				Assets: assets,
+				Concurrency: concurrency,
+				MaxSize:     maxSize,
+				Offline:     current.Bool("offline"),
+				Assets:      assets,
 			})
 			return result, pullText(runner.stdoutPalette, result), err
 		}),

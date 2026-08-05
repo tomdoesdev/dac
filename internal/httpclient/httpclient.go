@@ -11,14 +11,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/credential"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/filename"
-	"github.com/tomdoesdev/dac/internal/rewrite"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
@@ -34,18 +31,22 @@ type Options struct {
 	// origin serves byte ranges. It is a budget for the whole client rather than
 	// a per-download setting: see acquire in ranged.go. One disables splitting.
 	Parallelism int
-	// Rewriter decides the URL DAC requests for a canonical asset URL.
-	Rewriter *rewrite.Config
-	// Credentials supplies request headers for hosts that need them.
-	Credentials *credential.Resolver
+	// TransportDecorators add optional request behavior around the base HTTP
+	// transport. The first decorator is the outermost wrapper.
+	TransportDecorators []TransportDecorator
 	// Logger traces what each transfer did. A nil logger traces nothing.
 	Logger *slog.Logger
 }
 
+// TransportDecorator adds request behavior without changing the transfer
+// engine. A future credential module can use this seam.
+type TransportDecorator func(http.RoundTripper) http.RoundTripper
+
 // Client owns the connections used for asset requests.
 type Client struct {
 	options   Options
-	transport *http.Transport
+	transport http.RoundTripper
+	base      *http.Transport
 	// budget holds one slot per range request the client may add to the
 	// transfers it is already running.
 	budget chan struct{}
@@ -55,96 +56,56 @@ type Client struct {
 func New(options Options) *Client {
 	options.Parallelism = max(options.Parallelism, 1)
 	options.Logger = debug.Or(options.Logger)
+	base := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: options.Timeout, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          max(32, options.Parallelism*4),
+		MaxIdleConnsPerHost:   max(8, options.Parallelism*2),
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   options.Timeout,
+		ResponseHeaderTimeout: options.Timeout,
+		DisableCompression:    true,
+	}
+	var transport http.RoundTripper = base
+	for index := len(options.TransportDecorators) - 1; index >= 0; index-- {
+		transport = options.TransportDecorators[index](transport)
+	}
 	return &Client{
-		options: options,
-		budget:  make(chan struct{}, options.Parallelism),
-		transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: options.Timeout, KeepAlive: 30 * time.Second}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          max(32, options.Parallelism*4),
-			MaxIdleConnsPerHost:   max(8, options.Parallelism*2),
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   options.Timeout,
-			ResponseHeaderTimeout: options.Timeout,
-			DisableCompression:    true,
-		},
+		options:   options,
+		transport: transport,
+		base:      base,
+		budget:    make(chan struct{}, options.Parallelism),
 	}
 }
 
 // Close releases idle connections.
-func (client *Client) Close() { client.transport.CloseIdleConnections() }
+func (client *Client) Close() { client.base.CloseIdleConnections() }
 
 // Fetch sends an unconditional or conditional asset request.
-//
-// A rewrite config is applied before the URL policy, so a rewritten target is
-// checked on its own terms rather than on the canonical URL's. The rewrite
-// never reaches the lock file: callers keep passing the canonical URL, and only
-// the request goes elsewhere.
 func (client *Client) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
-	target, err := client.options.Rewriter.Apply(request.URL)
+	parsed, err := urlpolicy.ParseAndCheck(request.URL, request.AllowInsecureHTTP)
 	if err != nil {
 		return nil, &RequestError{URL: request.URL, Err: err}
 	}
-	if target.Rewritten && target.AllowInsecureHTTP {
-		request.AllowInsecureHTTP = true
-	}
-	if target.Rewritten {
-		// The one thing dac info already answers, repeated here because a trace
-		// that showed the request without saying it had been moved would read
-		// as a manifest nobody could find.
-		client.options.Logger.Debug("rewrote request", "from", request.URL, "to", target.URL)
-	}
-	parsed, err := urlpolicy.ParseAndCheck(target.URL, request.AllowInsecureHTTP)
-	if err != nil {
-		return nil, &RequestError{URL: target.URL, Err: err}
-	}
 	request.URL = parsed.String()
-	// One cache for the whole transfer, including the range requests that finish
-	// a split download and every retry along the way.
-	credentials := newCredentialCache(client)
 	trace := client.options.Logger
 	trace.Debug("fetching", "url", request.URL, "conditional", request.ETag != "")
-	var lastErr error
-	reauthorized := false
-	for attempt := 0; ; {
-		response, err := client.attempt(ctx, request, credentials)
-		if err == nil {
-			trace.Debug("response", "url", request.URL, "attempt", attempt,
-				"notModified", response.NotModified, "length", response.Length,
-				"etag", response.ETag, "filename", response.Filename)
-			return response, nil
-		}
-		lastErr = err
-		if !reauthorized && rejectedCredentials(err) && credentials.reset() {
-			trace.Debug("credentials rejected, asking the helper again",
-				"url", request.URL, "status", statusOf(err))
-			reauthorized = true
-			continue
-		}
-		if attempt >= client.options.Retries || !retryable(err) || ctx.Err() != nil {
-			trace.Debug("giving up", "url", request.URL, "attempts", attempt+1,
-				"status", statusOf(lastErr), "retryable", retryable(lastErr), "error", lastErr)
-			return nil, &RequestError{URL: request.URL, Status: statusOf(lastErr), Err: lastErr}
-		}
-		wait := backoff(attempt, err)
-		trace.Debug("retrying", "url", request.URL, "attempt", attempt+1,
+	response, attempts, err := retry(ctx, client.options.Retries, func() (*application.FetchResponse, error) {
+		return client.attempt(ctx, request)
+	}, func(attempt int, err error, wait time.Duration) {
+		trace.Debug("retrying", "url", request.URL, "attempt", attempt,
 			"after", wait, "status", statusOf(err), "error", err)
-		if err := sleep(ctx, wait); err != nil {
-			return nil, &RequestError{URL: request.URL, Err: err}
-		}
-		attempt++
+	})
+	if err != nil {
+		trace.Debug("giving up", "url", request.URL, "attempts", attempts,
+			"status", statusOf(err), "retryable", retryable(err), "error", err)
+		return nil, &RequestError{URL: request.URL, Status: statusOf(err), Err: err}
 	}
-}
-
-// rejectedCredentials reports a status that says the credentials were the
-// problem. It is the one failure worth asking a helper again for: a cached
-// answer can go stale mid-transfer, and a rejection is the only evidence of it
-// DAC ever sees.
-func rejectedCredentials(err error) bool {
-	var status *statusError
-	return errors.As(err, &status) &&
-		(status.statusCode == http.StatusUnauthorized || status.statusCode == http.StatusForbidden)
+	trace.Debug("response", "url", request.URL, "attempt", attempts-1,
+		"notModified", response.NotModified, "length", response.Length,
+		"etag", response.ETag, "filename", response.Filename)
+	return response, nil
 }
 
 // RequestError names the request behind a transport failure.
@@ -176,7 +137,7 @@ func statusOf(err error) int {
 	return 0
 }
 
-func (client *Client) attempt(ctx context.Context, input application.FetchRequest, cache *credentialCache) (*application.FetchResponse, error) {
+func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {
 	downloadCtx, cancelDownload := context.WithCancel(ctx)
 	// The first request gets a cancellation of its own inside the download's, so
 	// that a split download can close it once it has delivered the first chunk
@@ -193,13 +154,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 	if input.ETag != "" {
 		request.Header.Set("If-None-Match", input.ETag)
 	}
-	credentials := cache.authorizer()
-	if err := credentials.apply(headCtx, request); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(headCtx, input.AllowInsecureHTTP, credentials)}
+	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(input.AllowInsecureHTTP)}
 	response, err := httpClient.Do(request)
 	if err != nil {
 		cancel()
@@ -215,7 +170,7 @@ func (client *Client) attempt(ctx context.Context, input application.FetchReques
 		ETag:        response.Header.Get("ETag"),
 		Filename:    responseFilename(response),
 		Length:      response.ContentLength,
-		Body:        client.body(downloadCtx, input, response, cancel, cancelHead, cache),
+		Body:        client.body(downloadCtx, input, response, cancel, cancelHead),
 	}, nil
 }
 
@@ -239,9 +194,8 @@ func responseFilename(response *http.Response) string {
 	return filename.FromURL(response.Request.URL.String())
 }
 
-// checkRedirect applies URL policy, host policy, and credential rules to each
-// redirect target.
-func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, credentials *authorizer) func(*http.Request, []*http.Request) error {
+// checkRedirect applies the URL policy to each redirect target.
+func (client *Client) checkRedirect(allowInsecure bool) func(*http.Request, []*http.Request) error {
 	return func(request *http.Request, via []*http.Request) error {
 		if len(via) > maxRedirects {
 			return fmt.Errorf("server returned more than %d redirects", maxRedirects)
@@ -249,123 +203,9 @@ func (client *Client) checkRedirect(ctx context.Context, allowInsecure bool, cre
 		if err := urlpolicy.Check(request.URL, allowInsecure); err != nil {
 			return err
 		}
-		if err := client.options.Rewriter.Check(request.URL); err != nil {
-			return err
-		}
 		client.options.Logger.Debug("redirect", "to", request.URL.String(), "hops", len(via))
-		return credentials.apply(ctx, request)
+		return nil
 	}
-}
-
-// credentialCache holds the headers a helper supplied for each URL in one
-// transfer.
-//
-// A helper is a program DAC starts, and a split download asks for the same URL
-// once per chunk. At an 8MiB chunk a 10GiB asset is over a thousand helper runs
-// for a transfer the whole-body path pays for once, which is slow against a
-// helper that shells out to a credential service and fatal against one that is
-// rate limited: the download starts failing partway through for a reason
-// nothing in the transfer explains.
-//
-// The key is the whole URL rather than the host. The helper protocol hands a
-// helper the request URI, so a helper is entitled to answer differently for
-// different paths, and a host key would quietly take that away. Every chunk of
-// one download asks about one URL, so the narrower key costs nothing here.
-//
-// The cache belongs to one Fetch. A Client outlives every asset in a command,
-// and a helper written to prompt or to audit each request should not find one
-// asset answered out of what another collected.
-type credentialCache struct {
-	client  *Client
-	mutex   sync.Mutex
-	entries map[string]http.Header
-}
-
-func newCredentialCache(client *Client) *credentialCache {
-	return &credentialCache{client: client, entries: map[string]http.Header{}}
-}
-
-// headers returns the credentials for one URL, asking the helper only for a URL
-// this transfer has not seen. The result is shared, so a caller may read it but
-// must not modify it.
-//
-// The helper runs with no lock held. Several workers starting on a cold cache
-// can therefore run it at once, which costs one run per worker rather than the
-// one a lock would buy -- and buys back the alternative, where every URL in the
-// transfer waits behind whichever helper is slowest to answer.
-func (cache *credentialCache) headers(ctx context.Context, url string) (http.Header, error) {
-	cache.mutex.Lock()
-	header, found := cache.entries[url]
-	cache.mutex.Unlock()
-	if found {
-		return header, nil
-	}
-	header, err := cache.client.options.Credentials.Headers(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	cache.mutex.Lock()
-	cache.entries[url] = header
-	cache.mutex.Unlock()
-	return header, nil
-}
-
-// reset forgets every answer and reports whether it had any. It clears the
-// whole transfer rather than one URL because a rejection can come from a
-// redirect target the caller never named, and re-asking about a URL that was
-// fine costs one helper run.
-func (cache *credentialCache) reset() bool {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-	if len(cache.entries) == 0 {
-		return false
-	}
-	cache.entries = map[string]http.Header{}
-	return true
-}
-
-// authorizer sets the credentials for each host in one redirect chain.
-//
-// It remembers every header name it has applied, because clearing Authorization
-// alone does not clear credentials. A helper answers with whatever header its
-// registry wants -- PRIVATE-TOKEN, X-JFrog-Art-Api, X-Api-Key -- and net/http
-// copies the initial request's headers onto every redirect target, stripping
-// only the four it knows are sensitive. Anything else would arrive at the next
-// host still carrying the first host's secret.
-//
-// One authorizer belongs to one request chain, and net/http runs a chain's
-// redirect callbacks on the goroutine that started it, so it needs no locking.
-// The cache behind it is shared by every chain in the transfer and does.
-type authorizer struct {
-	cache *credentialCache
-	// applied names every header this chain has set. It accumulates rather than
-	// replacing, because the headers copied onto a redirect come from the
-	// initial request rather than from the hop before it.
-	applied map[string]struct{}
-}
-
-func (cache *credentialCache) authorizer() *authorizer {
-	return &authorizer{cache: cache, applied: map[string]struct{}{}}
-}
-
-// apply clears the credentials of the previous host and sets this host's.
-func (credentials *authorizer) apply(ctx context.Context, request *http.Request) error {
-	request.Header.Del("Authorization")
-	for name := range credentials.applied {
-		request.Header.Del(name)
-	}
-	header, err := credentials.cache.headers(ctx, request.URL.String())
-	if err != nil {
-		return err
-	}
-	for name, values := range header {
-		request.Header.Del(name)
-		for _, value := range values {
-			request.Header.Add(name, value)
-		}
-		credentials.applied[name] = struct{}{}
-	}
-	return nil
 }
 
 func checkResponse(response *http.Response, etag string) error {
@@ -415,6 +255,28 @@ func retryable(err error) bool {
 		return false
 	}
 	return !errors.Is(err, urlpolicy.ErrNotPermitted)
+}
+
+// retry applies one retry policy to full requests and range requests.
+func retry[T any](ctx context.Context, retries int, operation func() (T, error), notify func(int, error, time.Duration)) (T, int, error) {
+	for attempt := 0; ; attempt++ {
+		value, err := operation()
+		if err == nil {
+			return value, attempt + 1, nil
+		}
+		if attempt >= retries || !retryable(err) || ctx.Err() != nil {
+			var zero T
+			return zero, attempt + 1, err
+		}
+		wait := backoff(attempt, err)
+		if notify != nil {
+			notify(attempt+1, err, wait)
+		}
+		if err := sleep(ctx, wait); err != nil {
+			var zero T
+			return zero, attempt + 1, err
+		}
+	}
 }
 
 func backoff(attempt int, err error) time.Duration {

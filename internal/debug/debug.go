@@ -1,13 +1,7 @@
 // Package debug carries the optional trace logger DAC writes when tracing is on.
 //
-// What a transfer did was invisible. DAC is pointed at a site's mirror by a
-// rewrite rule, handed credentials by a program it starts, and told to retry and
-// to split downloads across range requests -- and when any of that misbehaves,
-// the only thing on screen is the failure at the end of it. dac info answers the
-// rewrite question and nothing answers the rest: which URL was actually
-// requested, whether the split path engaged and over how many parts, which
-// helper answered, how many retries happened and what each one saw, whether an
-// object came from the cache or the origin.
+// A trace reports request, retry, range, and cache decisions. It helps an
+// operator find the cause of a transfer failure.
 //
 // Nothing here is part of the output contract. Trace lines go to standard error,
 // they are for a person reading them, and their wording is free to change.

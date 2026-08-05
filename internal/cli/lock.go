@@ -43,7 +43,7 @@ func (runner *runner) lockCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Lock(ctx, application.NetworkOptions{
+			result, err := service.Lock(ctx, application.LockOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Refresh:     current.Bool("refresh"),

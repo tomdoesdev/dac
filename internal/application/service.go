@@ -12,7 +12,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
-const Version = "8.0.0"
+const Version = "9.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -132,6 +132,18 @@ type Fetcher interface {
 	Fetch(ctx context.Context, request FetchRequest) (*FetchResponse, error)
 }
 
+// FetcherDecorator adds source behavior before the terminal fetcher runs.
+// The first decorator is the outermost wrapper.
+type FetcherDecorator func(Fetcher) Fetcher
+
+// DecorateFetcher builds the source stage of the download pipeline.
+func DecorateFetcher(fetcher Fetcher, decorators ...FetcherDecorator) Fetcher {
+	for index := len(decorators) - 1; index >= 0; index-- {
+		fetcher = decorators[index](fetcher)
+	}
+	return fetcher
+}
+
 // Reporter is the progress boundary used by the service.
 type Reporter interface {
 	// Plan names the assets the operation about to run will report on, before
@@ -167,36 +179,6 @@ func New(manifestPath, lockPath string, store ObjectStore, fetcher Fetcher, repo
 		reporter = NopReporter{}
 	}
 	return &Service{ManifestPath: manifestPath, LockPath: lockPath, Store: store, Fetcher: fetcher, Reporter: reporter}
-}
-
-// NetworkOptions controls remote work.
-type NetworkOptions struct {
-	Concurrency int
-	MaxSize     int64
-	Offline     bool
-	// Refresh contacts the origin for every asset instead of trusting an entry
-	// the lock already describes or a publisher digest the cache satisfies. It
-	// backs lock --refresh, which writes what it finds, and verify --refresh,
-	// which reports it.
-	Refresh bool
-	// Observe resolves a pinned asset for the digest its origin now serves
-	// instead of against the one the manifest pins.
-	//
-	// It belongs to verify alone. Every command that writes a lock file has to
-	// enforce a pin, and enforcing one during a download raises
-	// content_mismatch from the store before anything has compared the result
-	// against the lock -- so a refresh would stop at the first drifted asset,
-	// report a failed transfer rather than the drift it exists to find, and
-	// never reach the assets behind it.
-	Observe bool
-	// AllowRebind permits a locked coordinate to end up naming different bytes.
-	// Without it a version means one thing forever, which is the whole reason
-	// to write a version down.
-	//
-	// Two commands set it. One is lock --rebind, where an operator has decided
-	// to accept the change. The other is verify, which reports drift as its
-	// result and must not have a different error raised in front of that.
-	AllowRebind bool
 }
 
 func (service *Service) readManifest() (project.Manifest, error) {

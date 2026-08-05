@@ -109,8 +109,7 @@ func TestCommandLifecycle(t *testing.T) {
 	}
 	infoAsset := infoData["assets"].([]any)[0].(map[string]any)
 	if infoAsset["coordinate"] != "app/geo@2026.08" || infoAsset["namespace"] != "app" ||
-		infoAsset["name"] != "geo" || infoAsset["version"] != "2026.08" || infoAsset["sourceUrl"] != server.URL || infoAsset["requestUrl"] != server.URL ||
-		infoAsset["requestStatus"] != "allowed" || infoAsset["rewritten"] != false || infoAsset["cacheStatus"] != "cached" ||
+		infoAsset["name"] != "geo" || infoAsset["version"] != "2026.08" || infoAsset["sourceUrl"] != server.URL || infoAsset["cacheStatus"] != "cached" ||
 		infoAsset["filename"] != "geo.bin" ||
 		infoAsset["digest"] != lock.Assets[coord.MustParse("app/geo@2026.08")].Digest || infoAsset["size"] != float64(len(content)) || infoAsset["path"] == "" {
 		t.Fatalf("unexpected info asset: %#v", infoAsset)
@@ -172,8 +171,6 @@ func TestCommandLifecycle(t *testing.T) {
 	human := run(t, appendArgs(base, "info"))
 	expectedInfo := "app/geo@2026.08\n" +
 		"source: " + server.URL + "\n" +
-		"request: " + server.URL + "\n" +
-		"policy: allowed\n" +
 		"lock: current\n" +
 		"cache: cached\n" +
 		"filename: geo.bin\n" +
@@ -272,6 +269,7 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		appendArgs(base, "pull", "--retries", "1"),
 		appendArgs(base, "pull", "--download-parts", "2"),
 		appendArgs(base, "pull", "--credential-helper", "helper"),
+		appendArgs(base, "pull", "--no-rewrite"),
 		appendArgs(base, "pull", "--distdir", directory),
 		appendArgs(base, "pull", "--progress=false"),
 		// Every lock operation lives on the lock command, so pull no longer
@@ -421,6 +419,18 @@ func TestHelpAndVersionStayOnStderr(t *testing.T) {
 		}
 		if stderr.Len() == 0 {
 			t.Fatalf("args=%v wrote no help text", args)
+		}
+	}
+}
+
+func TestPullHelpOmitsRemovedRequestFlags(t *testing.T) {
+	result := run(t, []string{"pull", "--help"})
+	if result.status != ExitOK {
+		t.Fatalf("help failed: %#v", result)
+	}
+	for _, flag := range []string{"--no-rewrite", "--credential-helper"} {
+		if strings.Contains(result.stderr, flag) {
+			t.Fatalf("pull help contains removed flag %s", flag)
 		}
 	}
 }
@@ -864,326 +874,6 @@ func TestPackAndUnpackDefaultToOneArchiveAndTheWorkingDirectory(t *testing.T) {
 	assertError(t, runJSON(t, appendArgs(paths.base, "pack", named, "extra")), "invalid_arguments")
 }
 
-func TestInfoCommandCombinesManifestAndRequestState(t *testing.T) {
-	paths := newProject(t)
-	manifest := project.Manifest{
-		SchemaVersion: project.ManifestVersion,
-		Assets: map[coord.Coordinate]project.Asset{
-			coord.MustParse("app/blocked@1"): {URL: "https://blocked.example.com/one"},
-			coord.MustParse("app/kept@2"):    {URL: "https://trusted.example.com/two"},
-			coord.MustParse("app/moved@3"):   {URL: "https://vendor.example.com/three"},
-		},
-	}
-	if err := project.Write(paths.manifestPath, manifest); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	rules := "block *\n" +
-		"rewrite ^blocked\\.example\\.com/(.*)$ https://denied.internal/$1\n" +
-		"rewrite ^vendor\\.example\\.com/(.*)$ https://mirror.internal/$1\n" +
-		"allow trusted.example.com\n" +
-		"allow mirror.internal\n"
-	if err := os.WriteFile(configPath, []byte(rules), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	human := run(t, appendArgs(paths.base, "info"))
-	expected := "app/blocked@1\n" +
-		"source: https://blocked.example.com/one\n" +
-		"request: https://denied.internal/one\n" +
-		"policy: blocked\n" +
-		"lock: missing\n" +
-		"cache: unavailable\n\n" +
-		"app/kept@2\n" +
-		"source: https://trusted.example.com/two\n" +
-		"request: https://trusted.example.com/two\n" +
-		"policy: allowed\n" +
-		"lock: missing\n" +
-		"cache: unavailable\n\n" +
-		"app/moved@3\n" +
-		"source: https://vendor.example.com/three\n" +
-		"request: https://mirror.internal/three\n" +
-		"policy: allowed\n" +
-		"lock: missing\n" +
-		"cache: unavailable\n"
-	if human.status != ExitOK || human.stdout != expected || human.stderr != "" {
-		t.Fatalf("unexpected human info result: %#v", human)
-	}
-
-	jsonResult := runJSON(t, appendArgs(paths.base, "info"))
-	assertSuccess(t, jsonResult, "info")
-	data := jsonResult.value["data"].(map[string]any)
-	summary := data["summary"].(map[string]any)
-	if summary["assetCount"] != float64(3) || summary["cachedCount"] != float64(0) ||
-		summary["corruptCount"] != float64(0) || summary["blockedCount"] != float64(1) || summary["lockStatus"] != "missing" {
-		t.Fatalf("unexpected info counts: %#v", data)
-	}
-	assets := data["assets"].([]any)
-	blocked := assets[0].(map[string]any)
-	if blocked["name"] != "blocked" || blocked["requestStatus"] != "blocked" || blocked["cacheStatus"] != "unavailable" ||
-		blocked["sourceUrl"] != "https://blocked.example.com/one" || blocked["requestUrl"] != "https://denied.internal/one" || blocked["rewritten"] != true {
-		t.Fatalf("unexpected blocked asset: %#v", blocked)
-	}
-	moved := assets[2].(map[string]any)
-	if moved["name"] != "moved" || moved["requestStatus"] != "allowed" ||
-		moved["sourceUrl"] != "https://vendor.example.com/three" || moved["requestUrl"] != "https://mirror.internal/three" {
-		t.Fatalf("unexpected moved asset: %#v", moved)
-	}
-
-	single := runJSON(t, appendArgs(paths.base, "info", "app/moved@3"))
-	assertSuccess(t, single, "info")
-	singleData := single.value["data"].(map[string]any)
-	singleAssets := singleData["assets"].([]any)
-	singleSummary := singleData["summary"].(map[string]any)
-	if singleSummary["assetCount"] != float64(1) || singleSummary["blockedCount"] != float64(0) ||
-		len(singleAssets) != 1 || singleAssets[0].(map[string]any)["coordinate"] != "app/moved@3" {
-		t.Fatalf("unexpected single info result: %#v", singleData)
-	}
-	singleHuman := run(t, appendArgs(paths.base, "info", "app/moved@3"))
-	expectedSingle := "app/moved@3\n" +
-		"source: https://vendor.example.com/three\n" +
-		"request: https://mirror.internal/three\n" +
-		"policy: allowed\n" +
-		"lock: missing\n" +
-		"cache: unavailable\n"
-	if singleHuman.status != ExitOK || singleHuman.stdout != expectedSingle || singleHuman.stderr != "" {
-		t.Fatalf("unexpected single human info: %#v", singleHuman)
-	}
-	unknown := runJSON(t, appendArgs(paths.base, "info", "app/moved@2"))
-	assertError(t, unknown, "asset_unknown")
-
-	// The short form is info's alone: a project can hold several versions of an
-	// asset, and listing them is the question this command exists to answer.
-	group := runJSON(t, appendArgs(paths.base, "info", "app/moved"))
-	assertSuccess(t, group, "info")
-	groupAssets := group.value["data"].(map[string]any)["assets"].([]any)
-	if len(groupAssets) != 1 || groupAssets[0].(map[string]any)["coordinate"] != "app/moved@3" {
-		t.Fatalf("unexpected asset filter result: %#v", groupAssets)
-	}
-	assertError(t, runJSON(t, appendArgs(paths.base, "info", "app/absent")), "asset_unknown")
-}
-
-func TestInfoReportsAStaleLockWithoutCacheData(t *testing.T) {
-	paths := newProject(t)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://example.com/geo", "--offline")), "add")
-
-	result := runJSON(t, appendArgs(paths.base, "info"))
-	assertSuccess(t, result, "info")
-	data := result.value["data"].(map[string]any)
-	asset := data["assets"].([]any)[0].(map[string]any)
-	if data["summary"].(map[string]any)["lockStatus"] != "stale" || asset["cacheStatus"] != "unavailable" {
-		t.Fatalf("unexpected stale info result: %#v", data)
-	}
-	for _, field := range []string{"digest", "size", "path"} {
-		if _, exists := asset[field]; exists {
-			t.Fatalf("stale info contains %s: %#v", field, asset)
-		}
-	}
-}
-
-func TestInfoRejectsAnInvalidLock(t *testing.T) {
-	paths := newProject(t)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	if err := os.WriteFile(paths.lockPath, []byte("not JSON\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	result := runJSON(t, appendArgs(paths.base, "info"))
-	assertError(t, result, "lock_invalid")
-}
-
-func TestRewriteConfigRedirectsRequests(t *testing.T) {
-	content := []byte("mirrored asset bytes")
-	var mirrored atomic.Int32
-	mirror := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		mirrored.Add(1)
-		_, _ = writer.Write(content)
-	}))
-	defer mirror.Close()
-
-	// The upstream host never answers, so a request that reaches it fails.
-	// The replacement carries its own scheme, because one left off keeps the
-	// canonical URL's https and the test mirror only speaks HTTP.
-	paths := newProject(t)
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	rule := "allow_insecure_http\nrewrite ^upstream\\.invalid/(.*)$ " + mirror.URL + "/$1\n"
-	if err := os.WriteFile(configPath, []byte(rule), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://upstream.invalid/geo/database.bin",
-		"--no-progress"))
-	assertSuccess(t, result, "add")
-	if mirrored.Load() != 1 {
-		t.Fatalf("the mirror received %d requests, want 1", mirrored.Load())
-	}
-
-	// The canonical URL is what gets committed, not the mirror's.
-	manifest, lock := projecttest.Check(t, paths.manifestPath, paths.lockPath)
-	if manifest.Assets[coord.MustParse("app/geo@1")].URL != "https://upstream.invalid/geo/database.bin" {
-		t.Fatalf("the rewrite leaked into the manifest: %q", manifest.Assets[coord.MustParse("app/geo@1")].URL)
-	}
-	if lock.Assets[coord.MustParse("app/geo@1")].URL != "https://upstream.invalid/geo/database.bin" {
-		t.Fatalf("the rewrite leaked into the lock file: %q", lock.Assets[coord.MustParse("app/geo@1")].URL)
-	}
-}
-
-func TestRewriteConfigAppliesToLockAndPull(t *testing.T) {
-	content := []byte("mirrored asset bytes")
-	var requests atomic.Int32
-	mirror := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		_, _ = writer.Write(content)
-	}))
-	defer mirror.Close()
-
-	paths := newProject(t)
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	rule := "allow_insecure_http\nrewrite ^upstream\\.invalid/(.*)$ " + mirror.URL + "/$1\n"
-	if err := os.WriteFile(configPath, []byte(rule), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://upstream.invalid/geo/database.bin", "--offline")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "lock",
-		"--concurrency", "1", "--no-progress")), "lock")
-	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull",
-		"--concurrency", "1", "--no-progress")), "pull")
-	if requests.Load() != 2 {
-		t.Fatalf("the mirror received %d requests, want 2", requests.Load())
-	}
-}
-
-func TestNoRewriteBypassesAllConfigSources(t *testing.T) {
-	content := []byte("canonical asset bytes")
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		_, _ = writer.Write(content)
-	}))
-	defer server.Close()
-
-	paths := newProject(t)
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	if err := os.WriteFile(configPath, []byte("not-a-directive\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		server.URL, "--no-rewrite", "--no-progress")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "lock", "--refresh",
-		"--no-rewrite", "--concurrency", "1", "--no-progress")), "lock")
-	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "pull", "--no-rewrite",
-		"--concurrency", "1", "--no-progress")), "pull")
-	if requests.Load() != 3 {
-		t.Fatalf("the canonical server received %d requests, want 3", requests.Load())
-	}
-}
-
-// Host policy belongs to the site, so the config file is where it lives. A
-// project that carries its own dac-rewrite.cfg is saying something about itself
-// rather than adding to what the site said, so it replaces the config file's
-// rules outright instead of merging with them.
-func TestProjectRewriteConfigOverridesTheConfigFile(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write([]byte("asset"))
-	}))
-	defer server.Close()
-
-	paths := newProject(t)
-	base := append(configFlags(t, "[hosts]\nblock = [\"*\"]\n"), paths.base...)
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-
-	// The config file blocks everything, so the add is refused.
-	blocked := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
-	assertError(t, blocked, "url_not_permitted")
-
-	// A project config that permits the host wins over it.
-	projectConfig := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	if err := os.WriteFile(projectConfig, []byte("# no rules\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
-}
-
-// The config file is the site-wide home for rewriting, which is the scope the
-// feature was always for: a site that proxies its downloads should not have to
-// edit every repository that uses them.
-func TestConfigFileRewritesRequestURLs(t *testing.T) {
-	var requests atomic.Int32
-	mirror := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		_, _ = writer.Write([]byte("mirrored asset"))
-	}))
-	defer mirror.Close()
-
-	paths := newProject(t)
-	settings := "[[rewrite]]\npattern = '^canonical\\.example\\.com/(.*)$'\nreplacement = \"" + mirror.URL + "/$1\"\n"
-	base := append(configFlags(t, settings), paths.base...)
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
-		"https://canonical.example.com/geo/db.bin", "--no-progress")), "add")
-	if requests.Load() != 1 {
-		t.Fatalf("the mirror received %d requests, want 1", requests.Load())
-	}
-
-	// The manifest and lock keep the canonical URL, and info reports both.
-	result := runJSON(t, appendArgs(base, "info"))
-	assertSuccess(t, result, "info")
-	asset := result.value["data"].(map[string]any)["assets"].([]any)[0].(map[string]any)
-	if asset["sourceUrl"] != "https://canonical.example.com/geo/db.bin" {
-		t.Fatalf("the source URL was rewritten: %v", asset["sourceUrl"])
-	}
-	if request, _ := asset["requestUrl"].(string); !strings.HasPrefix(request, mirror.URL) {
-		t.Fatalf("the request URL was not rewritten: %v", asset["requestUrl"])
-	}
-}
-
-func TestInvalidProjectRewriteConfigIsAnError(t *testing.T) {
-	paths := newProject(t)
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	if err := os.WriteFile(configPath, []byte("not-a-directive\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	infoResult := runJSON(t, appendArgs(paths.base, "info"))
-	assertError(t, infoResult, "rewrite_config_invalid")
-	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://example.com/one", "--no-progress"))
-	assertError(t, result, "rewrite_config_invalid")
-}
-
-func TestRewriteConfigCanBlockAllHosts(t *testing.T) {
-	paths := newProject(t)
-	configPath := filepath.Join(filepath.Dir(paths.manifestPath), rewriteConfigName)
-	if err := os.WriteFile(configPath, []byte("block *\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	result := runJSON(t, appendArgs(paths.base, "add", "app/geo@1",
-		"https://files.example.com/one",
-		"--no-progress"))
-	if result.status != ExitFailure {
-		t.Fatalf("unexpected status %d", result.status)
-	}
-	if code := result.value["error"].(map[string]any)["code"]; code != "url_not_permitted" {
-		t.Fatalf("unexpected error code %v", code)
-	}
-}
-
-// A search path that finds nothing means a machine that wants the defaults. A
-// --config naming a file that is not there is a deployment that thinks it
-// configured something, so the two answer differently.
 func TestMissingConfigFileIsAnError(t *testing.T) {
 	base := append([]string{"--config", filepath.Join(t.TempDir(), "absent.toml")}, newProject(t).base...)
 	result := runJSON(t, appendArgs(base, "pull"))
@@ -1199,17 +889,27 @@ func TestInvalidConfigFileIsAnError(t *testing.T) {
 	assertError(t, result, "config_invalid")
 }
 
+func TestRemovedRequestSettingsAreInvalid(t *testing.T) {
+	for _, settings := range []string{
+		"[credentials]\ndefault = \"helper\"\n",
+		"[[rewrite]]\npattern = \"x\"\nreplacement = \"y\"\n",
+		"[hosts]\nblock = [\"*\"]\n",
+	} {
+		base := append(configFlags(t, settings), newProject(t).base...)
+		assertError(t, runJSON(t, appendArgs(base, "pull")), "config_invalid")
+	}
+}
+
 // Every option version 7 took off the command line says where it went. "That is
 // not a flag" would be true and useless to somebody with it in a script.
 func TestRetiredFlagsNameTheirConfigKey(t *testing.T) {
 	base := newProject(t).base
 	for flag, want := range map[string]string{
-		"--timeout":           "transfer.timeout",
-		"--retries":           "transfer.retries",
-		"--download-parts":    "transfer.download-parts",
-		"--max-size":          "transfer.max-size",
-		"--credential-helper": "credentials",
-		"--progress":          "transfer.progress",
+		"--timeout":        "transfer.timeout",
+		"--retries":        "transfer.retries",
+		"--download-parts": "transfer.download-parts",
+		"--max-size":       "transfer.max-size",
+		"--progress":       "transfer.progress",
 	} {
 		result := run(t, appendArgs(base, "pull", flag, "1"))
 		if result.status != ExitUsage {
@@ -1224,48 +924,6 @@ func TestRetiredFlagsNameTheirConfigKey(t *testing.T) {
 	// a retired one.
 	if result := run(t, appendArgs(base, "cache", "gc", "--max-age", "1s")); result.status != ExitOK {
 		t.Errorf("cache gc --max-age: status = %d, stderr = %q", result.status, result.stderr)
-	}
-}
-
-func TestCredentialHelperSuppliesRequestHeaders(t *testing.T) {
-	content := []byte("private asset bytes")
-	var seen atomic.Value
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		seen.Store(request.Header.Get("Authorization"))
-		_, _ = writer.Write(content)
-	}))
-	defer server.Close()
-
-	helper := filepath.Join(t.TempDir(), "helper")
-	body := "#!/bin/sh\nprintf '{\"headers\":{\"Authorization\":[\"Bearer helper-token\"]}}'\n"
-	if err := os.WriteFile(helper, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	base := append(configFlags(t, "[credentials]\ndefault = \""+helper+"\"\n"), newProject(t).base...)
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
-	assertSuccess(t, result, "add")
-	if got := seen.Load(); got != "Bearer helper-token" {
-		t.Fatalf("the server saw Authorization %q", got)
-	}
-}
-
-func TestFailingCredentialHelperFailsTheCommand(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write([]byte("asset bytes"))
-	}))
-	defer server.Close()
-
-	helper := filepath.Join(t.TempDir(), "helper")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	base := append(configFlags(t, "[credentials]\ndefault = \""+helper+"\"\n"), newProject(t).base...)
-	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
-	if result.status != ExitFailure {
-		t.Fatalf("unexpected status %d", result.status)
 	}
 }
 
@@ -1713,10 +1371,8 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	}
 }
 
-// A project is its two files together. Pointing --manifest at another directory
-// used to leave the lock behind in the working directory, which produced a pair
-// that did not describe each other and no message saying so. The rewrite config
-// already resolved beside the manifest; the lock file now agrees.
+// A project is its two files together. An explicit manifest keeps its lock in
+// the same directory.
 func TestLockFileFollowsTheManifest(t *testing.T) {
 	directory := t.TempDir()
 	nested := filepath.Join(directory, "sub")
@@ -1965,21 +1621,6 @@ func TestConcurrencyFlagBeatsTheConfigFile(t *testing.T) {
 	// have to reach the same place, and the flag has to win.
 	assertSuccess(t, runJSON(t, appendArgs(base, "cache", "clear")), "cache.clear")
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--concurrency", "3", "--no-progress")), "pull")
-}
-
-// The credentials table is a list of programs DAC runs, so a config file
-// anybody can write is a way to choose them.
-func TestWritableConfigIsRefused(t *testing.T) {
-	settings := configFlags(t, "[transfer]\nretries = 1\n")
-	if err := os.Chmod(settings[1], 0o666); err != nil {
-		t.Fatal(err)
-	}
-	base := append(settings, newProject(t).base...)
-	result := runJSON(t, appendArgs(base, "pull"))
-	assertError(t, result, "config_invalid")
-	if cause, _ := result.value["error"].(map[string]any)["cause"].(string); !strings.Contains(cause, "writable") {
-		t.Fatalf("the cause did not explain the refusal: %v", result.value)
-	}
 }
 
 // TestAddNameCarriesThroughToTheUnpackedFile covers the whole reason --name

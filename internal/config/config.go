@@ -1,12 +1,7 @@
 // Package config reads DAC's machine and site configuration.
 //
-// A manifest says what a project uses. This says how the machine running DAC
-// fetches it: how long to wait, how hard to retry, which credential helper
-// answers for which host, and where requests actually go. Those are properties
-// of a deployment rather than of a run, and they used to be flags because there
-// was nowhere else to put them -- which meant every command that could honour
-// one had to carry it, and a site that proxied its downloads had to teach every
-// script the same six options.
+// A manifest says what a project uses. This package configures transfer and
+// cache behavior for the machine that runs DAC.
 //
 // The file lives where the XDG base directory specification says it does, so a
 // site can install one under /etc/xdg and a person can override any part of it
@@ -18,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +20,6 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/tomdoesdev/dac/internal/bytesize"
-	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
 // FileName is the config file every search location looks for.
@@ -40,7 +33,7 @@ const DirName = "dac"
 // file that states a version must state one DAC knows, so a config written for
 // a later DAC fails here rather than by having its unknown keys rejected one at
 // a time.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // NoSizeLimit is the only max-size value that removes the download bound.
 //
@@ -85,13 +78,6 @@ type Config struct {
 	// CacheMaxSize bounds what the cache holds after a collection. Zero means
 	// no bound, which is what collection by age alone amounts to.
 	CacheMaxSize int64
-	// Credentials holds helper specifications in the form credential.New
-	// takes: "<command>" for every host, "<host>=<command>" for one.
-	Credentials []string
-	// Rewrite holds URL rewrite and host policy rules, or nil when no file
-	// supplied any.
-	Rewrite *rewrite.Config
-
 	// Files are the config files that were read, most important first.
 	Files []string
 	// Sources maps each setting to the file that supplied it, or DefaultSource.
@@ -183,12 +169,9 @@ type file struct {
 }
 
 type fileData struct {
-	SchemaVersion *int              `toml:"schema-version"`
-	Transfer      fileTransfer      `toml:"transfer"`
-	Cache         fileCache         `toml:"cache"`
-	Credentials   map[string]string `toml:"credentials"`
-	Rewrite       []fileRewrite     `toml:"rewrite"`
-	Hosts         fileHosts         `toml:"hosts"`
+	SchemaVersion *int         `toml:"schema-version"`
+	Transfer      fileTransfer `toml:"transfer"`
+	Cache         fileCache    `toml:"cache"`
 }
 
 type fileTransfer struct {
@@ -206,23 +189,12 @@ type fileCache struct {
 	MaxSize *string `toml:"max-size"`
 }
 
-type fileRewrite struct {
-	Pattern     string `toml:"pattern"`
-	Replacement string `toml:"replacement"`
-}
-
-type fileHosts struct {
-	Allow             []string `toml:"allow"`
-	Block             []string `toml:"block"`
-	AllowInsecureHTTP *bool    `toml:"allow-insecure-http"`
-}
-
 // readFile parses one config file. A missing file reports no config unless it
 // was named explicitly: a search path that finds nothing means a machine that
 // wants the defaults, while --config naming a file that is not there is a
 // deployment that thinks it configured something.
 func readFile(path string, required bool) (*file, error) {
-	info, err := os.Stat(path)
+	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if required {
 			return nil, fmt.Errorf("%s: the config file does not exist", path)
@@ -231,9 +203,6 @@ func readFile(path string, required bool) (*file, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if err := checkPermissions(path, info); err != nil {
-		return nil, err
 	}
 	parsed := &file{path: path}
 	metadata, err := toml.DecodeFile(path, &parsed.data)
@@ -253,27 +222,9 @@ func readFile(path string, required bool) (*file, error) {
 	return parsed, nil
 }
 
-// checkPermissions refuses a config file that somebody else can write.
-//
-// The credentials table names programs DAC runs, so a config file is a list of
-// commands to execute and a writable one is a way to choose them. This is the
-// posture ssh takes with its own config for the same reason. A readable file is
-// fine: nothing secret belongs in here, only the name of the helper that knows
-// the secret.
-func checkPermissions(path string, info os.FileInfo) error {
-	if mode := info.Mode().Perm(); mode&0o022 != 0 {
-		return fmt.Errorf("%s: the config file is writable by group or other (mode %04o), and it names programs DAC runs", path, mode)
-	}
-	return nil
-}
-
 // merge settles each setting from the most important file that supplies it.
 //
-// Tables merge by key and arrays replace whole. A credentials table is a map
-// from host to helper, so a person adding one host to what their site
-// configured is adding an entry rather than restating the site's; a rewrite or
-// host policy list is one policy, and half-overriding it would produce a policy
-// nobody wrote.
+// Each scalar comes from the first file that supplies it.
 func merge(files []*file) (*Config, error) {
 	config := &Config{Sources: map[string]string{}}
 	for _, parsed := range files {
@@ -290,12 +241,6 @@ func merge(files []*file) (*Config, error) {
 	maxAge := setting[string]{name: "cache.max-age"}
 	cacheMaxSize := setting[string]{name: "cache.max-size"}
 
-	credentials := map[string]string{}
-	credentialSource := ""
-	var hosts fileHosts
-	var rules []fileRewrite
-	rewriteSource, hostsSource := "", ""
-
 	for _, parsed := range files {
 		data := parsed.data
 		timeout.take(data.Transfer.Timeout, parsed.path)
@@ -307,22 +252,6 @@ func merge(files []*file) (*Config, error) {
 		cacheDir.take(data.Cache.Dir, parsed.path)
 		maxAge.take(data.Cache.MaxAge, parsed.path)
 		cacheMaxSize.take(data.Cache.MaxSize, parsed.path)
-
-		for host, command := range data.Credentials {
-			if _, exists := credentials[host]; exists {
-				continue
-			}
-			credentials[host] = command
-			if credentialSource == "" {
-				credentialSource = parsed.path
-			}
-		}
-		if rewriteSource == "" && data.Rewrite != nil {
-			rules, rewriteSource = data.Rewrite, parsed.path
-		}
-		if hostsSource == "" && (data.Hosts.Allow != nil || data.Hosts.Block != nil || data.Hosts.AllowInsecureHTTP != nil) {
-			hosts, hostsSource = data.Hosts, parsed.path
-		}
 	}
 
 	var err error
@@ -344,14 +273,6 @@ func merge(files []*file) (*Config, error) {
 		return nil, err
 	}
 	if err := config.validate(); err != nil {
-		return nil, err
-	}
-
-	config.Credentials = credentialList(credentials)
-	config.Sources["credentials"] = source(credentialSource)
-	config.Sources["rewrite"] = source(rewriteSource)
-	config.Sources["hosts"] = source(hostsSource)
-	if config.Rewrite, err = buildRewrite(rules, hosts, rewriteSource, hostsSource); err != nil {
 		return nil, err
 	}
 	return config, nil
@@ -433,52 +354,6 @@ func configError(config *Config, key, problem string) error {
 	return fmt.Errorf("%s: %s %s", config.Sources[key], key, problem)
 }
 
-// credentialList converts the credentials table into the specifications
-// credential.New takes. The "default" key is the helper for every host, which
-// is the table's way of spelling a specification with no host in front of it.
-func credentialList(credentials map[string]string) []string {
-	if len(credentials) == 0 {
-		return nil
-	}
-	specifications := make([]string, 0, len(credentials))
-	for host, command := range credentials {
-		if host == "default" {
-			specifications = append(specifications, command)
-			continue
-		}
-		specifications = append(specifications, host+"="+command)
-	}
-	// A map has no order and credential.New reads the list in order, so sort
-	// it: a config that produced a different resolver on each run would be a
-	// very hard thing to be sure about.
-	slices.Sort(specifications)
-	return specifications
-}
-
-// buildRewrite turns the rewrite and hosts sections into a rewrite config. It
-// reports nil when neither section names a rule, which leaves every URL alone.
-func buildRewrite(rules []fileRewrite, hosts fileHosts, rewriteSource, hostsSource string) (*rewrite.Config, error) {
-	if len(rules) == 0 && len(hosts.Allow) == 0 && len(hosts.Block) == 0 && hosts.AllowInsecureHTTP == nil {
-		return nil, nil
-	}
-	options := rewrite.Options{Allow: hosts.Allow, Block: hosts.Block}
-	if hosts.AllowInsecureHTTP != nil {
-		options.AllowInsecureHTTP = *hosts.AllowInsecureHTTP
-	}
-	for _, rule := range rules {
-		options.Rewrites = append(options.Rewrites, rewrite.Rule{Pattern: rule.Pattern, Replacement: rule.Replacement})
-	}
-	config, err := rewrite.Build(options)
-	if err != nil {
-		path := rewriteSource
-		if path == "" {
-			path = hostsSource
-		}
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return config, nil
-}
-
 // Setting is one effective value and where it came from.
 type Setting struct {
 	Key    string `json:"key"`
@@ -503,15 +378,10 @@ func (config *Config) Settings() []Setting {
 		{"cache.max-age", FormatDuration(config.MaxAge)},
 		{"cache.max-size", sizeText(config.CacheMaxSize)},
 	}
-	settings := make([]Setting, 0, len(keys)+1)
+	settings := make([]Setting, 0, len(keys))
 	for _, key := range keys {
 		settings = append(settings, Setting{Key: key.name, Value: key.value, Source: config.Sources[key.name]})
 	}
-	settings = append(settings, Setting{
-		Key:    "credentials",
-		Value:  strings.Join(config.Credentials, " "),
-		Source: config.Sources["credentials"],
-	})
 	return settings
 }
 
@@ -563,16 +433,6 @@ func (config *Config) TOML() string {
 			}
 			_, _ = fmt.Fprintf(&text, "dir = %q  # %s\n", config.CacheDir, setting.Source)
 			continue
-		case "credentials":
-			text.WriteString("\n[credentials]\n")
-			for _, specification := range config.Credentials {
-				host, command, found := strings.Cut(specification, "=")
-				if !found {
-					host, command = "default", specification
-				}
-				_, _ = fmt.Fprintf(&text, "%q = %q  # %s\n", host, command, setting.Source)
-			}
-			continue
 		}
 		key := setting.Key[strings.Index(setting.Key, ".")+1:]
 		switch setting.Key {
@@ -581,10 +441,6 @@ func (config *Config) TOML() string {
 		case "transfer.timeout", "transfer.max-size", "cache.max-age", "cache.max-size":
 			_, _ = fmt.Fprintf(&text, "%s = %q  # %s\n", key, setting.Value, setting.Source)
 		}
-	}
-	if config.Rewrite != nil {
-		_, _ = fmt.Fprintf(&text, "\n# Rewrite and host policy rules come from %s and %s.\n",
-			config.Sources["rewrite"], config.Sources["hosts"])
 	}
 	return text.String()
 }

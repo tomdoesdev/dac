@@ -148,6 +148,24 @@ func TestFetchSplitsARangedAsset(t *testing.T) {
 	}
 }
 
+func TestTransportDecoratorSeesRangeRequests(t *testing.T) {
+	origin := newRangeServer(assetSize)
+	server := httptest.NewServer(origin)
+	defer server.Close()
+	var requests atomic.Int32
+	client := New(Options{
+		Timeout:             10 * time.Second,
+		Parallelism:         4,
+		TransportDecorators: []TransportDecorator{countRequests(&requests)},
+	})
+	defer client.Close()
+
+	fetchAll(t, client, server.URL)
+	if int64(requests.Load()) != origin.requests.Load() || requests.Load() != 3 {
+		t.Fatalf("decorated requests = %d, origin requests = %d", requests.Load(), origin.requests.Load())
+	}
+}
+
 func TestFetchSplitsOnALastModifiedValidator(t *testing.T) {
 	origin := newRangeServer(assetSize)
 	origin.etag = ""

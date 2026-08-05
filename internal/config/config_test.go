@@ -81,9 +81,6 @@ func TestLoadWithoutAnyFileUsesDefaults(t *testing.T) {
 	if loaded.MaxAge != 30*24*time.Hour {
 		t.Errorf("max age = %v, want 30d", loaded.MaxAge)
 	}
-	if loaded.Rewrite != nil {
-		t.Error("a machine with no config has rewrite rules")
-	}
 	if len(loaded.Files) != 0 {
 		t.Errorf("files = %v, want none", loaded.Files)
 	}
@@ -183,75 +180,6 @@ func TestLoadTreatsAZeroAsASetting(t *testing.T) {
 	}
 }
 
-func TestLoadMergesCredentialsByHost(t *testing.T) {
-	userHome, systemDir := isolate(t)
-	write(t, systemDir, `
-[credentials]
-default = "site-helper"
-"files.example.com" = "site-artifacts"
-`)
-	write(t, userHome, `
-[credentials]
-"files.example.com" = "my-artifacts"
-"models.vendor.com" = "my-vendor"
-`)
-	loaded := load(t, "")
-	want := []string{"files.example.com=my-artifacts", "models.vendor.com=my-vendor", "site-helper"}
-	if len(loaded.Credentials) != len(want) {
-		t.Fatalf("credentials = %v, want %v", loaded.Credentials, want)
-	}
-	for index, value := range want {
-		if loaded.Credentials[index] != value {
-			t.Errorf("credentials = %v, want %v", loaded.Credentials, want)
-			break
-		}
-	}
-}
-
-// Host policy is one policy. Merging half of a user's allow list into a site's
-// block list would produce rules nobody wrote, so the whole section is taken
-// from the most important file that states any of it.
-func TestLoadReplacesHostPolicyWholesale(t *testing.T) {
-	userHome, systemDir := isolate(t)
-	write(t, systemDir, "[hosts]\nblock = [\"*\"]\nallow = [\"site.internal\"]\n")
-	write(t, userHome, "[hosts]\nallow = [\"mine.internal\"]\n")
-	loaded := load(t, "")
-	if loaded.Rewrite == nil {
-		t.Fatal("no rewrite config")
-	}
-	// The user file states no block rule, so nothing is blocked and a host the
-	// site would have refused is now allowed.
-	if _, err := loaded.Rewrite.Apply("https://elsewhere.example.com/x"); err != nil {
-		t.Errorf("the system block list survived the user file: %v", err)
-	}
-}
-
-func TestLoadBuildsRewriteRules(t *testing.T) {
-	userHome, _ := isolate(t)
-	write(t, userHome, `
-[[rewrite]]
-pattern = '^vendor\.example\.com/(.*)$'
-replacement = "https://mirror.internal/vendor/$1"
-
-[hosts]
-allow = ["mirror.internal"]
-`)
-	loaded := load(t, "")
-	if loaded.Rewrite == nil {
-		t.Fatal("no rewrite config")
-	}
-	result, err := loaded.Rewrite.Apply("https://vendor.example.com/geo/db.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.URL != "https://mirror.internal/vendor/geo/db.bin" {
-		t.Errorf("request URL = %q", result.URL)
-	}
-	if !result.Rewritten {
-		t.Error("the result is not marked as rewritten")
-	}
-}
-
 func TestLoadExplicitPathMustExist(t *testing.T) {
 	isolate(t)
 	err := loadError(t, filepath.Join(t.TempDir(), "absent.toml"))
@@ -296,23 +224,36 @@ func TestLoadRejectsAnUnknownSchemaVersion(t *testing.T) {
 
 func TestLoadAcceptsTheCurrentSchemaVersion(t *testing.T) {
 	userHome, _ := isolate(t)
-	write(t, userHome, "schema-version = 1\n[transfer]\nretries = 3\n")
+	write(t, userHome, "schema-version = 2\n[transfer]\nretries = 3\n")
 	if loaded := load(t, ""); loaded.Retries != 3 {
 		t.Errorf("retries = %d, want 3", loaded.Retries)
 	}
 }
 
-// The credentials table names programs DAC runs, so a file anybody can write is
-// a way to choose them.
-func TestLoadRefusesAWritableConfig(t *testing.T) {
+func TestLoadRejectsTheOldSchemaVersion(t *testing.T) {
 	userHome, _ := isolate(t)
-	path := write(t, userHome, "[transfer]\nretries = 1\n")
-	if err := os.Chmod(path, 0o666); err != nil {
-		t.Fatal(err)
-	}
+	write(t, userHome, "schema-version = 1\n")
 	err := loadError(t, "")
-	if !strings.Contains(err.Error(), "writable") {
-		t.Errorf("error does not explain the refusal: %v", err)
+	if !strings.Contains(err.Error(), "schema-version 1") {
+		t.Errorf("error does not name the old version: %v", err)
+	}
+}
+
+func TestLoadRejectsRemovedSettings(t *testing.T) {
+	settings := []struct {
+		text string
+		key  string
+	}{
+		{"[credentials]\ndefault = \"helper\"\n", "credentials"},
+		{"[[rewrite]]\npattern = \"x\"\nreplacement = \"y\"\n", "rewrite"},
+		{"[hosts]\nblock = [\"*\"]\n", "hosts"},
+	}
+	for _, setting := range settings {
+		userHome, _ := isolate(t)
+		write(t, userHome, setting.text)
+		if _, err := config.Load(""); err == nil || !strings.Contains(err.Error(), setting.key) {
+			t.Fatalf("removed setting did not produce a clear error: %v", err)
+		}
 	}
 }
 
@@ -451,10 +392,6 @@ progress = false
 dir = "/var/cache/dac"
 max-age = "2w"
 max-size = "20GiB"
-
-[credentials]
-default = "site-helper"
-"files.example.com" = "host-helper"
 `)
 	first := load(t, "")
 
@@ -470,14 +407,6 @@ default = "site-helper"
 		first.CacheDir != second.CacheDir || first.MaxAge != second.MaxAge ||
 		first.CacheMaxSize != second.CacheMaxSize {
 		t.Fatalf("settings changed across a round trip:\n%s\nfirst=%+v\nsecond=%+v", first.TOML(), first, second)
-	}
-	if len(first.Credentials) != len(second.Credentials) {
-		t.Fatalf("credentials changed across a round trip: %v then %v", first.Credentials, second.Credentials)
-	}
-	for index, value := range first.Credentials {
-		if second.Credentials[index] != value {
-			t.Fatalf("credentials changed across a round trip: %v then %v", first.Credentials, second.Credentials)
-		}
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
-	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
 // The state words an info result reports. They are exported because they are
@@ -22,16 +21,13 @@ const (
 	CacheMissing     = "missing"
 	CacheCorrupt     = "corrupt"
 	CacheUnavailable = "unavailable"
-	RequestAllowed   = "allowed"
-	RequestBlocked   = "blocked"
 )
 
-// InfoOptions selects the assets and rewrite config for one inspection.
+// InfoOptions selects the assets for one inspection.
 type InfoOptions struct {
 	// Selection narrows the assets to one coordinate or one asset's versions.
 	// A zero Selection covers the whole project.
 	Selection Selection
-	Rewriter  *rewrite.Config
 }
 
 // Selection is the asset filter one inspection applies.
@@ -84,18 +80,15 @@ func GroupSelection(group coord.Group) Selection {
 	return Selection{kind: selectGroup, group: group}
 }
 
-// InfoAsset combines manifest, request, lock, and cache information.
+// InfoAsset combines manifest, lock, and cache information.
 type InfoAsset struct {
-	Coordinate    string `json:"coordinate"`
-	Namespace     string `json:"namespace"`
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	SourceURL     string `json:"sourceUrl"`
-	RequestURL    string `json:"requestUrl"`
-	RequestStatus string `json:"requestStatus"`
-	Rewritten     bool   `json:"rewritten"`
-	CacheStatus   string `json:"cacheStatus"`
-	Integrity     string `json:"integrity,omitempty"`
+	Coordinate  string `json:"coordinate"`
+	Namespace   string `json:"namespace"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	SourceURL   string `json:"sourceUrl"`
+	CacheStatus string `json:"cacheStatus"`
+	Integrity   string `json:"integrity,omitempty"`
 	// Filename is what the origin calls this asset. It comes from the lock, so
 	// it is absent for the same reason digest and size are: a missing or stale
 	// lock holds nothing that describes the manifest in front of it.
@@ -118,7 +111,6 @@ type InfoSummary struct {
 	AssetCount   int    `json:"assetCount"`
 	CachedCount  int    `json:"cachedCount"`
 	CorruptCount int    `json:"corruptCount"`
-	BlockedCount int    `json:"blockedCount"`
 	LockStatus   string `json:"lockStatus"`
 }
 
@@ -142,7 +134,7 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 		Summary: InfoSummary{AssetCount: len(names), LockStatus: lockStatus},
 	}
 	for _, name := range names {
-		asset, err := service.infoAsset(name, manifest.Assets[name], lock, lockStatus, options.Rewriter)
+		asset, err := service.infoAsset(name, manifest.Assets[name], lock, lockStatus)
 		if err != nil {
 			return InfoResult{}, err
 		}
@@ -151,9 +143,6 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 			result.Summary.CachedCount++
 		case CacheCorrupt:
 			result.Summary.CorruptCount++
-		}
-		if asset.RequestStatus == RequestBlocked {
-			result.Summary.BlockedCount++
 		}
 		result.Assets = append(result.Assets, asset)
 	}
@@ -278,27 +267,16 @@ func (service *Service) infoLock(manifest project.Manifest) (project.Lock, strin
 	return lock, LockCurrent, nil
 }
 
-// infoAsset combines one manifest asset with its request and cache states.
-func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string, config *rewrite.Config) (InfoAsset, error) {
-	decision, err := config.Evaluate(source.URL)
-	if err != nil {
-		return InfoAsset{}, withAsset(fault.Wrap("rewrite_failed", "DAC could not apply the rewrite config.", err), name.String())
-	}
-	requestStatus := RequestAllowed
-	if decision.Blocked {
-		requestStatus = RequestBlocked
-	}
+// infoAsset combines one manifest asset with its lock and cache states.
+func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string) (InfoAsset, error) {
 	result := InfoAsset{
-		Coordinate:    name.String(),
-		Namespace:     name.Namespace,
-		Name:          name.Name,
-		Version:       name.Version,
-		SourceURL:     source.URL,
-		RequestURL:    decision.URL,
-		RequestStatus: requestStatus,
-		Rewritten:     decision.Rewritten,
-		CacheStatus:   CacheUnavailable,
-		Integrity:     source.Integrity,
+		Coordinate:  name.String(),
+		Namespace:   name.Namespace,
+		Name:        name.Name,
+		Version:     name.Version,
+		SourceURL:   source.URL,
+		CacheStatus: CacheUnavailable,
+		Integrity:   source.Integrity,
 	}
 	if lockStatus != LockCurrent {
 		return result, nil

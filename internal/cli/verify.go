@@ -25,7 +25,7 @@ func (runner *runner) verifyCommand() *urfave.Command {
 			// usable in a job with no network and no cache. Only a refresh needs
 			// either, so only a refresh builds a service that has them.
 			if !current.Bool("refresh") {
-				result, err := runner.projectService(current).Verify(ctx, application.NetworkOptions{})
+				result, err := runner.projectService(current).Verify(ctx, application.VerifyOptions{})
 				// The whole sentence is the finding here, rather than a fact
 				// with a state buried in it, so the whole sentence carries it.
 				return result, runner.stdoutPalette.Good("Project files are valid."), err
@@ -43,7 +43,7 @@ func (runner *runner) verifyCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Verify(ctx, application.NetworkOptions{
+			result, err := service.Verify(ctx, application.VerifyOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Refresh:     true,

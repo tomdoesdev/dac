@@ -10,22 +10,9 @@ import (
 	"github.com/tomdoesdev/dac/internal/style"
 )
 
-// Version is the output contract version. It became 2 when info moved its
-// counters under a summary object and dropped the allowed count, and when every
-// error gained a cause field. It became 3 when assets grew a namespace and a
-// whole coordinate, add stopped reporting a retired coordinate because adding a
-// version no longer retires one, and remove started reporting the versions it
-// left behind. It became 4 when the lock operations moved off pull onto their
-// own command: pull dropped the locked array it could no longer populate, and
-// lock arrived reporting that array along with whether the file it writes
-// actually moved. It became 5 when the transfer options moved into a config
-// file: cache verify became cache scrub, so the command name in a result
-// changed, and pull dropped both the distdir asset status and the
-// distdir_read_failed code along with the flag that produced them. It became 6
-// when the two archives became one: export left along with the bundle format it
-// wrote, import became cache import and now reads a dacpack, so that result's
-// command name changed and its bundle field became source.
-const Version = 6
+// Version identifies the JSON output contract.
+// Version 7 removes request and policy fields from the info result.
+const Version = 7
 
 type envelope struct {
 	OutputVersion int         `json:"outputVersion"`

@@ -9,7 +9,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
-func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options NetworkOptions) (project.LockAsset, string, error) {
+func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options reconcileOptions) (project.LockAsset, string, error) {
 	name := coordinate.String()
 	oldMatches := old.URL == source.URL && (source.Integrity == "" || old.Digest == source.Integrity)
 	// Only an asset the manifest leaves unpinned is ever revalidated. A
@@ -20,7 +20,7 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	// A publisher digest that the cache already satisfies lets lock finish
 	// without a request, which also means it never proves the URL still serves
 	// those bytes. Refresh trades that speed for a check against the origin.
-	if source.Integrity != "" && !options.Refresh {
+	if source.Integrity != "" && options.mode == resolveChanged {
 		object, found, err := service.Store.Stat(source.Integrity)
 		// A corrupt object cannot answer the request, but lock can: it falls
 		// through to the origin and installs good bytes over the bad ones.
@@ -90,10 +90,10 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	// and the locked one is its whole answer, and the store cannot report it
 	// while it is also refusing it.
 	expect := source.Integrity
-	if options.Observe {
+	if options.mode == resolveObserve {
 		expect = ""
 	}
-	object, err := service.Store.Put(ctx, reader, PutAny(expect, options.MaxSize))
+	object, err := service.Store.Put(ctx, reader, PutAny(expect, options.maxSize))
 	if err != nil {
 		return project.LockAsset{}, "", contentError(err)
 	}

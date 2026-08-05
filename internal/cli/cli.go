@@ -231,7 +231,7 @@ func (runner *runner) app() *urfave.Command {
 			&urfave.BoolFlag{
 				Name:    "debug",
 				Sources: urfave.EnvVars("DAC_DEBUG"),
-				Usage:   "Write a trace of requests, credentials, and cache decisions to standard error.",
+				Usage:   "Write a trace of requests and cache decisions to standard error.",
 			},
 		},
 		Action: runner.helpOrInvalid,
@@ -334,13 +334,12 @@ func (runner *runner) usageError(_ context.Context, current *urfave.Command, err
 // be true and useless. These say where the setting went, which is the one
 // question an operator hitting this actually has.
 var movedFlags = map[string]string{
-	"--timeout":           "transfer.timeout",
-	"--retries":           "transfer.retries",
-	"--download-parts":    "transfer.download-parts",
-	"--max-size":          "transfer.max-size",
-	"--credential-helper": "the credentials table",
-	"--progress":          "transfer.progress, or --no-progress for one run",
-	"--distdir":           "an argument to dac cache import",
+	"--timeout":        "transfer.timeout",
+	"--retries":        "transfer.retries",
+	"--download-parts": "transfer.download-parts",
+	"--max-size":       "transfer.max-size",
+	"--progress":       "transfer.progress, or --no-progress for one run",
+	"--distdir":        "an argument to dac cache import",
 }
 
 // movedFlag reports which retired option a parse error is about, if any.

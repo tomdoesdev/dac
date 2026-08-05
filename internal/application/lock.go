@@ -29,6 +29,14 @@ type LockResult struct {
 	AssetSummary
 }
 
+// LockOptions controls one lock operation.
+type LockOptions struct {
+	Concurrency int
+	MaxSize     int64
+	Refresh     bool
+	AllowRebind bool
+}
+
 // Lock brings the lock file into agreement with the manifest.
 //
 // By default it resolves only the assets the lock file does not describe, which
@@ -39,7 +47,7 @@ type LockResult struct {
 // assets it settles. It installs nothing else: a project's missing objects are
 // pull's business, and the two commands are separate because writing down what a
 // project uses and fetching what it uses are separate decisions.
-func (service *Service) Lock(ctx context.Context, options NetworkOptions) (LockResult, error) {
+func (service *Service) Lock(ctx context.Context, options LockOptions) (LockResult, error) {
 	defer service.Reporter.Wait()
 	manifest, err := service.readManifest()
 	if err != nil {
@@ -51,7 +59,16 @@ func (service *Service) Lock(ctx context.Context, options NetworkOptions) (LockR
 	if err != nil {
 		return LockResult{}, err
 	}
-	reconciled, err := service.reconcile(ctx, manifest, old, options)
+	mode := resolveChanged
+	if options.Refresh {
+		mode = resolveRefresh
+	}
+	reconciled, err := service.reconcile(ctx, manifest, old, reconcileOptions{
+		concurrency: options.Concurrency,
+		maxSize:     options.MaxSize,
+		mode:        mode,
+		allowRebind: options.AllowRebind,
+	})
 	if err != nil {
 		return LockResult{}, err
 	}

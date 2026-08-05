@@ -17,6 +17,13 @@ type VerifyResult struct {
 	Refreshed bool `json:"refreshed"`
 }
 
+// VerifyOptions controls one project verification.
+type VerifyOptions struct {
+	Concurrency int
+	MaxSize     int64
+	Refresh     bool
+}
+
 // Verify checks that the manifest and lock file agree, and with Refresh that
 // the origins still serve the locked bytes.
 //
@@ -32,7 +39,7 @@ type VerifyResult struct {
 // the origin now serves, stored under their own digest: a content-addressed
 // name cannot collide with the locked object, so the good bytes stay where they
 // are and the new ones age out of the cache like anything else.
-func (service *Service) Verify(ctx context.Context, options NetworkOptions) (VerifyResult, error) {
+func (service *Service) Verify(ctx context.Context, options VerifyOptions) (VerifyResult, error) {
 	manifest, lock, err := service.readProject()
 	if err != nil {
 		return VerifyResult{}, err
@@ -43,18 +50,14 @@ func (service *Service) Verify(ctx context.Context, options NetworkOptions) (Ver
 	}
 	defer service.Reporter.Wait()
 	result.Refreshed = true
-	// Verify is the command whose whole result is what the origins now serve,
-	// so it resolves with the rebind rule suspended. Leaving it on would have a
-	// refresh fail with version_rebind at the first drifted asset, which is a
-	// second name for the answer this command exists to report, delivered
-	// before it could finish collecting it.
-	options.AllowRebind = true
-	// For the same reason it resolves a pinned asset for its digest rather than
-	// against it. A pin enforced here would fail the download of the one asset
-	// somebody cared enough about to pin, and report that failure as a broken
-	// transfer instead of as the drift it is.
-	options.Observe = true
-	reconciled, err := service.reconcile(ctx, manifest, lock, options)
+	// Observe the current bytes without pin checks or rebind checks. This mode
+	// lets verify report all drift as one result.
+	reconciled, err := service.reconcile(ctx, manifest, lock, reconcileOptions{
+		concurrency: options.Concurrency,
+		maxSize:     options.MaxSize,
+		mode:        resolveObserve,
+		allowRebind: true,
+	})
 	if err != nil {
 		return VerifyResult{}, err
 	}

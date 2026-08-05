@@ -7,28 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/cache"
 	"github.com/tomdoesdev/dac/internal/config"
-	"github.com/tomdoesdev/dac/internal/credential"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/httpclient"
 	"github.com/tomdoesdev/dac/internal/progress"
-	"github.com/tomdoesdev/dac/internal/rewrite"
 )
 
 // projectPaths returns the manifest and lock file this run acts on.
 //
 // The lock file follows the manifest unless it was named. A project is its two
-// files together, and pointing --manifest at another directory used to leave
-// the lock behind in the working directory, which produced a pair that did not
-// describe each other and no message saying so. The rewrite config already
-// resolves beside the manifest; this makes the lock agree.
+// files together. The lock follows an explicitly selected manifest.
 func projectPaths(current *urfave.Command) (string, string) {
 	manifest := current.String("manifest")
 	if current.IsSet("lock") {
@@ -94,24 +88,11 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	if err != nil {
 		return nil, nil, err
 	}
-	rewriter, err := loadRewriteConfig(settings, service.ManifestPath, current.Bool("no-rewrite"))
-	if err != nil {
-		return nil, nil, err
-	}
-	credentials, err := credential.New(settings.Credentials, credentialTimeout)
-	if err != nil {
-		return nil, nil, fault.Wrap("config_invalid", "A credential helper is invalid.", err)
-	}
 	trace := runner.trace(current)
-	if credentials != nil {
-		credentials.Logger = trace
-	}
 	client := httpclient.New(httpclient.Options{
 		Timeout:     settings.Timeout,
 		Retries:     settings.Retries,
 		Parallelism: settings.DownloadParts,
-		Rewriter:    rewriter,
-		Credentials: credentials,
 		Logger:      trace,
 	})
 	service.Fetcher = client
@@ -123,52 +104,11 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	return service, client, nil
 }
 
-// credentialTimeout bounds one credential helper run. It is deliberately not
-// tied to --timeout: that limit covers a multi-gigabyte transfer, and a helper
-// that has not answered in half a minute is stuck.
-const credentialTimeout = 30 * time.Second
-
-const rewriteConfigName = "dac-rewrite.cfg"
-
-// loadRewriteConfig chooses the rewrite rules for one run.
-//
-// A rewrite config answers "where does this site actually send its downloads",
-// which is a property of the machine and not of the project -- it exists so a
-// site that proxies its downloads does not have to edit every repository that
-// uses them. So the config file is where it belongs, and DAC finds it through
-// the XDG search path like everything else.
-//
-// A dac-rewrite.cfg beside the manifest still wins outright. A project that
-// carries its own rules is saying something about itself rather than adding to
-// what the site said, and merging the two would produce a policy neither
-// wrote.
-func loadRewriteConfig(settings *config.Config, manifestPath string, disabled bool) (*rewrite.Config, error) {
-	if disabled {
-		return nil, nil
-	}
-	path := filepath.Join(filepath.Dir(manifestPath), rewriteConfigName)
-	project, err := rewrite.Load(path)
-	if err != nil {
-		return nil, fault.Wrap("rewrite_config_invalid", "The rewrite config is invalid.", err)
-	}
-	if project != nil {
-		return project, nil
-	}
-	return settings.Rewrite, nil
-}
-
-// networkFlags returns the options a command that makes requests still carries.
-//
-// What is left is what a person decides for one run. How long to wait, how hard
-// to retry, how many pieces a download may be split into, how large a response
-// may get, and which helper answers for which host are properties of the
-// machine, so they moved into the config file: they were on the command line
-// because there was nowhere else to put them, and the cost was that four
-// commands each had to carry all six.
+// networkFlags returns the request options that a user can select for one run.
+// Stable transfer limits stay in the config file so commands share one policy.
 func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 	flags := []urfave.Flag{
 		&urfave.BoolFlag{Name: "no-progress", Usage: "Do not write transfer progress to standard error."},
-		&urfave.BoolFlag{Name: "no-rewrite", Usage: "Disable URL rewrite and host policy rules."},
 	}
 	if withConcurrency {
 		flags = append(flags, &urfave.IntFlag{

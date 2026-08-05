@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/application"
@@ -33,8 +34,8 @@ func TestPullTakesOnlyTheSelectedAssets(t *testing.T) {
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
 
 	result, err := service.Pull(context.Background(), application.PullOptions{
-		NetworkOptions: application.NetworkOptions{Concurrency: 2},
-		Assets:         []application.Selection{application.ExactSelection(at("geo@1"))},
+		Concurrency: 2,
+		Assets:      []application.Selection{application.ExactSelection(at("geo@1"))},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,20 +53,25 @@ func TestPullTakesOnlyTheSelectedAssets(t *testing.T) {
 func TestPullTakesEveryVersionOfASelectedAsset(t *testing.T) {
 	manifestPath, lockPath, contents := multiAssetProject(t)
 	fetched := map[string]int{}
+	var fetchedMutex sync.Mutex
 	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
 		content := contents[request.URL]
+		fetchedMutex.Lock()
 		fetched[request.URL]++
+		fetchedMutex.Unlock()
 		return &application.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
 	result, err := service.Pull(context.Background(), application.PullOptions{
-		NetworkOptions: application.NetworkOptions{Concurrency: 2},
-		Assets:         []application.Selection{application.GroupSelection(at("geo@1").Group())},
+		Concurrency: 2,
+		Assets:      []application.Selection{application.GroupSelection(at("geo@1").Group())},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	fetchedMutex.Lock()
+	defer fetchedMutex.Unlock()
 	if result.AssetCount != 2 || len(fetched) != 2 {
 		t.Fatalf("unexpected result: count=%d fetched=%v", result.AssetCount, fetched)
 	}
@@ -85,7 +91,7 @@ func TestPullFetchesAnOverlappingSelectionOnce(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
 	result, err := service.Pull(context.Background(), application.PullOptions{
-		NetworkOptions: application.NetworkOptions{Concurrency: 1},
+		Concurrency: 1,
 		Assets: []application.Selection{
 			application.GroupSelection(at("geo@1").Group()),
 			application.ExactSelection(at("geo@1")),
@@ -111,8 +117,8 @@ func TestPullRefusesAnUnknownSelection(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("x")), nil)
 
 	_, err := service.Pull(context.Background(), application.PullOptions{
-		NetworkOptions: application.NetworkOptions{Concurrency: 1},
-		Assets:         []application.Selection{application.ExactSelection(at("geo@9"))},
+		Concurrency: 1,
+		Assets:      []application.Selection{application.ExactSelection(at("geo@9"))},
 	})
 	if code := fault.As(err).Code; code != "asset_unknown" {
 		t.Fatalf("expected asset_unknown, got %q (%v)", code, err)

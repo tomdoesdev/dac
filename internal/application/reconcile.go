@@ -37,6 +37,22 @@ type reconciliation struct {
 	resolved map[coord.Coordinate]string
 }
 
+type resolveMode uint8
+
+const (
+	resolveChanged resolveMode = iota
+	resolveRefresh
+	resolveObserve
+)
+
+// reconcileOptions holds the internal choices for one reconciliation.
+type reconcileOptions struct {
+	concurrency int
+	maxSize     int64
+	mode        resolveMode
+	allowRebind bool
+}
+
 // names returns the assets this reconcile resolved, in manifest order.
 func (result reconciliation) names(order []coord.Coordinate) []string {
 	names := make([]string, 0, len(result.resolved))
@@ -61,13 +77,13 @@ func (result reconciliation) names(order []coord.Coordinate) []string {
 // It writes nothing. A caller that changes the manifest in the same command has
 // to write both files together or neither, so the decision to write belongs to
 // the caller rather than to this.
-func (service *Service) reconcile(ctx context.Context, manifest project.Manifest, old project.Lock, options NetworkOptions) (reconciliation, error) {
+func (service *Service) reconcile(ctx context.Context, manifest project.Manifest, old project.Lock, options reconcileOptions) (reconciliation, error) {
 	names := manifest.Coordinates()
 	service.Reporter.Plan(coord.Strings(names))
-	settled, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (resolvedAsset, error) {
+	settled, err := parallel(ctx, options.concurrency, names, func(ctx context.Context, name coord.Coordinate) (resolvedAsset, error) {
 		source := manifest.Assets[name]
 		locked, exists := old.Assets[name]
-		if !options.Refresh && project.Agrees(source, locked, exists) {
+		if options.mode == resolveChanged && project.Agrees(source, locked, exists) {
 			// A pinned asset neither sends nor records an ETag. One the lock
 			// carries from before the manifest pinned it is inert, because
 			// nothing would ever send it, but leaving it there would have the
@@ -102,7 +118,7 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 		// A coordinate the lock already binds may not come back naming other
 		// bytes. The reporter is not told when it does: the transfer it was
 		// following finished, and what failed is the claim about the bytes.
-		if exists && !options.AllowRebind {
+		if exists && !options.allowRebind {
 			if err := checkRebind(name, locked, value); err != nil {
 				return resolvedAsset{}, err
 			}
@@ -128,7 +144,7 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 	if err := project.CheckVersions(result.assets); err != nil {
 		return reconciliation{}, versionFault(err)
 	}
-	if !options.AllowRebind {
+	if !options.allowRebind {
 		if err := checkRetired(result.assets, old); err != nil {
 			return reconciliation{}, err
 		}

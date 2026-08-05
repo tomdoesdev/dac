@@ -142,9 +142,10 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	// file can describe yet, and any asset a hand edit left behind, in one pass.
 	// Adding one asset to a project whose manifest someone edited would
 	// otherwise write a lock file that every later command rejects as stale.
-	reconciled, err := service.reconcile(ctx, updated, lock, NetworkOptions{
-		MaxSize:     options.MaxSize,
-		AllowRebind: options.AllowRebind,
+	reconciled, err := service.reconcile(ctx, updated, lock, reconcileOptions{
+		maxSize:     options.MaxSize,
+		mode:        resolveChanged,
+		allowRebind: options.AllowRebind,
 	})
 	if err != nil {
 		return AddResult{}, err

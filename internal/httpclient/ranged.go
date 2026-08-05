@@ -33,7 +33,7 @@ const minSplitSize = 2 * chunkSize
 // It splits the transfer across parallel range requests when the origin permits
 // it and the asset is large enough to pay for them, and otherwise hands back
 // the single stream the response already carries.
-func (client *Client) body(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, cache *credentialCache) io.ReadCloser {
+func (client *Client) body(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc) io.ReadCloser {
 	trace := client.options.Logger
 	precondition, refused := splittable(client.options.Parallelism, response)
 	if refused != "" {
@@ -52,7 +52,7 @@ func (client *Client) body(ctx context.Context, input application.FetchRequest, 
 	}
 	trace.Debug("splitting download", "url", input.URL, "length", response.ContentLength,
 		"chunks", chunks, "workers", workers, "precondition", precondition.name)
-	return client.split(ctx, input, response, cancel, cancelHead, precondition, chunks, workers, cache)
+	return client.split(ctx, input, response, cancel, cancelHead, precondition, chunks, workers)
 }
 
 // header is one request header, as a name and a value.
@@ -116,10 +116,7 @@ func acceptsRanges(value string) bool {
 // Each worker holds at most one chunk, so the peak is the worker count plus one
 // times chunkSize, whatever the asset's size.
 type splitBody struct {
-	client *Client
-	// credentials is the transfer's cache, shared with the request that started
-	// it. Without it every chunk would start the credential helper again.
-	credentials  *credentialCache
+	client       *Client
 	ctx          context.Context
 	cancel       context.CancelFunc
 	url          string
@@ -154,12 +151,11 @@ type chunkResult struct {
 	err  error
 }
 
-func (client *Client) split(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, precondition header, chunks, workers int, cache *credentialCache) io.ReadCloser {
+func (client *Client) split(ctx context.Context, input application.FetchRequest, response *http.Response, cancel, cancelHead context.CancelFunc, precondition header, chunks, workers int) io.ReadCloser {
 	headLength := min(int64(chunkSize), response.ContentLength)
 	guarded := guard(response.Body, cancelHead, client.options.Timeout)
 	body := &splitBody{
 		client:       client,
-		credentials:  cache,
 		ctx:          ctx,
 		cancel:       cancel,
 		url:          response.Request.URL.String(),
@@ -299,31 +295,13 @@ func (body *splitBody) Close() error {
 func (body *splitBody) fetch(index int) ([]byte, error) {
 	start := int64(index) * chunkSize
 	end := min(start+chunkSize, body.length) - 1
-	var lastErr error
-	reauthorized := false
-	for attempt := 0; ; {
-		data, err := body.attempt(start, end)
-		if err == nil {
-			return data, nil
-		}
-		lastErr = err
-		// A credential the origin rejected is worth one more request with a
-		// fresh one, and exactly one. A transfer long enough to need a thousand
-		// chunks is long enough to outlive the token it started with, and this
-		// is the only sign of that DAC gets. A second rejection is the origin
-		// answering about the credentials rather than about their age.
-		if !reauthorized && rejectedCredentials(err) && body.credentials.reset() {
-			reauthorized = true
-			continue
-		}
-		if attempt >= body.client.options.Retries || !retryable(err) || body.ctx.Err() != nil {
-			return nil, &RequestError{URL: body.url, Status: statusOf(lastErr), Err: lastErr}
-		}
-		if err := sleep(body.ctx, backoff(attempt, err)); err != nil {
-			return nil, &RequestError{URL: body.url, Err: err}
-		}
-		attempt++
+	data, _, err := retry(body.ctx, body.client.options.Retries, func() ([]byte, error) {
+		return body.attempt(start, end)
+	}, nil)
+	if err != nil {
+		return nil, &RequestError{URL: body.url, Status: statusOf(err), Err: err}
 	}
+	return data, nil
 }
 
 func (body *splitBody) attempt(start, end int64) ([]byte, error) {
@@ -336,12 +314,7 @@ func (body *splitBody) attempt(start, end int64) ([]byte, error) {
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	request.Header.Set(body.precondition.name, body.precondition.value)
-	credentials := body.credentials.authorizer()
-	if err := credentials.apply(requestCtx, request); err != nil {
-		return nil, err
-	}
-
-	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(requestCtx, body.insecure, credentials)}
+	httpClient := &http.Client{Transport: body.client.transport, CheckRedirect: body.client.checkRedirect(body.insecure)}
 	// The body is closed by the guard below, which takes ownership of it and
 	// closes it along with stopping its timer. bodyclose follows the response
 	// only as far as the wrapper, so it cannot see that.
