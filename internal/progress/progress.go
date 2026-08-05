@@ -169,6 +169,11 @@ type barState struct {
 	bar    *mpb.Bar
 	total  int64
 	status string
+	// settled records that this transfer reached an outcome. Only a bar that
+	// never did is taken off the display by Wait, and the two are not the same
+	// question as whether mpb still considers the bar running: an aborted bar has
+	// settled, and a bar the command has stopped touching has not.
+	settled bool
 	// look colours the status word, and is nil while there is nothing to say
 	// about it. A bar downloads until something settles it, and what settles it
 	// is either a completion or a failure -- so the colour comes from which of
@@ -327,16 +332,52 @@ func (reporter *bars) Fail(name string, err error) {
 	state.bar.Abort(false)
 }
 
-func (reporter *bars) Wait() { reporter.output.Wait() }
+// Wait ends the display and blocks until it has finished drawing.
+//
+// It takes down any bar the command left running, because mpb waits for every
+// bar it was given and a command does not settle every bar it starts. The first
+// asset to fail cancels the rest, and an asset cut short that way is reported
+// as nothing at all: the only message it could carry would describe another
+// asset's failure. That is the right thing to say and the wrong thing to leave
+// on screen -- the transfer is over either way, and a bar nobody will ever
+// finish held the whole process open behind a display that had stopped moving.
+// A pull whose origin does not resolve is the ordinary way to reach that, since
+// one unreachable URL cancels every transfer beside it.
+//
+// The bars come off rather than staying: a row still reading "downloading" for
+// a transfer that has stopped is a worse answer than no row, and the failure
+// that ended the run is printed after this returns. The line form ends those
+// assets with no line either, which is the same silence for the same reason.
+//
+// Every operation calls this once its transfers have finished, so a bar still
+// unsettled here is one nothing was ever going to settle.
+func (reporter *bars) Wait() {
+	reporter.mutex.Lock()
+	for _, state := range reporter.entries {
+		if !state.done() {
+			state.bar.Abort(true)
+		}
+	}
+	reporter.mutex.Unlock()
+	reporter.output.Wait()
+}
 
 // settle records what became of a transfer and stops its clock.
 func (state *barState) settle(status string, look func(string) string) {
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
 	state.status, state.look = status, look
+	state.settled = true
 	if state.elapsed == 0 {
 		state.elapsed = time.Since(state.start)
 	}
+}
+
+// done reports whether this transfer reached an outcome.
+func (state *barState) done() bool {
+	state.mutex.Lock()
+	defer state.mutex.Unlock()
+	return state.settled
 }
 
 // window is how long this transfer has been running, or how long it ran.

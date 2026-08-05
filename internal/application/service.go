@@ -147,6 +147,17 @@ type Reporter interface {
 	Advance(name string, count int64)
 	Done(name, status string)
 	Fail(name string, err error)
+	// Wait ends the display and returns once it has finished with it.
+	//
+	// A started asset is not promised a Done or a Fail. The first failure of an
+	// operation cancels the transfers running beside it, and those are reported
+	// as nothing at all, because the only message they could carry would name
+	// another asset's failure rather than anything about themselves. So this is
+	// where a reporter holding state per asset disposes of whatever the
+	// operation did not settle; one that waits for those to settle instead waits
+	// for good.
+	//
+	// It is called once, after the operation's transfers have finished.
 	Wait()
 }
 

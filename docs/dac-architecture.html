@@ -1263,6 +1263,15 @@ type Error struct {
     command's context makes the cancellation itself end them.
   </p>
   <p>
+    An interrupt is not the only cancellation, and it is the one that leaves a signal behind. The first asset
+    to fail cancels the rest through <code>errgroup</code>'s context, which the command's context knows nothing
+    about, so the same unfinished bars are left on a container nobody has cancelled — an unresolvable URL in a
+    project of several assets, and the command never returns. So <code>Wait</code> is where the display is taken
+    down rather than merely waited on: it aborts and drops every bar the operation did not settle, then waits.
+    Operations call it once their transfers have finished, which is what makes an unsettled bar at that point
+    provably one that nothing was going to settle.
+  </p>
+  <p>
     The first interrupt also restores the default signal action, so a second one terminates the process
     outright. <code>signal.NotifyContext</code> keeps its handler installed for the life of the process and drops
     every interrupt after the one it cancelled on, which leaves an operator with no way out of a shutdown that

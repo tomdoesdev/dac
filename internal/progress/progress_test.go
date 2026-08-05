@@ -109,6 +109,35 @@ func TestTerminalReporterStopsWaitingOnCancellation(t *testing.T) {
 	}
 }
 
+// The first asset to fail cancels the transfers running beside it, and those
+// report nothing, so their bars are left exactly as unfinished as an interrupt
+// leaves them -- but on a command context nobody has cancelled. Nothing outside
+// the reporter is going to end them, which is a pull whose origin does not
+// resolve hanging on a display that has stopped moving.
+func TestTerminalReporterStopsWaitingOnBarsAFailureCutShort(t *testing.T) {
+	var output bytes.Buffer
+	reporter := New(t.Context(), &output, true, true, style.Palette{})
+	reporter.Start("geo", 1024)
+	reporter.Advance("geo", 16)
+	reporter.Start("tiles", 2048)
+	// geo could not be reached; tiles was cancelled by that and says nothing.
+	reporter.Fail("geo", errors.New("dial tcp: lookup geo.invalid: no such host"))
+
+	returned := make(chan struct{})
+	go func() {
+		reporter.Wait()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait blocked on the bar another asset's failure cut short")
+	}
+	if !strings.Contains(output.String(), "failed") {
+		t.Fatalf("the failure that ended the run was not drawn: %q", output.String())
+	}
+}
+
 func TestDisabledReporterWritesNothing(t *testing.T) {
 	var output bytes.Buffer
 	reporter := New(t.Context(), &output, true, false, style.Palette{})
