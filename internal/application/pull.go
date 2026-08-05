@@ -55,6 +55,7 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 	if err != nil {
 		return PullResult{}, err
 	}
+	service.Reporter.Plan(coord.Strings(names))
 	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
 		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options.NetworkOptions)
 		if err != nil && ctx.Err() == nil {

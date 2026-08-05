@@ -63,6 +63,7 @@ func (result reconciliation) names(order []coord.Coordinate) []string {
 // the caller rather than to this.
 func (service *Service) reconcile(ctx context.Context, manifest project.Manifest, old project.Lock, options NetworkOptions) (reconciliation, error) {
 	names := manifest.Coordinates()
+	service.Reporter.Plan(coord.Strings(names))
 	settled, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (resolvedAsset, error) {
 		source := manifest.Assets[name]
 		locked, exists := old.Assets[name]
