@@ -40,13 +40,17 @@ DAC permits multiple versions of an asset. It does not order versions or select
 a latest version. Multiple coordinates can use the same cached bytes.
 
 `add` resolves one asset and updates both project files. Use `add --offline` to
-change only the manifest. Then, run `dac lock` to resolve the change.
+change only the manifest. Then, run `dac pull --refresh` to resolve the change.
 
-`pull` installs missing locked objects. It does not change project files or
-download valid cached objects.
+`pull` installs missing locked objects. It does not download valid cached
+objects. It writes the lock file when the project has none, and otherwise leaves
+it alone: a lock file that no longer agrees with the manifest reports
+`lock_stale` instead of being rewritten.
 
-`lock --refresh` resolves all assets and accepts the current origin bytes.
-`verify --refresh` checks for the same changes without modifying the lock file.
+`pull --refresh` resolves assets and accepts the current origin bytes, then
+rewrites the lock file. Naming assets narrows which origins it reaches; the lock
+file it writes still describes the whole project. `verify --refresh` checks for
+the same changes without modifying the lock file.
 
 ## Commands
 
@@ -56,8 +60,7 @@ download valid cached objects.
 | `dac add <coordinate> <url> [options]` | Add one asset version. |
 | `dac remove <coordinate>` | Remove one asset version. |
 | `dac info [<asset>[@<version>]]` | Show project and cache state. |
-| `dac lock [--refresh] [--concurrency <n>]` | Update the lock file. |
-| `dac pull [<asset>[@<version>]...] [options]` | Install locked objects. |
+| `dac pull [<asset>[@<version>]...] [--refresh] [options]` | Install locked objects, and write the lock file if there is none. |
 | `dac path <asset>[@<version>]` | Print one verified object path. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check project files and optional origin drift. |
 | `dac unpack [<asset>[@<version>]...] [options]` | Write cached assets to a directory. |

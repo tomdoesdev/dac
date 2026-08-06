@@ -57,7 +57,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	// Add settles stale manifest entries while it resolves the new asset.
 	var lock project.Lock
 	if !options.Offline {
-		lock, err = service.readLockIfPresent()
+		lock, _, err = service.readLockIfPresent()
 		if err != nil {
 			return AddResult{}, err
 		}

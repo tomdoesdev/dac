@@ -128,6 +128,25 @@ func TestPullNarrowedStillRefusesAStaleLock(t *testing.T) {
 	assertError(t, runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0")), "lock_stale")
 }
 
+// TestNarrowedRefreshReachesOnlyTheNamedOrigins covers what naming assets buys a
+// refresh. The lock file it writes still has to describe the whole project, so the
+// narrowing is over the origins it asks rather than over the file it leaves behind.
+func TestNarrowedRefreshReachesOnlyTheNamedOrigins(t *testing.T) {
+	paths, requested := newPullProject(t)
+
+	result := runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0", "--refresh", "--no-progress"))
+	assertSuccess(t, result, "pull")
+	data := result.value["data"].(map[string]any)
+	if locked := data["locked"].([]any); len(locked) != 1 || locked[0] != "app/geo@1.0.0" {
+		t.Fatalf("the refresh resolved more than the asset it named: %#v", locked)
+	}
+	if made := requested.paths(); !slices.Equal(made, []string{"/geo-1.bin"}) {
+		t.Fatalf("refresh requested %v, want only /geo-1.bin", made)
+	}
+	// The two files still agree, which is the only kind of lock file a later run accepts.
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "verify")), "verify")
+}
+
 // newPullProject builds a locked three-asset project with an empty cache, and
 // returns the log of what the origin is asked for from that point on.
 //

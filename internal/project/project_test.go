@@ -357,7 +357,7 @@ func TestADeclaredNameLeavesAnUnnamedManifestUnchanged(t *testing.T) {
 		t.Fatalf("an asset that declares no name wrote the field: %s", data)
 	}
 
-	// Declaring one does change the digest, which is what makes a rename a manifest edit that dac lock has to settle rather than a silent rewrite.
+	// Declaring one does change the digest, which is what makes a rename a manifest edit that dac pull --refresh has to settle rather than a silent rewrite.
 	before, err := manifest.Digest()
 	if err != nil {
 		t.Fatal(err)

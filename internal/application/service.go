@@ -12,7 +12,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
-const Version = "10.0.0"
+const Version = "11.0.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -179,13 +179,13 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	}
 	lock, err := project.ReadLock(service.LockPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac lock.")
+		return project.Manifest{}, project.Lock{}, fault.New("lock_missing", "The lock file does not exist. Run dac pull.")
 	}
 	if err != nil {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
-		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac lock.", err)
+		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --refresh.", err)
 	}
 	return manifest, lock, nil
 }

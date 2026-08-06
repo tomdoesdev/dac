@@ -120,8 +120,6 @@ func TestCommandLifecycle(t *testing.T) {
 	}
 	result = runJSON(t, appendArgs(base, "verify"))
 	assertSuccess(t, result, "verify")
-	result = runJSON(t, appendArgs(base, "lock", "--no-progress", "--concurrency", "1"))
-	assertSuccess(t, result, "lock")
 	result = runJSON(t, appendArgs(base, "pull", "--no-progress", "--concurrency", "1"))
 	assertSuccess(t, result, "pull")
 
@@ -203,7 +201,7 @@ func TestCommandLifecycle(t *testing.T) {
 	if len(manifest.Assets) != 0 || len(lock.Assets) != 0 {
 		t.Fatalf("remove left assets: %#v %#v", manifest.Assets, lock.Assets)
 	}
-	// One request for the add, none for the lock or the pull that follows it because the add already locked and cached the asset, and one for each pull that had to replace the object this test deleted.
+	// One request for the add, none for the pull that follows it because the add already locked and cached the asset, and one for each pull that had to replace the object this test deleted.
 	if requests.Load() != 4 {
 		t.Fatalf("expected the add and three pull requests, got %d", requests.Load())
 	}
@@ -258,9 +256,9 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		appendArgs(base, "info", "app/asset@1", "app/other@1"),
 		appendArgs(base, "list"),
 		appendArgs(base, "rewrite"),
-		// Offline mode resolves nothing, so it has nothing to write a lock file from.
-		appendArgs(base, "lock", "--offline"),
-		appendArgs(base, "lock", "--refresh", "--offline"),
+		// Every lock operation lives on pull now, so the command that used to spell them is gone.
+		appendArgs(base, "lock"),
+		appendArgs(base, "lock", "--refresh"),
 		// The transfer tuning options moved into the config file, so the command line no longer answers to them at all.
 		appendArgs(base, "pull", "--max-size", "1GiB"),
 		appendArgs(base, "pull", "--timeout", "1m"),
@@ -270,17 +268,15 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		appendArgs(base, "pull", "--no-rewrite"),
 		appendArgs(base, "pull", "--distdir", directory),
 		appendArgs(base, "pull", "--progress=false"),
-		// Every lock operation lives on the lock command, so pull no longer answers to the flags that used to spell them.
+		// Refreshing the lock file has one spelling, and it is not either of the ones an older DAC used.
 		appendArgs(base, "pull", "--update-lock"),
 		appendArgs(base, "pull", "--refresh-lock"),
 		appendArgs(base, "add", "app/asset@1", "https://example.com/asset", "--rebind"),
-		appendArgs(base, "lock", "--rebind"),
+		appendArgs(base, "pull", "--rebind"),
 		appendArgs(base, "pack"),
 		appendArgs(base, "cache", "import", "delivery"),
 		appendArgs(base, "unpack", "--tree"),
 		appendArgs(base, "unpack", "delivery.dacpack"),
-		// Pull is the command that installs, so the lock command does not take the flags that only mean something to an installation.
-		appendArgs(base, "lock", "--distdir", directory),
 	} {
 		result := runJSON(t, args)
 		if result.status != ExitUsage {
@@ -394,7 +390,7 @@ func TestNetworkFlagsReadEnvironmentSources(t *testing.T) {
 	t.Setenv("DAC_MAX_SIZE", "1MiB")
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--no-progress")), "add")
-	assertSuccess(t, runJSON(t, appendArgs(base, "lock", "--no-progress")), "lock")
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
 	lock, err := project.ReadLock(lockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1034,7 +1030,10 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 }
 
 // The path a project takes when its lock file is not committed, or when someone edits the manifest by hand: a plain pull says what to run, and that command writes the file and names what it locked.
-func TestLockWritesAMissingLockFile(t *testing.T) {
+// TestPullWritesAMissingLockFile walks the whole of what a merged pull owns: it settles a
+// checkout that has no lock file yet, leaves that file alone on every run after it, and
+// rewrites it only when asked to refresh.
+func TestPullWritesAMissingLockFile(t *testing.T) {
 	content := []byte("asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(content)
@@ -1057,30 +1056,83 @@ func TestLockWritesAMissingLockFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missing := run(t, appendArgs(base, "pull", "--no-progress"))
-	if missing.status != ExitFailure || !strings.Contains(missing.stderr, "Run dac lock.") {
-		t.Fatalf("a missing lock file did not name the command that writes it: %#v", missing)
-	}
-	human := run(t, appendArgs(base, "lock", "--no-progress"))
-	if human.status != ExitOK || human.stdout != "Locked app/geo@1.\n" {
-		t.Fatalf("unexpected human lock: %#v", human)
+	// One command settles the checkout: it resolves the manifest, writes the lock file it found none of, and installs what it resolved.
+	human := run(t, appendArgs(base, "pull", "--no-progress"))
+	if human.status != ExitOK || human.stdout != "Locked app/geo@1. Pulled 1 asset.\n" {
+		t.Fatalf("unexpected first pull: %#v", human)
 	}
 	projecttest.Check(t, manifestPath, lockPath)
-	// Locking resolves, and resolving installs, so the pull behind it has nothing left to fetch.
-	pulled := run(t, appendArgs(base, "pull", "--no-progress"))
-	if pulled.status != ExitOK || pulled.stdout != "Pulled 1 asset.\n" {
-		t.Fatalf("unexpected human pull: %#v", pulled)
+
+	// Every run after that reads the lock file and writes nothing, which is the run a job makes.
+	before := projecttest.MustRead(t, lockPath)
+	again := run(t, appendArgs(base, "pull", "--no-progress"))
+	if again.status != ExitOK || again.stdout != "Pulled 1 asset.\n" {
+		t.Fatalf("unexpected repeated pull: %#v", again)
 	}
-	// A second lock over an unchanged project resolves nothing and leaves the file alone, which is the run a CI check makes.
-	again := run(t, appendArgs(base, "lock", "--no-progress"))
-	if again.status != ExitOK || again.stdout != "The lock file already describes 1 asset.\n" {
-		t.Fatalf("unexpected repeated lock: %#v", again)
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("a plain pull rewrote the lock file")
 	}
-	// A refresh reaches the origin for every asset whatever it finds there, so it reports what it resolved and that the file did not move.
-	refreshed := run(t, appendArgs(base, "lock", "--refresh", "--no-progress"))
-	if refreshed.status != ExitOK || refreshed.stdout != "Resolved app/geo@1. The lock file is unchanged.\n" {
+
+	// A refresh reaches the origin whatever it finds there, so it reports what it resolved and that the file did not move.
+	refreshed := run(t, appendArgs(base, "pull", "--refresh", "--no-progress"))
+	if refreshed.status != ExitOK || refreshed.stdout != "Resolved app/geo@1. The lock file is unchanged. Pulled 1 asset.\n" {
 		t.Fatalf("unexpected refresh: %#v", refreshed)
 	}
+}
+
+// A lock file that no longer describes the manifest is a disagreement to report rather than
+// one to settle, so the run that would settle it has to be asked for by name.
+func TestPullRefusesAStaleLockAndNamesTheFix(t *testing.T) {
+	content := []byte("asset bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(content)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	lockPath := filepath.Join(directory, "dac-lock.json")
+	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
+	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	// An offline add writes the manifest alone, which is the cheapest way to leave the two files disagreeing.
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--offline")), "add")
+
+	before := projecttest.MustRead(t, lockPath)
+	stale := run(t, appendArgs(base, "pull", "--no-progress"))
+	if stale.status != ExitFailure || !strings.Contains(stale.stderr, "Run dac pull --refresh") {
+		t.Fatalf("a stale lock file did not name the run that settles it: %#v", stale)
+	}
+	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("a refused pull rewrote the lock file")
+	}
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress")), "pull")
+	projecttest.Check(t, manifestPath, lockPath)
+}
+
+// Offline mode resolves nothing, so it has nothing to write a lock file from.
+func TestOfflinePullCannotSettleAProjectWithNoLockFile(t *testing.T) {
+	directory := t.TempDir()
+	manifestPath := filepath.Join(directory, "dac.json")
+	base := []string{
+		"--manifest", manifestPath,
+		"--lock", filepath.Join(directory, "dac-lock.json"),
+		"--cache-dir", filepath.Join(directory, "cache"),
+	}
+	manifest := project.Manifest{
+		SchemaVersion: project.ManifestVersion,
+		Assets:        map[coord.Coordinate]project.Asset{coord.MustParse("app/geo@1"): {URL: "https://example.com/geo"}},
+	}
+	data, err := project.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	assertError(t, runJSON(t, appendArgs(base, "pull", "--offline", "--no-progress")), "lock_missing")
+	// The two options ask for opposite things, and the run says so instead of quietly dropping one.
+	assertError(t, runJSON(t, appendArgs(base, "pull", "--offline", "--refresh", "--no-progress")), "invalid_arguments")
 }
 
 func TestVerifyRefreshFailsOnDrift(t *testing.T) {
@@ -1109,13 +1161,13 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
 		t.Fatal("--refresh rewrote the lock file")
 	}
-	refreshed := runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress"))
-	assertSuccess(t, refreshed, "lock")
+	refreshed := runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress"))
+	assertSuccess(t, refreshed, "pull")
 	if refreshed.value["data"].(map[string]any)["changed"] != true {
 		t.Fatalf("the refresh did not report a changed lock file: %#v", refreshed.value)
 	}
 	if bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("lock --refresh left the lock file as it found it")
+		t.Fatal("pull --refresh left the lock file as it found it")
 	}
 }
 
@@ -1173,9 +1225,9 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 		t.Fatal("--refresh rewrote the lock file")
 	}
 	// The same origin against the same pin, from the command that writes: a pin is a rule there, and bytes that fail it must not reach the lock file.
-	assertError(t, runJSON(t, appendArgs(base, "lock", "--refresh", "--no-progress")), "content_mismatch")
+	assertError(t, runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress")), "content_mismatch")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("a failed lock --refresh rewrote the lock file")
+		t.Fatal("a failed pull --refresh rewrote the lock file")
 	}
 }
 

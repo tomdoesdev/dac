@@ -59,7 +59,7 @@ func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 	if err != nil {
 		return RemoveResult{}, err
 	}
-	lock, err := service.readLockIfPresent()
+	lock, _, err := service.readLockIfPresent()
 	if err != nil {
 		return RemoveResult{}, err
 	}
@@ -444,7 +444,7 @@ func (service *Service) CacheRemove(ctx context.Context, options CacheRemoveOpti
 		if !exists {
 			return CacheRemoveResult{}, &fault.Error{
 				Code:    "lock_stale",
-				Message: "The lock file does not describe that asset. Run dac lock.",
+				Message: "The lock file does not describe that asset. Run dac pull --refresh.",
 				Details: map[string]any{"asset": name.String()},
 			}
 		}

@@ -13,6 +13,9 @@ type PullOptions struct {
 	Concurrency int
 	MaxSize     int64
 	Offline     bool
+	// Refresh resolves the selected assets against their origins and rewrites the lock file
+	// around what they now serve. It is the only way a pull touches a lock file that exists.
+	Refresh bool
 	// Assets narrows the pull to the coordinates these selections name.
 	// A project holds every asset every job built from it needs, and a job needs the ones it needs.
 	Assets []Selection
@@ -24,15 +27,32 @@ type PullResult struct {
 	// ProjectCount is how many assets the project has.
 	// It was added without an output version bump, for the reason the file name field was: a new field breaks no consumer that does not read it.
 	ProjectCount int `json:"projectCount"`
+	// Locked names the assets this pull had to reach an origin for to settle the lock file, in manifest order.
+	Locked []string `json:"locked"`
+	// Changed reports whether the lock file on disk moved.
+	Changed bool `json:"changed"`
 	AssetSummary
 }
 
-// Pull installs the missing locked assets, or the ones a selection names.
-// It writes nothing.
-// Narrowing a pull narrows what it fetches and nothing else.
+// Pull installs the locked assets, or the ones a selection names.
+//
+// A project with no lock file yet gets one: the first pull of a checkout resolves the
+// manifest and writes what it found. A lock file that already exists is left exactly as it
+// is, so a pull in a job reports a lock file that drifted from the manifest instead of
+// quietly rewriting it. Refresh is the deliberate exception.
+//
+// Narrowing a pull narrows what it installs, and which origins a refresh reaches.
 func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResult, error) {
 	defer service.Reporter.Wait()
-	manifest, lock, err := service.readProject()
+	if options.Offline && options.Refresh {
+		return PullResult{}, fault.New("invalid_arguments",
+			"Offline mode cannot refresh the lock file, because it resolves no bytes to write one from.")
+	}
+	manifest, err := service.readManifest()
+	if err != nil {
+		return PullResult{}, err
+	}
+	lock, present, err := service.readLockIfPresent()
 	if err != nil {
 		return PullResult{}, err
 	}
@@ -40,11 +60,34 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 	if err != nil {
 		return PullResult{}, err
 	}
+	written := relocked{locked: []string{}}
+	switch {
+	case present && !options.Refresh:
+		if err := project.CheckLock(manifest, lock); err != nil {
+			return PullResult{}, fault.Wrap("lock_stale",
+				"The lock file does not agree with the manifest. Run dac pull --refresh.", err)
+		}
+	case options.Offline:
+		// Refresh is already refused above, so the only way here is a project with no lock file at all.
+		return PullResult{}, fault.New("lock_missing",
+			"The lock file does not exist, and offline mode resolves nothing to write one from. Run dac pull.")
+	default:
+		written, err = service.relock(ctx, manifest, lock, names, options)
+		if err != nil {
+			return PullResult{}, err
+		}
+		lock = written.lock
+	}
 	service.Reporter.Plan(coord.Strings(names))
 	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
 		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options)
 		if err != nil && ctx.Err() == nil {
 			service.Reporter.Fail(name.String(), err)
+		}
+		// An asset the lock phase resolved sits in the cache because this run put it there.
+		// The status says what the run did, rather than what the install behind it then found.
+		if status, settled := written.resolved[name]; settled && err == nil {
+			value.Status = status
 		}
 		return value, err
 	})
@@ -54,7 +97,56 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 	return PullResult{
 		ManifestDigest: lock.ManifestDigest,
 		ProjectCount:   len(manifest.Assets),
+		Locked:         written.locked,
+		Changed:        written.changed,
 		AssetSummary:   collect(assets),
+	}, nil
+}
+
+// relocked is the lock file one pull wrote, and what writing it cost.
+type relocked struct {
+	lock    project.Lock
+	locked  []string
+	changed bool
+	// resolved is the status of each entry the lock phase reached an origin for, by coordinate.
+	resolved map[coord.Coordinate]string
+}
+
+// relock settles the lock file a pull is about to install from.
+//
+// The named assets resolve against their origins when this is a refresh. Every other entry
+// still reconciles, because a lock file describes the whole manifest: leaving one behind
+// would write a file that CheckLock rejects on the next run. Add settles hand edits the
+// same way while it resolves the asset it was given.
+func (service *Service) relock(ctx context.Context, manifest project.Manifest, old project.Lock, names []coord.Coordinate, options PullOptions) (relocked, error) {
+	refresh := map[coord.Coordinate]struct{}{}
+	if options.Refresh {
+		for _, name := range names {
+			refresh[name] = struct{}{}
+		}
+	}
+	reconciled, err := service.reconcile(ctx, manifest, old, reconcileOptions{
+		concurrency: options.Concurrency,
+		maxSize:     options.MaxSize,
+		mode:        resolveChanged,
+		refresh:     refresh,
+	})
+	if err != nil {
+		return relocked{}, err
+	}
+	lock, err := newLock(manifest, reconciled.assets)
+	if err != nil {
+		return relocked{}, err
+	}
+	changed, err := service.writeLock(lock)
+	if err != nil {
+		return relocked{}, err
+	}
+	return relocked{
+		lock:     lock,
+		locked:   reconciled.names(manifest.Coordinates()),
+		changed:  changed,
+		resolved: reconciled.resolved,
 	}, nil
 }
 

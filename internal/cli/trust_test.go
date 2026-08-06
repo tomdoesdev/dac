@@ -230,7 +230,7 @@ func TestADownloadRecordsWhenItsHostWasLastUsed(t *testing.T) {
 	}
 
 	before := time.Now().UTC()
-	assertSuccess(t, runJSON(t, appendArgs(base, "lock")), "lock")
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--refresh")), "pull")
 	used := readTrust(t, path).Hosts["127.0.0.1"].LastUsed
 	if used.Before(before) {
 		t.Fatalf("lastUsed = %v, want a time from the run that downloaded", used)

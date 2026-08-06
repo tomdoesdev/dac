@@ -42,6 +42,10 @@ type reconcileOptions struct {
 	concurrency int
 	maxSize     int64
 	mode        resolveMode
+	// refresh names the assets to resolve against their origins even where the lock already agrees.
+	// Everything else still reconciles under mode, because a lock file describes the whole manifest:
+	// an entry left disagreeing would write a file that is stale the moment it lands.
+	refresh map[coord.Coordinate]struct{}
 }
 
 // names returns the assets this reconcile resolved, in manifest order.
@@ -64,7 +68,12 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 	settled, err := parallel(ctx, options.concurrency, names, func(ctx context.Context, name coord.Coordinate) (resolvedAsset, error) {
 		source := manifest.Assets[name]
 		locked, exists := old.Assets[name]
-		if options.mode == resolveChanged && project.Agrees(source, locked, exists) {
+		// A named asset resolves against its origin whatever the lock says; the rest keep the mode this reconcile was asked for.
+		current := options
+		if _, forced := options.refresh[name]; forced {
+			current.mode = resolveRefresh
+		}
+		if current.mode == resolveChanged && project.Agrees(source, locked, exists) {
 			// A pinned asset neither sends nor records an ETag.
 			if source.Integrity != "" {
 				locked.ETag = ""
@@ -78,7 +87,7 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			}
 			return resolvedAsset{lock: locked, status: statusLocked}, nil
 		}
-		value, status, err := service.resolve(ctx, name, source, locked, options)
+		value, status, err := service.resolve(ctx, name, source, locked, current)
 		if err != nil {
 			if ctx.Err() == nil {
 				service.Reporter.Fail(name.String(), err)
@@ -108,13 +117,14 @@ type resolvedAsset struct {
 	status string
 }
 
-// readLockIfPresent reads the lock a reconcile starts from.
-func (service *Service) readLockIfPresent() (project.Lock, error) {
-	lock, _, err := project.ReadLockIfPresent(service.LockPath)
+// readLockIfPresent reads the lock a reconcile starts from, and reports whether there was a file to read.
+// Presence is what separates a lock file to write from a lock file to disagree with.
+func (service *Service) readLockIfPresent() (project.Lock, bool, error) {
+	lock, present, err := project.ReadLockIfPresent(service.LockPath)
 	if err != nil {
-		return project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
+		return project.Lock{}, false, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
 	}
-	return lock, nil
+	return lock, present, nil
 }
 
 // writeLock writes a lock file and reports whether it had to.

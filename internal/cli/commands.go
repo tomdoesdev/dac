@@ -59,7 +59,7 @@ func removeText(palette style.Palette, name coord.Coordinate, result application
 	}
 	if len(result.Unlocked) > 0 {
 		text += fmt.Sprintf(" The lock file does not describe %s. %s",
-			palette.Name(strings.Join(result.Unlocked, ", ")), palette.Warn("Run dac lock."))
+			palette.Name(strings.Join(result.Unlocked, ", ")), palette.Warn("Run dac pull --refresh."))
 	}
 	return text
 }
