@@ -18,8 +18,8 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
-	"github.com/tomdoesdev/dac/internal/fs/flock"
+	"github.com/tomdoesdev/kit/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 // A download stages into its own directory under a distinct prefix, and garbage collection finds abandoned

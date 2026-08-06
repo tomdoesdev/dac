@@ -42,7 +42,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tomdoesdev/dac/internal/fs/atomic/internal/sys"
+	"github.com/tomdoesdev/kit/fs/atomic/internal/sys"
 )
 
 // errNoDestination reports a Commit that has no path to commit to.

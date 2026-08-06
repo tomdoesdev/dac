@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
 // This is the test the package exists for. Writers replace one file while a

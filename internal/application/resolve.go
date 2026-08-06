@@ -5,8 +5,8 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/kit/fs/util/filename"
 )
 
 func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate, source project.Asset, old project.LockAsset, options reconcileOptions) (project.LockAsset, string, error) {

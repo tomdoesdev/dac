@@ -5,10 +5,13 @@ go 1.26
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/muesli/termenv v0.16.0
+	github.com/tomdoesdev/kit v0.0.0
 	github.com/urfave/cli/v3 v3.10.1
 	github.com/vbauerster/mpb/v8 v8.14.0
 	golang.org/x/sync v0.22.0
 )
+
+replace github.com/tomdoesdev/kit v0.0.0 => ./kit
 
 require (
 	github.com/VividCortex/ewma v1.2.0 // indirect

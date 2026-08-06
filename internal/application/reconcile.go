@@ -10,8 +10,8 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/kit/fs/util/filename"
 )
 
 // The status one reconcile records for each asset it settled.

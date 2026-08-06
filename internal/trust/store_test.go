@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/fs/flock"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 func testStore(t *testing.T) *Store {

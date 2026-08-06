@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
 // testUnpackStage builds a production-shaped stage so commit tests exercise the atomic file lifecycle.

@@ -10,8 +10,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
-	"github.com/tomdoesdev/dac/internal/fs/flock"
+	"github.com/tomdoesdev/kit/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 // ReadStrict reads one JSON value. It rejects unknown fields and duplicate keys.

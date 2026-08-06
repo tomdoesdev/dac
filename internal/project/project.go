@@ -11,9 +11,9 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/kit/fs/util/filename"
 )
 
 const (

@@ -11,7 +11,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
 // temporaryGrace protects files that another process may still be writing.

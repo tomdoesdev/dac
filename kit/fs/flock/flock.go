@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/fs/flock/internal/sys"
+	"github.com/tomdoesdev/kit/fs/flock/internal/sys"
 )
 
 // ErrLocked reports that another holder has the lock.

@@ -1,7 +1,7 @@
 // Package httpclient fetches remote asset bytes.
 //
 // The transfer itself -- retries, stall detection, split range downloads,
-// redirect limits -- belongs to internal/http/getit. This package is the
+// redirect limits -- belongs to kit/http/getit. This package is the
 // adapter between that engine and the application.Fetcher boundary, and it
 // holds only what is DAC's own decision: which URLs may be requested, what an
 // asset is called, and which failures are worth asking about again.
@@ -18,9 +18,9 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/debug"
-	"github.com/tomdoesdev/dac/internal/fs/util/filename"
-	"github.com/tomdoesdev/dac/internal/http/getit"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/kit/fs/util/filename"
+	"github.com/tomdoesdev/kit/http/getit"
 )
 
 const maxRedirects = 10

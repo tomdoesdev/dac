@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
-	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
+	"github.com/tomdoesdev/kit/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 // ResolvePath returns the absolute trusted-hosts file path.

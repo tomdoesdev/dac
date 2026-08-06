@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/fs/flock"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 func TestLockExcludesAndReleases(t *testing.T) {

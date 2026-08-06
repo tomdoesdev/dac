@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// This package is meant to leave here one day, the way internal/fs is. What
+// This package deliberately stands alone so it can live in kit. What
 // makes that a move rather than a rewrite is that it imports nothing but the
 // standard library, so this is the constraint the rest of the design exists to
 // hold.
@@ -17,7 +17,7 @@ import (
 // Direct imports are the whole check. A DAC package can only be reached through
 // a DAC import, so a package with none directly has none at all.
 func TestThePackageImportsOnlyTheStandardLibrary(t *testing.T) {
-	const project = "github.com/tomdoesdev/dac"
+	const project = "github.com/tomdoesdev/kit"
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
