@@ -12,7 +12,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
 )
 
 func TestPutAndLookupObject(t *testing.T) {
@@ -383,7 +383,7 @@ func TestClearingLeavesATemporaryFileInFlight(t *testing.T) {
 	blobs := filepath.Join(root, "blobs", "sha256")
 	running := filepath.Join(downloads, "download-running")
 	abandoned := filepath.Join(downloads, "download-abandoned")
-	writing := filepath.Join(blobs, jsonfile.TempPrefix+"writing")
+	writing := filepath.Join(blobs, atomic.DefaultTempPrefix+"writing")
 	for _, path := range []string{running, abandoned, writing} {
 		if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
 			t.Fatal(err)
@@ -673,8 +673,8 @@ func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
 	// A sidecar write that dies between its temporary file and the rename leaves
 	// one of these beside the objects, where the download sweep does not look.
 	blobs := filepath.Join(root, "blobs", "sha256")
-	stale := filepath.Join(blobs, jsonfile.TempPrefix+"stale")
-	fresh := filepath.Join(blobs, jsonfile.TempPrefix+"fresh")
+	stale := filepath.Join(blobs, atomic.DefaultTempPrefix+"stale")
+	fresh := filepath.Join(blobs, atomic.DefaultTempPrefix+"fresh")
 	for _, path := range []string{stale, fresh} {
 		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)

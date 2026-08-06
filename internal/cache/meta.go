@@ -25,6 +25,8 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
@@ -68,12 +70,15 @@ func readMeta(path string) (meta, bool, error) {
 	return value, true, nil
 }
 
+// writeMeta serializes sidecar replacement so concurrent verification cannot expose or lose a complete record.
 func writeMeta(path string, value meta) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	return jsonfile.WriteAtomic(path, data, metaFileMode)
+	return flock.Hold(context.Background(), path+".lock", func(context.Context) error {
+		return atomic.WriteFile(path, data, metaFileMode)
+	})
 }
 
 // cancelReader stops a hash when the command that asked for it ends.

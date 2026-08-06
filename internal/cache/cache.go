@@ -19,8 +19,8 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
 	"github.com/tomdoesdev/dac/internal/fs/flock"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
 // Store manages one filesystem cache.
@@ -394,7 +394,7 @@ func (store *Store) collectSidecars(ctx context.Context, directory string, entri
 			continue
 		}
 		switch {
-		case strings.HasPrefix(name, jsonfile.TempPrefix):
+		case strings.HasPrefix(name, atomic.DefaultTempPrefix):
 			info, err := entry.Info()
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -591,18 +591,11 @@ func (store *Store) WithLock(ctx context.Context, value string, operation func()
 // Put installs bytes.
 func (store *Store) Put(ctx context.Context, reader io.Reader, options application.PutOptions) (application.Object, error) {
 	temporaryDirectory := filepath.Join(store.Root, "tmp")
-	if err := os.MkdirAll(temporaryDirectory, 0o755); err != nil {
-		return application.Object{}, err
-	}
-	temporary, err := os.CreateTemp(temporaryDirectory, "download-*")
+	temporary, err := atomic.CreateIn(temporaryDirectory, 0o444, atomic.WithTempPrefix("download-"))
 	if err != nil {
 		return application.Object{}, err
 	}
-	temporaryPath := temporary.Name()
-	defer func() {
-		_ = temporary.Close()
-		_ = os.Remove(temporaryPath)
-	}()
+	defer func() { _ = temporary.Discard() }()
 
 	expect := options.Expect
 	limit := expect.Size
@@ -651,19 +644,7 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		if err := temporary.Sync(); err != nil {
-			return err
-		}
-		if err := temporary.Chmod(0o444); err != nil {
-			return err
-		}
-		if err := temporary.Close(); err != nil {
-			return err
-		}
-		if err := os.Rename(temporaryPath, path); err != nil {
+		if err := temporary.CommitAs(path); err != nil {
 			return err
 		}
 		store.trace().Debug("installed", "digest", actualDigest, "size", size)

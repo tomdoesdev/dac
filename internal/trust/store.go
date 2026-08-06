@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
 	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
@@ -91,5 +92,5 @@ func (store *Store) write(change func(List) (List, error)) (List, error) {
 	if err != nil {
 		return List{}, err
 	}
-	return updated, jsonfile.WriteAtomic(store.Path, append(data, '\n'), fileMode)
+	return updated, atomic.WriteFile(store.Path, append(data, '\n'), fileMode)
 }

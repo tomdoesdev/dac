@@ -14,6 +14,8 @@ import (
 	"github.com/tomdoesdev/dac/internal/fs/flock"
 )
 
+const TempPrefix = ".dac-"
+
 // ReadStrict reads one JSON value. It rejects unknown fields and duplicate keys.
 func ReadStrict(path string, value any) error {
 	data, err := os.ReadFile(path)

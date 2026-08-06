@@ -16,6 +16,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
@@ -50,10 +51,18 @@ type unpackTarget struct {
 	source      string
 	destination string
 	object      Object
-	staged      string
+	staged      *unpackStage
 	backup      string
 	committed   bool
 }
+
+// unpackStage owns the atomic write for one target and, for no-replace commits, its sealed temporary path.
+type unpackStage struct {
+	file       *atomic.File
+	sealedPath string
+}
+
+const unpackTempPrefix = ".dac-unpack-"
 
 // Unpack writes selected cached assets under their friendly file names.
 func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (UnpackResult, error) {
@@ -90,7 +99,7 @@ func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (Unpa
 	if err != nil {
 		return UnpackResult{}, fault.Wrap("unpack_write_failed", "DAC could not create the destination directory.", err)
 	}
-	if err := stageUnpack(ctx, directory, targets); err != nil {
+	if err := stageUnpack(ctx, targets); err != nil {
 		removeUnpackDirectories(createdDirectories)
 		return UnpackResult{}, err
 	}
@@ -305,9 +314,9 @@ func checkUnpackDestinations(targets []*unpackTarget, force bool) error {
 }
 
 // stageUnpack copies and verifies all selected objects before the commit starts.
-func stageUnpack(ctx context.Context, directory string, targets []*unpackTarget) error {
+func stageUnpack(ctx context.Context, targets []*unpackTarget) error {
 	for _, target := range targets {
-		staged, err := stageUnpackFile(ctx, directory, target.source, target.object)
+		staged, err := stageUnpackFile(ctx, target.destination, target.source, target.object)
 		if err != nil {
 			cleanupUnpack(targets)
 			if corrupted(err) {
@@ -323,7 +332,7 @@ func stageUnpack(ctx context.Context, directory string, targets []*unpackTarget)
 	return nil
 }
 
-// stageUnpackFile creates one verified temporary file in the destination.
+// stageUnpackFile creates one verified atomic write beside the destination.
 // It stages beside the destination rather than in the cache so that the commit is a
 // rename within one file system. Every path out of this operation removes what it
 // staged, cancellation included; what none of them can cover is a process that was
@@ -332,46 +341,68 @@ func stageUnpack(ctx context.Context, directory string, targets []*unpackTarget)
 // that deletes files it finds there had better be certain no other unpack is
 // running. They are inert, and removing one is a matter for whoever owns the
 // directory.
-func stageUnpackFile(ctx context.Context, directory, source string, expected Object) (string, error) {
+func stageUnpackFile(ctx context.Context, destination, source string, expected Object) (*unpackStage, error) {
 	input, err := os.Open(source)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer func() { _ = input.Close() }()
 
-	output, err := os.CreateTemp(directory, ".dac-unpack-*")
+	output, err := createUnpackStage(destination)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	path := output.Name()
 	failed := true
 	defer func() {
-		_ = output.Close()
 		if failed {
-			_ = os.Remove(path)
+			output.discard()
 		}
 	}()
 
 	hashValue := sha256.New()
-	written, err := io.Copy(io.MultiWriter(output, hashValue), &contextReader{ctx: ctx, reader: input})
+	written, err := io.Copy(io.MultiWriter(output.file, hashValue), &contextReader{ctx: ctx, reader: input})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	actual := digest.Prefix + hex.EncodeToString(hashValue.Sum(nil))
 	if written != expected.Size || actual != expected.Digest {
-		return "", &CorruptError{Digest: expected.Digest, ActualDigest: actual, Path: source}
-	}
-	if err := output.Sync(); err != nil {
-		return "", err
-	}
-	if err := output.Chmod(0o644); err != nil {
-		return "", err
-	}
-	if err := output.Close(); err != nil {
-		return "", err
+		return nil, &CorruptError{Digest: expected.Digest, ActualDigest: actual, Path: source}
 	}
 	failed = false
-	return path, nil
+	return output, nil
+}
+
+// createUnpackStage keeps staging and commit on one file system and prevents the atomic writer from recreating a checked directory boundary.
+func createUnpackStage(destination string) (*unpackStage, error) {
+	file, err := atomic.Create(destination, 0o644, atomic.WithTempPrefix(unpackTempPrefix), atomic.WithoutMkdir())
+	if err != nil {
+		return nil, err
+	}
+	return &unpackStage{file: file}, nil
+}
+
+// Write adds bytes to the atomic write in progress.
+func (stage *unpackStage) Write(data []byte) (int, error) { return stage.file.Write(data) }
+
+// temporaryPath reports the source name whose disappearance proves Commit completed its rename.
+func (stage *unpackStage) temporaryPath() string { return stage.file.Path() }
+
+// commit atomically replaces the intended destination with the staged bytes.
+func (stage *unpackStage) commit() error { return stage.file.Commit() }
+
+// seal closes and syncs the staged inode at a unique non-destination path so a hard link can provide no-replace semantics.
+func (stage *unpackStage) seal() error {
+	stage.sealedPath = stage.file.Path() + ".ready"
+	return stage.file.CommitAs(stage.sealedPath)
+}
+
+// discard removes either form of the stage, including one that CommitAs sealed before a final directory-sync error.
+func (stage *unpackStage) discard() {
+	_ = stage.file.Discard()
+	_ = os.Remove(stage.file.Path())
+	if stage.sealedPath != "" {
+		_ = os.Remove(stage.sealedPath)
+	}
 }
 
 // commitUnpack installs all staged files and restores the destination on failure.
@@ -381,21 +412,34 @@ func commitUnpack(targets []*unpackTarget, force bool) error {
 			if err := backupUnpackTarget(target); err != nil {
 				return failUnpackCommit(targets, err)
 			}
-			if err := os.Rename(target.staged, target.destination); err != nil {
+			stagedPath := target.staged.temporaryPath()
+			if err := target.staged.commit(); err != nil {
+				// Commit removes its temporary path before syncing the directory. If
+				// that final sync fails, rollback still owns the installed destination.
+				if _, statErr := os.Stat(stagedPath); errors.Is(statErr, os.ErrNotExist) {
+					target.staged = nil
+					target.committed = true
+				}
 				return failUnpackCommit(targets, err)
 			}
+			target.staged = nil
 		} else {
+			// Sealing lets atomic own syncing, mode, and closing while leaving
+			// the destination free for the no-replace link.
+			if err := target.staged.seal(); err != nil {
+				return failUnpackCommit(targets, err)
+			}
 			// A hard link makes the no-replace check atomic on the destination file system.
-			if err := os.Link(target.staged, target.destination); err != nil {
+			if err := os.Link(target.staged.sealedPath, target.destination); err != nil {
 				return failUnpackCommit(targets, unpackLinkError(err, target.destination))
 			}
 			// Set before the staged file is removed, because from here the destination is this target's to roll back.
 			target.committed = true
-			if err := os.Remove(target.staged); err != nil {
+			if err := os.Remove(target.staged.sealedPath); err != nil {
 				return failUnpackCommit(targets, err)
 			}
+			target.staged = nil
 		}
-		target.staged = ""
 		target.committed = true
 	}
 	for _, target := range targets {
@@ -489,9 +533,9 @@ func failUnpackCommit(targets []*unpackTarget, cause error) error {
 // cleanupUnpack removes temporary files that a failed operation did not commit.
 func cleanupUnpack(targets []*unpackTarget) {
 	for _, target := range targets {
-		if target.staged != "" {
-			_ = os.Remove(target.staged)
-			target.staged = ""
+		if target.staged != nil {
+			target.staged.discard()
+			target.staged = nil
 		}
 		if target.backup != "" {
 			_ = os.Remove(target.backup)
