@@ -32,7 +32,24 @@ func projectPaths(current *urfave.Command) (string, string) {
 
 func (runner *runner) projectService(current *urfave.Command) *application.Service {
 	manifest, lock := projectPaths(current)
-	return application.New(manifest, lock, nil, nil, nil)
+	service := application.New(manifest, lock, nil, nil, nil)
+	runner.attachCatalog(current, service)
+	return service
+}
+
+// attachCatalog gives a service the object catalog to record into, when there is one.
+//
+// The nil check is on the concrete recorder rather than after the assignment, because a nil
+// pointer stored in an interface field is not a nil interface: every guard in the service would
+// pass and every call would land on a nil receiver.
+//
+// The catalog is attached to every service, including the ones holding no object store. Reading
+// a project is what advances a record, and remove and verify do that without ever opening the
+// cache.
+func (runner *runner) attachCatalog(current *urfave.Command, service *application.Service) {
+	if recorder := runner.catalogRecorder(current); recorder != nil {
+		service.Catalog = recorder
+	}
 }
 
 func (runner *runner) storeService(current *urfave.Command) (*application.Service, error) {
@@ -51,6 +68,7 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 	store.Logger = runner.trace(current)
 	service := application.New(manifest, lock, store, nil, nil)
 	service.Trust = list
+	runner.attachCatalog(current, service)
 	return service, nil
 }
 

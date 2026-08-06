@@ -29,10 +29,9 @@ func (runner *runner) initCommand() *urfave.Command {
 
 func (runner *runner) removeCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:          "remove",
-		Usage:         "Remove one asset version and update the lock file.",
-		ArgsUsage:     "<namespace>/<name>@<version>",
-		ShellComplete: runner.completeCoordinate(),
+		Name:      "remove",
+		Usage:     "Remove one asset version and update the lock file.",
+		ArgsUsage: "<namespace>/<name>@<version>",
 		Action: runner.run("remove", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			name, err := coordinate(current)
 			if err != nil {
@@ -66,8 +65,7 @@ func (runner *runner) pathCommand() *urfave.Command {
 		Name:  "path",
 		Usage: "Get one verified object path.",
 		// A group is valid when the project has only one matching version.
-		ArgsUsage:     "<namespace>/<name>[@<version>]",
-		ShellComplete: runner.completeCoordinate(),
+		ArgsUsage: "<namespace>/<name>[@<version>]",
 		Action: runner.run("path", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			choice, err := asset(current)
 			if err != nil {
@@ -86,10 +84,9 @@ func (runner *runner) pathCommand() *urfave.Command {
 // unpackCommand builds the cache materialization command.
 func (runner *runner) unpackCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:          "unpack",
-		Usage:         "Write cached project assets into a directory, or the assets named.",
-		ArgsUsage:     "[<namespace>/<name>[@<version>]...]",
-		ShellComplete: runner.completeCoordinates(),
+		Name:      "unpack",
+		Usage:     "Write cached project assets into a directory, or the assets named.",
+		ArgsUsage: "[<namespace>/<name>[@<version>]...]",
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "dest", Value: ".", Usage: "Write the files into this directory."},
 			&urfave.BoolFlag{Name: "force", Usage: "Replace files that are already in the destination."},

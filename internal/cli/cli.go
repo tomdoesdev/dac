@@ -4,13 +4,13 @@ package cli
 import (
 	"context"
 	"io"
-	"slices"
 	"strings"
 	"sync"
 
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/catalog"
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -32,7 +32,7 @@ const (
 
 // Run runs one DAC command and returns its exit status.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	runner := &runner{stdout: stdout, stderr: stderr, args: args}
+	runner := &runner{stdout: stdout, stderr: stderr}
 	err := runner.app().Run(ctx, append([]string{"dac"}, args...))
 	if err == nil {
 		return ExitOK
@@ -58,8 +58,6 @@ type runner struct {
 	commandName string
 	usage       bool
 	writeFailed bool
-	// args is the command line this run was given, which the writer decision below has to read before urfave has parsed anything.
-	args []string
 	// colour is the --color value as it was written.
 	colour string
 	// The palettes for this run's two streams: command summaries go to standard output, and error messages, help, and progress go to standard error.
@@ -76,6 +74,11 @@ type runner struct {
 	trustOnce  sync.Once
 	trustErr   error
 	gate       *trust.Gate
+
+	// The object catalog this run records into. It is nil when the file could not be opened,
+	// which is a state to carry on in rather than one to report. See catalogRecorder.
+	recorder    *catalog.Recorder
+	catalogOnce sync.Once
 }
 
 // styles settles how this run colours each of its two streams.
@@ -98,49 +101,6 @@ func (runner *runner) checkColor() error {
 		return fault.Wrap("invalid_arguments", "The color option is invalid.", err)
 	}
 	return nil
-}
-
-// completing reports whether this run is about shell completion rather than about an asset.
-// Completion includes both the script command and the hidden suggestion request.
-// Both have to reach standard output, and neither did.
-// Help never prints during either one, so the two uses of Writer never collide.
-func completing(app *urfave.Command, args []string) bool {
-	if slices.Contains(args, "--"+urfave.GenerateShellCompletionFlag.Names()[0]) {
-		return true
-	}
-	return commandName(app, args) == completionCommand
-}
-
-// completionCommand is the name urfave gives the command that writes a shell completion script.
-const completionCommand = "completion"
-
-// commandName returns the first argument naming a command, stepping over the global options in front of it and the values they take.
-// It reads the option set from the command rather than from a list kept beside it, so a global option added later is accounted for by existing.
-func commandName(app *urfave.Command, args []string) string {
-	for index := 0; index < len(args); index++ {
-		value := args[index]
-		if !strings.HasPrefix(value, "-") {
-			return value
-		}
-		// An option spelled --name=value carries its own value; one spelled --name takes the argument after it, unless it is a boolean.
-		if !strings.Contains(value, "=") && takesValue(app.Flags, value) {
-			index++
-		}
-	}
-	return ""
-}
-
-// takesValue reports whether an option is followed by its value.
-func takesValue(flags []urfave.Flag, option string) bool {
-	name := strings.TrimLeft(option, "-")
-	for _, flag := range flags {
-		if !slices.Contains(flag.Names(), name) {
-			continue
-		}
-		_, boolean := flag.(*urfave.BoolFlag)
-		return !boolean
-	}
-	return false
 }
 
 // config reads the configuration for this run, once.
@@ -195,6 +155,47 @@ func (runner *runner) flushTrust(ctx context.Context, current *urfave.Command) {
 	}
 }
 
+// catalogRecorder opens the object catalog for this run, once.
+//
+// Unlike the trusted-hosts file, a catalog that cannot be reached does not fail the command. The
+// trust list is a security control, and a run that cannot read it would be deciding what to
+// download from a list nobody wrote. The catalog only describes what the cache holds, and a
+// command that could not write its bookkeeping has still done what it was asked.
+func (runner *runner) catalogRecorder(current *urfave.Command) *catalog.Recorder {
+	runner.catalogOnce.Do(func() {
+		path, err := catalog.ResolvePath("")
+		if err != nil {
+			runner.trace(current).Debug("object catalog not opened", "error", err)
+			return
+		}
+		store := catalog.New(path)
+		loaded, err := store.Load()
+		if err != nil {
+			// A catalog DAC cannot read is left exactly as it is rather than replaced, because
+			// nothing regenerates the records it holds: they describe downloads that already
+			// happened. Removing the file is how somebody who wants it back starts again.
+			runner.trace(current).Debug("object catalog not read", "path", path, "error", err)
+			return
+		}
+		runner.recorder = catalog.NewRecorder(store, loaded)
+	})
+	return runner.recorder
+}
+
+// flushCatalog records what this run learned about the cache.
+// A failure to write is traced rather than reported, for the reason a trusted-host use time is:
+// it is not the answer the command was asked for.
+func (runner *runner) flushCatalog(ctx context.Context, current *urfave.Command) {
+	if runner.recorder == nil {
+		return
+	}
+	// A cancelled run still downloaded what it downloaded, and those are the bytes most worth
+	// being able to account for.
+	if err := runner.recorder.Flush(context.WithoutCancel(ctx)); err != nil {
+		runner.trace(current).Debug("object catalog not recorded", "error", err)
+	}
+}
+
 type action func(context.Context, *urfave.Command) (any, string, error)
 
 func (runner *runner) app() *urfave.Command {
@@ -204,10 +205,8 @@ func (runner *runner) app() *urfave.Command {
 		Description:     "DAC stores remote files by their SHA-256 digest.",
 		Version:         application.Version,
 		HideHelpCommand: true,
-		// Completion writes shell data to stdout outside the JSON contract.
-		EnableShellCompletion: true,
-		Writer:                runner.stderr,
-		ErrWriter:             runner.stderr,
+		Writer:          runner.stderr,
+		ErrWriter:       runner.stderr,
 		Flags: []urfave.Flag{
 			&urfave.StringFlag{Name: "manifest", Value: DefaultManifest, Usage: "Use this manifest file."},
 			&urfave.StringFlag{Name: "lock", Value: DefaultLock, Usage: "Use this lock file. Defaults beside the manifest."},
@@ -245,10 +244,6 @@ func (runner *runner) app() *urfave.Command {
 		runner.cacheCommand(),
 		runner.trustCommand(),
 		runner.configCommand(),
-	}
-	// The writer is settled once the flags exist to read it from. See completing.
-	if completing(app, runner.args) {
-		app.Writer = runner.stdout
 	}
 	_ = app.Walk(func(current *urfave.Command) error {
 		current.OnUsageError = runner.usageError
@@ -294,6 +289,7 @@ func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 		// Every command completes here, which is the one place a run has finished
 		// using the hosts it was going to use, whether or not it succeeded.
 		runner.flushTrust(ctx, current)
+		runner.flushCatalog(ctx, current)
 		if err != nil {
 			return err
 		}

@@ -12,7 +12,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
-const Version = "11.0.0"
+const Version = "11.1.0"
 
 // Object identifies bytes in the object store.
 type Object struct {
@@ -142,6 +142,10 @@ type Service struct {
 	// Trust reports which hosts a download would be allowed to reach. A nil value
 	// reports nothing rather than reporting that nothing is trusted.
 	Trust HostTrust
+	// Catalog records what this run learned about the objects it saw, so that a project file
+	// that later changes or disappears does not take the only description of those bytes with
+	// it. A nil value records nothing.
+	Catalog Catalog
 }
 
 // New creates a service with absolute project paths.
@@ -180,6 +184,9 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	if err := project.CheckLock(manifest, lock); err != nil {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --refresh.", err)
 	}
+	// Reading a project is the moment DAC learns what its objects are called, so it is where the
+	// catalog is told. Every command that works from a settled project reaches here.
+	service.note(lock.Assets)
 	return manifest, lock, nil
 }
 

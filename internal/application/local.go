@@ -63,6 +63,9 @@ func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 	if err != nil {
 		return RemoveResult{}, err
 	}
+	// This is the last moment a project describes the asset about to go, so the catalog is told
+	// before the manifest stops naming it. The object itself stays in the cache.
+	service.note(lock.Assets)
 	if _, exists := manifest.Assets[name]; !exists {
 		return RemoveResult{}, unknownCoordinate(name, manifest.Assets)
 	}
@@ -318,6 +321,16 @@ type CacheObject struct {
 	ObjectDescription
 	// Coordinates names the project assets that resolve to this object.
 	Coordinates []string `json:"coordinates,omitempty"`
+	// Filename is what DAC called these bytes when it stored them, which is the only thing left
+	// saying what an object is once no project names it.
+	Filename string `json:"filename,omitempty"`
+	// SourceURL is where the bytes came from.
+	SourceURL string `json:"sourceUrl,omitempty"`
+	// KnownAs names every coordinate the catalog has recorded for this object. It is a weaker
+	// claim than Coordinates: those resolve to this object now, these once did.
+	KnownAs []string `json:"knownAs,omitempty"`
+	// FirstSeen is when DAC first stored these bytes, and the zero time when nothing recorded it.
+	FirstSeen time.Time `json:"firstSeen"`
 }
 
 // CacheListOptions controls one cache listing.
@@ -333,14 +346,28 @@ type CacheListResult struct {
 	ByteCount   int64         `json:"byteCount"`
 	// MissingCount counts the locked objects this project does not have.
 	MissingCount int `json:"missingCount"`
+	// UnknownCount counts the objects nothing can say anything about, which is the number the
+	// catalog exists to drive to zero.
+	UnknownCount int `json:"unknownCount"`
 }
 
 // CacheList reports the objects in the cache, newest use first.
+//
+// Listing the whole cache asks about the cache rather than about a project, so it answers
+// wherever it is run. A directory with no manifest is not an unusual place to ask what the cache
+// is holding; it is the usual one, because deleting a project is what leaves objects behind that
+// nothing accounts for.
 func (service *Service) CacheList(ctx context.Context, options CacheListOptions) (CacheListResult, error) {
 	// One read serves both the target list and the owner map: a single command cannot see the project change.
 	manifest, lock, err := service.readProject()
 	if err != nil {
-		return CacheListResult{}, err
+		if !options.All {
+			return CacheListResult{}, err
+		}
+		// A listing of the whole cache carries on without a project, and reports no coordinates
+		// of its own. What the objects are is the catalog's answer to give. The listing below
+		// settles err again, because reaching here means it is about to list the whole cache.
+		manifest, lock = project.Manifest{}, project.Lock{}
 	}
 	digests := lockedDigests(manifest, lock)
 	if options.All {
@@ -367,7 +394,14 @@ func (service *Service) CacheList(ctx context.Context, options CacheListOptions)
 			result.MissingCount++
 			continue
 		}
-		result.Objects = append(result.Objects, CacheObject{ObjectDescription: description, Coordinates: owners[value]})
+		object := CacheObject{ObjectDescription: description, Coordinates: owners[value]}
+		if record, known := service.describe(value); known {
+			object.Filename, object.SourceURL = record.Filename, record.SourceURL
+			object.KnownAs, object.FirstSeen = record.KnownAs, record.FirstSeen
+		} else if len(object.Coordinates) == 0 {
+			result.UnknownCount++
+		}
+		result.Objects = append(result.Objects, object)
 		result.ObjectCount++
 		result.ByteCount += description.Size
 	}
@@ -485,6 +519,7 @@ func (service *Service) CacheRemove(ctx context.Context, options CacheRemoveOpti
 	}
 	slices.Sort(result.Digests)
 	slices.Sort(result.Missing)
+	service.forget(result.Digests)
 	return result, nil
 }
 
@@ -502,6 +537,11 @@ func (service *Service) CacheGC(ctx context.Context, options GCOptions) (GCResul
 	}
 	if result.Digests == nil {
 		result.Digests = []string{}
+	}
+	// A record describes what the cache holds, so it goes when the object does. A dry run
+	// removed nothing and so forgets nothing.
+	if !options.DryRun {
+		service.forget(result.Digests)
 	}
 	return result, nil
 }

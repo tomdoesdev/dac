@@ -79,6 +79,8 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	if err != nil {
 		return InfoResult{}, err
 	}
+	// A stale lock arrives here empty, so a project DAC cannot trust records nothing.
+	service.note(lock.Assets)
 	result := InfoResult{
 		Assets:  make([]InfoAsset, 0, len(names)),
 		Summary: InfoSummary{AssetCount: len(names), LockStatus: lockStatus},

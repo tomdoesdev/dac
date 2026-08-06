@@ -87,13 +87,21 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	if conditional {
 		etag = response.ETag
 	}
-	return project.LockAsset{
+	value := project.LockAsset{
 		URL:      source.URL,
 		Digest:   object.Digest,
 		Size:     object.Size,
 		ETag:     etag,
 		Filename: resolvedFilename(response.Filename, source, old),
-	}, "resolved", nil
+	}
+	// These bytes are in the cache now, so this is where they are recorded, rather than only
+	// once the operation around them settles. An operation that is cancelled, or that gives up
+	// because a different asset failed, still leaves behind everything it had already installed.
+	// Observing above is the sharper case: it deliberately stores bytes under the digest they
+	// turned out to have, which no lock file will ever name, so this is the only account of them
+	// there will be.
+	service.noteAsset(coordinate, value)
+	return value, "resolved", nil
 }
 
 // resolvedFilename returns the best name known for an asset.

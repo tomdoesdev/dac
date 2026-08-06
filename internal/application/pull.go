@@ -78,6 +78,9 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 		}
 		lock = written.lock
 	}
+	// The lock is settled here whichever branch above settled it, including the one that agreed
+	// with the manifest and so never reconciled.
+	service.note(lock.Assets)
 	service.Reporter.Plan(coord.Strings(names))
 	assets, err := parallel(ctx, options.Concurrency, names, func(ctx context.Context, name coord.Coordinate) (Asset, error) {
 		value, err := service.pull(ctx, name, manifest.Assets[name], lock.Assets[name], options)
@@ -210,6 +213,9 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 		if _, err := service.Store.Put(ctx, reader, PutExact(object)); err != nil {
 			return contentError(err)
 		}
+		// Recorded as it lands, so a pull interrupted part way through still leaves a cache DAC
+		// can account for.
+		service.noteAsset(coordinate, locked)
 		service.Reporter.Done(name, status)
 		return nil
 	})

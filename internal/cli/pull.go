@@ -21,9 +21,8 @@ func (runner *runner) pullCommand() *urfave.Command {
 		// A pull installs what the lock file already says, and writes the lock file when the project has none yet.
 		Usage: "Install the locked assets, or the ones named, writing the lock file if there is none.",
 		// Naming assets narrows what is fetched, for the job that needs one of them.
-		ArgsUsage:     "[<namespace>/<name>[@<version>]...]",
-		Flags:         flags,
-		ShellComplete: runner.completeCoordinates(),
+		ArgsUsage: "[<namespace>/<name>[@<version>]...]",
+		Flags:     flags,
 		Action: runner.run("pull", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			assets, err := selections(current)
 			if err != nil {

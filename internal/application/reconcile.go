@@ -109,6 +109,9 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			result.resolved[name] = settled[index].status
 		}
 	}
+	// The entries this reconcile carried through were never downloaded, so nothing else records
+	// them. They are as much a part of what the cache holds as the ones it resolved.
+	service.note(result.assets)
 	return result, nil
 }
 

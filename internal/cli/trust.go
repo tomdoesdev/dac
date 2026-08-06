@@ -82,10 +82,9 @@ func (runner *runner) trustAddCommand() *urfave.Command {
 
 func (runner *runner) trustRemoveCommand() *urfave.Command {
 	return &urfave.Command{
-		Name:          "remove",
-		Usage:         "Withdraw trust from one or more hosts.",
-		ArgsUsage:     "<host|url>...",
-		ShellComplete: runner.completeHosts(),
+		Name:      "remove",
+		Usage:     "Withdraw trust from one or more hosts.",
+		ArgsUsage: "<host|url>...",
 		Action: runner.run("trust.remove", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			hosts, err := hostArguments(current)
 			if err != nil {

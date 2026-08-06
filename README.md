@@ -67,7 +67,6 @@ the same changes without modifying the lock file.
 | `dac cache <dir\|list\|gc\|clear\|remove\|scrub>` | Inspect or maintain the cache. |
 | `dac trust <list\|add\|remove\|gc\|path>` | Manage trusted hosts. |
 | `dac config <path\|show>` | Inspect the configuration. |
-| `dac completion <shell>` | Write a shell completion script. |
 
 Run `dac --help` or `dac <command> --help` for all flags.
 
@@ -87,14 +86,6 @@ version. Multiple selectors form one set. An unknown selector reports
 
 `path` accepts an asset without a version only when the asset has one version.
 Otherwise, it reports `asset_ambiguous`.
-
-Enable shell completion with:
-
-```bash
-eval "$(dac completion bash)"
-```
-
-Supported shells are Bash, Zsh, Fish, and PowerShell.
 
 ## Project files
 
@@ -209,6 +200,27 @@ stores objects by SHA-256 digest, so multiple coordinates can share one object.
 `dac cache gc` removes old objects and applies a size limit. `dac cache scrub`
 hashes objects and can repair cache metadata. `dac pull` restores missing or
 damaged objects.
+
+### The object catalog
+
+An object is named on disk by its digest and nothing else, so a project that is
+edited or deleted takes with it the only record of what its objects were. DAC
+keeps that record separately, in `dac/catalog.json` under the XDG data
+directory, beside the trusted-hosts file.
+
+Each record holds the size of an object, when DAC first stored it, and every
+coordinate it has been seen under, each with its own URL, file name, and time
+last seen. DAC adds to it when it downloads an object, and refreshes it whenever
+a command reads a project. A record is dropped when `dac cache gc`,
+`dac cache remove`, or `dac cache clear` removes the object it describes.
+
+`dac cache list --all` reports what the catalog knows, and runs in a directory
+with no project at all. That is the command to run against a cache full of
+objects nothing accounts for: it names each one and reports how many it still
+cannot explain.
+
+The catalog is a description rather than a decision, so nothing fails when it
+cannot be read or written. Delete the file to start it again.
 
 `dac unpack` uses only verified cache objects and never uses the network. It
 selects each output name from the manifest filename, lock filename, or
