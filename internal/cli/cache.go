@@ -293,23 +293,7 @@ func gcText(palette style.Palette, result application.GCResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "%s %s (%s)", verb,
 		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
-	if result.TempCount > 0 {
-		_, _ = fmt.Fprintf(&text, ", %s", plural(result.TempCount, "temporary file"))
-	}
-	if result.SidecarCount > 0 {
-		_, _ = fmt.Fprintf(&text, ", %s", plural(result.SidecarCount, "orphaned sidecar"))
-	}
 	text.WriteByte('.')
-	// Eviction is said separately because it means something else.
-	switch result.EvictedCount {
-	case 0:
-	case result.ObjectCount:
-		text.WriteString(" " + palette.Warn("All of them still in use, to stay within the size bound."))
-	default:
-		_, _ = fmt.Fprintf(&text, " %s", palette.Warn(fmt.Sprintf(
-			"%d of them (%s) still in use, to stay within the size bound.",
-			result.EvictedCount, bytesize.Format(result.EvictedBytes))))
-	}
 	return text.String()
 }
 

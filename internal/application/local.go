@@ -155,16 +155,10 @@ type GCOptions struct {
 
 // GCResult reports the objects that a collection removed or would remove.
 type GCResult struct {
-	Digests      []string `json:"digests"`
-	ObjectCount  int      `json:"objectCount"`
-	ByteCount    int64    `json:"byteCount"`
-	TempCount    int      `json:"tempCount"`
-	SidecarCount int      `json:"sidecarCount"`
-	// EvictedCount and EvictedBytes separate size eviction from age collection.
-	// They are included in ObjectCount and ByteCount, which stay the total.
-	EvictedCount int   `json:"evictedCount"`
-	EvictedBytes int64 `json:"evictedBytes"`
-	DryRun       bool  `json:"dryRun"`
+	Digests     []string `json:"digests"`
+	ObjectCount int      `json:"objectCount"`
+	ByteCount   int64    `json:"byteCount"`
+	DryRun      bool     `json:"dryRun"`
 }
 
 // ConfigPathResult reports the config files one run read, most important first.

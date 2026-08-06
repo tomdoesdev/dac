@@ -326,12 +326,30 @@ func TestGCRemovesOnlyObjectsOlderThanMaxAge(t *testing.T) {
 }
 
 func TestGCDryRunKeepsEverything(t *testing.T) {
-	store := New(t.TempDir())
+	root := t.TempDir()
+	store := New(root)
 	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
+	orphan, err := store.Put(context.Background(), bytes.NewReader([]byte("orphaned metadata")), application.PutAny("", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanPath, err := store.Path(orphan.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(orphanPath); err != nil {
+		t.Fatal(err)
+	}
+	age(t, metaPath(orphanPath), time.Now().Add(-48*time.Hour))
+	temporary := filepath.Join(root, "tmp", "download-abandoned")
+	if err := os.WriteFile(temporary, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	age(t, temporary, time.Now().Add(-48*time.Hour))
 
 	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour, DryRun: true})
 	if err != nil {
@@ -342,6 +360,11 @@ func TestGCDryRunKeepsEverything(t *testing.T) {
 	}
 	if _, valid, err := stored(store, object); err != nil || !valid {
 		t.Fatalf("a dry run removed the object, valid=%v err=%v", valid, err)
+	}
+	for _, path := range []string{metaPath(orphanPath), temporary} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("a dry run removed housekeeping file %s: %v", path, err)
+		}
 	}
 }
 
@@ -391,12 +414,11 @@ func TestClearingLeavesATemporaryFileInFlight(t *testing.T) {
 	}
 	age(t, abandoned, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{All: true})
+	// All makes the temporary-file policy depend only on its safety grace,
+	// regardless of an otherwise conflicting age setting.
+	_, err := store.GC(context.Background(), application.GCOptions{All: true, MaxAge: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.TempCount != 1 {
-		t.Fatalf("clearing removed %d temporary files, want 1", result.TempCount)
 	}
 	for _, path := range []string{running, writing} {
 		if _, err := os.Stat(path); err != nil {
@@ -426,12 +448,9 @@ func TestGCRemovesAbandonedTemporaryFiles(t *testing.T) {
 	age(t, stale, time.Now().Add(-48*time.Hour))
 	age(t, other, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.TempCount != 1 {
-		t.Fatalf("collection removed %d temporary files, want 1", result.TempCount)
 	}
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the abandoned download survived")
@@ -511,12 +530,9 @@ func TestGCRemovesOrphanedSidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 	age(t, metaPath(path), time.Now().Add(-48*time.Hour))
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err = store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.SidecarCount != 1 {
-		t.Fatalf("collection removed %d orphaned sidecars, want 1", result.SidecarCount)
 	}
 	if _, err := os.Stat(metaPath(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the orphaned sidecar survived: %v", err)
@@ -575,8 +591,8 @@ func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
 	if finished.err != nil {
 		t.Fatal(finished.err)
 	}
-	if finished.result.SidecarCount != 1 {
-		t.Fatalf("the sweep removed %d orphaned sidecars once the lock was free, want 1", finished.result.SidecarCount)
+	if _, err := os.Stat(metaPath(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the orphaned sidecar survived after the lock was released: %v", err)
 	}
 }
 
@@ -602,12 +618,9 @@ func TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err = store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.SidecarCount != 0 {
-		t.Fatalf("collection took %d sidecars younger than the cutoff", result.SidecarCount)
 	}
 	if _, err := os.Stat(metaPath(path)); err != nil {
 		t.Fatalf("a sidecar younger than the cutoff was removed: %v", err)
@@ -624,7 +637,7 @@ func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SidecarCount != 0 || result.ObjectCount != 0 {
+	if result.ObjectCount != 0 {
 		t.Fatalf("unexpected collection: %#v", result)
 	}
 	if _, _, err := store.Stat(object.Digest); err != nil {
@@ -632,12 +645,9 @@ func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
 	}
 }
 
-// TestGCDoesNotCountCollectedSidecarsAsOrphans pins the difference between the
-// two ways a sidecar loses its object. Collection removes the pair, and the
-// sweep that follows reads a directory listing taken before it did, so a
-// collected object's sidecar looks exactly like one that was already alone.
-// Counting it reported damage outside DAC for every object DAC itself removed.
-func TestGCDoesNotCountCollectedSidecarsAsOrphans(t *testing.T) {
+// TestGCRemovesAnObjectAndItsSidecar ensures collection preserves the storage
+// invariant that an object and its integrity metadata are removed together.
+func TestGCRemovesAnObjectAndItsSidecar(t *testing.T) {
 	store := New(t.TempDir())
 	object, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), application.PutAny("", 0))
 	if err != nil {
@@ -651,9 +661,6 @@ func TestGCDoesNotCountCollectedSidecarsAsOrphans(t *testing.T) {
 	}
 	if result.ObjectCount != 1 {
 		t.Fatalf("collection removed %d objects, want 1", result.ObjectCount)
-	}
-	if result.SidecarCount != 0 {
-		t.Fatalf("collecting one object reported %d orphaned sidecars, want 0", result.SidecarCount)
 	}
 	path, err := store.Path(object.Digest)
 	if err != nil {
@@ -682,12 +689,9 @@ func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
 	}
 	age(t, stale, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if result.TempCount != 1 {
-		t.Fatalf("collection removed %d temporary files, want 1", result.TempCount)
 	}
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the abandoned sidecar write survived")

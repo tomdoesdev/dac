@@ -28,7 +28,7 @@ func TestCacheGCEvictsToASizeBound(t *testing.T) {
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "30d", "--max-size", "1GiB"))
 	assertSuccess(t, result, "cache.gc")
 	data := result.value["data"].(map[string]any)
-	if data["objectCount"].(float64) != 0 || data["evictedCount"].(float64) != 0 {
+	if data["objectCount"].(float64) != 0 {
 		t.Fatalf("a cache inside its bound lost objects: %#v", data)
 	}
 
@@ -36,18 +36,19 @@ func TestCacheGCEvictsToASizeBound(t *testing.T) {
 	result = runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "30d", "--max-size", "1"))
 	assertSuccess(t, result, "cache.gc")
 	data = result.value["data"].(map[string]any)
-	if data["evictedCount"].(float64) != 2 || data["objectCount"].(float64) != 2 {
+	if data["objectCount"].(float64) != 2 || data["byteCount"].(float64) <= 0 {
 		t.Fatalf("unexpected eviction: %#v", data)
 	}
-	if data["evictedBytes"].(float64) != data["byteCount"].(float64) {
-		t.Fatalf("evicted bytes are not counted in the total: %#v", data)
+	for _, removed := range []string{"tempCount", "sidecarCount", "evictedCount", "evictedBytes"} {
+		if _, found := data[removed]; found {
+			t.Fatalf("removed GC field %q is still reported: %#v", removed, data)
+		}
 	}
 }
 
-// TestCacheGCSaysWhatEvictionCost covers the summary. Collecting what nothing
-// uses is a cache working; taking what a project still wants is a cache too
-// small for this machine, and only one of those is worth acting on.
-func TestCacheGCSaysWhatEvictionCost(t *testing.T) {
+// TestCacheGCReportsEvictionInTheObjectTotal covers the deliberately compact
+// summary shared by age collection and size eviction.
+func TestCacheGCReportsEvictionInTheObjectTotal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.WriteString(writer, strings.Repeat(request.URL.Path, 200))
 	}))
@@ -58,14 +59,8 @@ func TestCacheGCSaysWhatEvictionCost(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL+"/a", "--no-progress")), "add")
 
 	human := run(t, appendArgs(base, "cache", "gc", "--max-age", "30d", "--max-size", "1"))
-	if human.status != ExitOK || !strings.Contains(human.stdout, "All of them still in use, to stay within the size bound.") {
+	if human.status != ExitOK || !strings.Contains(human.stdout, "Removed 1 object") || strings.Contains(human.stdout, "size bound") {
 		t.Fatalf("unexpected eviction summary: %#v", human)
-	}
-
-	// Without a bound the sentence is not there at all.
-	plain := run(t, appendArgs(base, "cache", "gc", "--max-age", "30d"))
-	if plain.status != ExitOK || strings.Contains(plain.stdout, "size bound") {
-		t.Fatalf("an unbounded collection mentioned the bound: %#v", plain)
 	}
 }
 
