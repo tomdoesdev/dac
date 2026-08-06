@@ -277,9 +277,9 @@ func Write[T File](path string, value T) error {
 
 // WriteBytes atomically writes project file bytes that a caller has already marshalled, so lock does not have to encode the same document twice.
 func WriteBytes(path string, data []byte) error {
-	return flock.Hold(context.Background(), path+".lock", func(context.Context) error {
+	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
 		return atomic.WriteFile(path, data, fileMode)
-	})
+	}, flock.RemoveOnRelease())
 }
 
 // WritePair writes matching project files and restores the manifest if the second write fails.

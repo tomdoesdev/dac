@@ -33,6 +33,13 @@ func TestWritePairRoundTrip(t *testing.T) {
 	if err := WritePair(manifestPath, lockPath, manifest, lock); err != nil {
 		t.Fatal(err)
 	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("project write left sidecars behind: %v", entries)
+	}
 
 	readManifest, err := ReadManifest(manifestPath)
 	if err != nil {

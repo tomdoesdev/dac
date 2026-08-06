@@ -18,6 +18,15 @@ func TestDefaultSettings(t *testing.T) {
 	}
 }
 
+func TestRemoveOnReleaseIsOptIn(t *testing.T) {
+	if newSettings(nil).remove {
+		t.Fatal("default settings remove persistent lock files")
+	}
+	if !newSettings([]Option{RemoveOnRelease()}).remove {
+		t.Fatal("RemoveOnRelease did not enable removal")
+	}
+}
+
 // A backoff that counts down would make each wait shorter than the one before
 // it, so the limit holds the first wait as its floor.
 func TestBackoffLimitCannotFallBelowTheFirstWait(t *testing.T) {

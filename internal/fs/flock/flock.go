@@ -18,6 +18,15 @@ import (
 // TryAcquire returns it. Acquire waits instead of returning it.
 var ErrLocked = errors.New("another process holds the lock")
 
+// HiddenPath returns a hidden sidecar lock path beside path.
+func HiddenPath(path string) string {
+	name := filepath.Base(path)
+	if name[0] != '.' {
+		name = "." + name
+	}
+	return filepath.Join(filepath.Dir(path), name+".lock")
+}
+
 // Mode is the kind of lock to take.
 type Mode int
 
@@ -42,6 +51,7 @@ type Lock struct {
 	path    string
 	mode    Mode
 	ownFile bool
+	remove  bool
 
 	once sync.Once
 	err  error
@@ -51,31 +61,72 @@ type Lock struct {
 // It creates the file and its parent directories unless WithoutCreate says not to.
 func Acquire(ctx context.Context, path string, options ...Option) (*Lock, error) {
 	settings := newSettings(options)
-	file, err := open(path, settings)
-	if err != nil {
-		return nil, err
+	if settings.remove && settings.mode == Shared {
+		return nil, pathError(path, errors.New("remove-on-release requires an exclusive lock"))
 	}
-	lock, err := acquire(ctx, file, path, true, settings)
-	if err != nil {
-		_ = file.Close()
-		return nil, err
+	for {
+		file, err := open(path, settings)
+		if err != nil {
+			return nil, err
+		}
+		lock, err := acquire(ctx, file, path, true, settings)
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		if !settings.remove {
+			return lock, nil
+		}
+		current, err := currentFile(file, path)
+		if err != nil {
+			_ = lock.Release()
+			return nil, err
+		}
+		if current {
+			lock.remove = true
+			return lock, nil
+		}
+		// This descriptor refers to a predecessor that was removed while the
+		// acquisition waited. Reopen the pathname to preserve one lock domain.
+		if err := lock.Release(); err != nil {
+			return nil, err
+		}
 	}
-	return lock, nil
 }
 
 // TryAcquire makes one attempt and never waits.
 // It returns an error that matches ErrLocked when another holder has the lock.
 func TryAcquire(path string, options ...Option) (*Lock, error) {
 	settings := newSettings(options)
-	file, err := open(path, settings)
-	if err != nil {
-		return nil, err
+	if settings.remove && settings.mode == Shared {
+		return nil, pathError(path, errors.New("remove-on-release requires an exclusive lock"))
 	}
-	if err := sys.Lock(file.Fd(), settings.mode == Shared, false); err != nil {
-		_ = file.Close()
-		return nil, pathError(path, translate(err))
+	for {
+		file, err := open(path, settings)
+		if err != nil {
+			return nil, err
+		}
+		if err := sys.Lock(file.Fd(), settings.mode == Shared, false); err != nil {
+			_ = file.Close()
+			return nil, pathError(path, translate(err))
+		}
+		lock := newLock(file, path, true, settings.mode)
+		if !settings.remove {
+			return lock, nil
+		}
+		current, err := currentFile(file, path)
+		if err != nil {
+			_ = lock.Release()
+			return nil, err
+		}
+		if current {
+			lock.remove = true
+			return lock, nil
+		}
+		if err := lock.Release(); err != nil {
+			return nil, err
+		}
 	}
-	return newLock(file, path, true, settings.mode), nil
 }
 
 // AcquireFile locks a file that the caller opened.
@@ -121,18 +172,30 @@ func (lock *Lock) String() string {
 // A close releases the lock even when the unlock reports a failure, so the
 // close error only matters when the unlock succeeded.
 func (lock *Lock) release() error {
+	var removeErr error
+	if lock.ownFile && lock.remove {
+		current, err := currentFile(lock.file, lock.path)
+		if err != nil {
+			removeErr = err
+		} else if current {
+			removeErr = os.Remove(lock.path)
+			if errors.Is(removeErr, fs.ErrNotExist) {
+				removeErr = nil
+			}
+		}
+	}
 	unlockErr := sys.Unlock(lock.file.Fd())
 	if !lock.ownFile {
 		if unlockErr != nil {
 			return pathError(lock.path, unlockErr)
 		}
-		return nil
+		return removeErr
 	}
 	closeErr := lock.file.Close()
 	if unlockErr != nil {
-		return pathError(lock.path, unlockErr)
+		unlockErr = pathError(lock.path, unlockErr)
 	}
-	return closeErr
+	return errors.Join(removeErr, unlockErr, closeErr)
 }
 
 // acquire takes the lock, and waits with a backoff while another holder has it.
@@ -161,6 +224,24 @@ func acquire(ctx context.Context, file *os.File, path string, ownFile bool, sett
 
 func newLock(file *os.File, path string, ownFile bool, mode Mode) *Lock {
 	return &Lock{file: file, path: path, mode: mode, ownFile: ownFile}
+}
+
+// currentFile reports whether path still names the inode held by file. A
+// remove-on-release waiter can acquire an unlinked predecessor, so acquisition
+// and removal both validate the pathname before acting on it.
+func currentFile(file *os.File, path string) (bool, error) {
+	opened, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	current, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(opened, current), nil
 }
 
 // open opens the lock file for reading and writing.

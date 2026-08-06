@@ -76,9 +76,9 @@ func writeMeta(path string, value meta) error {
 	if err != nil {
 		return err
 	}
-	return flock.Hold(context.Background(), path+".lock", func(context.Context) error {
+	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
 		return atomic.WriteFile(path, data, metaFileMode)
-	})
+	}, flock.RemoveOnRelease())
 }
 
 // cancelReader stops a hash when the command that asked for it ends.

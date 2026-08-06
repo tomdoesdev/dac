@@ -64,11 +64,11 @@ func (store *Store) Load() (List, error) {
 // changed, and saved would keep only one of the two changes.
 func (store *Store) Update(ctx context.Context, change func(List) (List, error)) (List, error) {
 	var updated List
-	err := flock.Hold(ctx, store.Path+".lock", func(context.Context) error {
+	err := flock.Hold(ctx, flock.HiddenPath(store.Path), func(context.Context) error {
 		var changeErr error
 		updated, changeErr = store.write(change)
 		return changeErr
-	})
+	}, flock.RemoveOnRelease())
 	if err != nil {
 		return List{}, err
 	}

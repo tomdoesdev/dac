@@ -2,6 +2,10 @@
 description = "Build DAC in the project bin directory."
 run = "mkdir -p bin && go build -o bin/dac ./cmd/dac"
 
+[tasks.build-dacserve]
+description = "Build the local test origin server in the project bin directory."
+run = "mkdir -p bin && go build -o bin/dacserve ./cmd/dacserve"
+
 [tasks.test]
 description = "Run all Go tests with the race detector."
 run = "go test -race ./..."

@@ -44,9 +44,9 @@ func DecodeStrict(data []byte, value any) error {
 
 // WriteAtomic locks path, writes data through a synced temporary file, and renames it once.
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
-	return flock.Hold(context.Background(), path+".lock", func(context.Context) error {
+	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
 		return atomic.WriteFile(path, data, mode)
-	})
+	}, flock.RemoveOnRelease())
 }
 
 // maxDepth bounds how deeply the duplicate-key scan will nest.

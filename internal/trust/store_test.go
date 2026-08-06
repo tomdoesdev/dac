@@ -75,7 +75,7 @@ func TestUpdateWritesAFileDACCanReadBack(t *testing.T) {
 // race: without the lock, two runs adding one host each would keep one host.
 func TestUpdateWaitsForAnotherProcessHoldingTheFile(t *testing.T) {
 	store := testStore(t)
-	held, err := flock.TryAcquire(store.Path + ".lock")
+	held, err := flock.TryAcquire(flock.HiddenPath(store.Path))
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
@@ -95,6 +95,9 @@ func TestUpdateWaitsForAnotherProcessHoldingTheFile(t *testing.T) {
 		return updated, nil
 	}); err != nil {
 		t.Fatalf("Update after release: %v", err)
+	}
+	if _, err := os.Stat(flock.HiddenPath(store.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transient lock file survived Update: %v", err)
 	}
 }
 

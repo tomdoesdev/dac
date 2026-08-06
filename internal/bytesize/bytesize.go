@@ -75,3 +75,10 @@ func Parse(value string) (int64, error) {
 	}
 	return amount, nil
 }
+
+// ParseRate reads a byte rate such as 256KiB/s. The per-second suffix is
+// optional, and is accepted so that a rate reads like a rate.
+func ParseRate(value string) (int64, error) {
+	trimmed, _ := strings.CutSuffix(strings.TrimSpace(value), "/s")
+	return Parse(trimmed)
+}

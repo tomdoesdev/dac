@@ -41,6 +41,16 @@ func TestLockExcludesAndReleases(t *testing.T) {
 	}
 }
 
+func TestHiddenPathKeepsTheLockBesideItsFile(t *testing.T) {
+	directory := t.TempDir()
+	if got := flock.HiddenPath(filepath.Join(directory, "dac.json")); got != filepath.Join(directory, ".dac.json.lock") {
+		t.Fatalf("HiddenPath returned %q", got)
+	}
+	if got := flock.HiddenPath(filepath.Join(directory, ".config")); got != filepath.Join(directory, ".config.lock") {
+		t.Fatalf("HiddenPath added a second dot: %q", got)
+	}
+}
+
 func TestLockSerializesHolders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "object.lock")
 	var holders, peak atomic.Int32
@@ -69,6 +79,71 @@ func TestLockSerializesHolders(t *testing.T) {
 	group.Wait()
 	if got := peak.Load(); got != 1 {
 		t.Fatalf("%d holders held the lock at once", got)
+	}
+}
+
+func TestRemoveOnReleaseSerializesHoldersAndRemovesTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".object.lock")
+	var holders, peak atomic.Int32
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			err := flock.Hold(context.Background(), path, func(context.Context) error {
+				current := holders.Add(1)
+				defer holders.Add(-1)
+				for {
+					highest := peak.Load()
+					if current <= highest || peak.CompareAndSwap(highest, current) {
+						break
+					}
+				}
+				time.Sleep(time.Millisecond)
+				return nil
+			}, flock.RemoveOnRelease())
+			if err != nil {
+				t.Errorf("Hold returned %v", err)
+			}
+		})
+	}
+	group.Wait()
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("%d holders held a transient lock at once", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("transient lock file survived release: %v", err)
+	}
+}
+
+func TestRemoveOnReleaseDoesNotDeleteAReplacementPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".object.lock")
+	lock, err := flock.Acquire(context.Background(), path, flock.RemoveOnRelease())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "replacement" {
+		t.Fatalf("replacement path holds %q: %v", data, err)
+	}
+}
+
+func TestRemoveOnReleaseRejectsSharedLocks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".object.lock")
+	_, err := flock.Acquire(context.Background(), path,
+		flock.WithMode(flock.Shared), flock.RemoveOnRelease())
+	if err == nil {
+		t.Fatal("a removable shared lock was accepted")
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("rejected settings created a lock file: %v", statErr)
 	}
 }
 

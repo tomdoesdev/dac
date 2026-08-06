@@ -14,6 +14,7 @@ type settings struct {
 	fileMode   fs.FileMode
 	dirMode    fs.FileMode
 	create     bool
+	remove     bool
 	firstDelay time.Duration
 	limitDelay time.Duration
 }
@@ -62,6 +63,17 @@ func WithDirMode(mode fs.FileMode) Option {
 // A path that does not exist then fails with fs.ErrNotExist.
 func WithoutCreate() Option {
 	return func(current *settings) { current.create = false }
+}
+
+// RemoveOnRelease removes an exclusive lock file after its critical section.
+// A waiter verifies that the descriptor it locked still matches the pathname
+// before it proceeds, so removing and recreating the path cannot split holders
+// across two independently locked inodes.
+//
+// Combining it with Shared returns an error. This option has no effect on
+// AcquireFile because that file belongs to the caller.
+func RemoveOnRelease() Option {
+	return func(current *settings) { current.remove = true }
 }
 
 // WithBackoff sets the first wait and the longest wait between two attempts.

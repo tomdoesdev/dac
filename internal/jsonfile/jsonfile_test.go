@@ -118,7 +118,7 @@ func TestWriteAtomicReplacesAndSetsMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
+	if len(entries) != 1 {
 		t.Fatalf("directory holds %d entries", len(entries))
 	}
 }
