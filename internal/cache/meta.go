@@ -25,8 +25,6 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
-	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 )
 
@@ -34,6 +32,8 @@ const (
 	metaVersion  = 1
 	metaSuffix   = ".meta"
 	metaFileMode = 0o644
+	// copyBufferSize is the buffer the whole-object hash reads through, in place of io.Copy's 32 KiB default.
+	copyBufferSize = 1 << 20
 )
 
 // meta describes the object DAC installed, as it was at the moment of install.
@@ -76,9 +76,7 @@ func writeMeta(path string, value meta) error {
 	if err != nil {
 		return err
 	}
-	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
-		return atomic.WriteFile(path, data, metaFileMode)
-	}, flock.RemoveOnRelease())
+	return jsonfile.WriteAtomic(path, data, metaFileMode)
 }
 
 // cancelReader stops a hash when the command that asked for it ends.
@@ -139,7 +137,9 @@ func hashFile(ctx context.Context, path string) (string, os.FileInfo, error) {
 	}
 	defer func() { _ = file.Close() }()
 	hashValue := sha256.New()
-	if _, err := io.Copy(hashValue, &cancelReader{ctx: ctx, reader: file}); err != nil {
+	// sha256 does not implement ReaderFrom, so io.Copy would fall back to its 32 KiB buffer and pay a read
+	// syscall for every 32 KiB hashed. A scrub reads the whole cache, so that ratio is worth setting.
+	if _, err := io.CopyBuffer(hashValue, &cancelReader{ctx: ctx, reader: file}, make([]byte, copyBufferSize)); err != nil {
 		return "", nil, err
 	}
 	info, err := file.Stat()

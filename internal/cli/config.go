@@ -28,10 +28,7 @@ func (runner *runner) configPathCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "path",
 		Usage: "Print the config files DAC read, most important first.",
-		Action: runner.run("config.path", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("config.path", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			settings, err := runner.config(current)
 			if err != nil {
 				return nil, "", err
@@ -47,10 +44,7 @@ func (runner *runner) configShowCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "show",
 		Usage: "Print the effective configuration as a config file.",
-		Action: runner.run("config.show", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("config.show", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			settings, err := runner.config(current)
 			if err != nil {
 				return nil, "", err

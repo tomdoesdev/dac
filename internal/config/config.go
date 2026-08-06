@@ -345,24 +345,43 @@ type Setting struct {
 	Source string `json:"source"`
 }
 
+// settingKey is one setting and everything the TOML form needs to write it.
+// Rendering reads this table instead of switching on key names, so a setting added here reaches both
+// Settings and TOML from one edit. The shape this replaced decided quoting in a switch with no default,
+// where a setting nobody added a case for was dropped from dac config show with no error at all.
+type settingKey struct {
+	name  string
+	value string
+	// section names the TOML table this key opens, and is empty for a key that continues the current one.
+	section string
+	// quoted writes the value as a TOML string rather than a bare literal.
+	quoted bool
+	// unsetNote replaces the assignment when the value is empty, for the paths DAC resolves for itself.
+	unsetNote string
+}
+
+// settingKeys returns every effective value in the order the TOML form writes them.
+func (config *Config) settingKeys() []settingKey {
+	return []settingKey{
+		{name: "transfer.timeout", value: FormatDuration(config.Timeout), quoted: true},
+		{name: "transfer.retries", value: strconv.Itoa(config.Retries)},
+		{name: "transfer.concurrency", value: strconv.Itoa(config.Concurrency)},
+		{name: "transfer.download-parts", value: strconv.Itoa(config.DownloadParts)},
+		{name: "transfer.max-size", value: sizeText(config.MaxSize), quoted: true},
+		{name: "transfer.progress", value: strconv.FormatBool(config.Progress)},
+		{name: "cache.dir", value: config.CacheDir, section: "cache", quoted: true,
+			unsetNote: "# dir is unset, so DAC uses the XDG cache location"},
+		{name: "cache.max-age", value: FormatDuration(config.MaxAge), quoted: true},
+		{name: "cache.max-size", value: sizeText(config.CacheMaxSize), quoted: true},
+		{name: "trust.file", value: config.TrustFile, section: "trust", quoted: true,
+			unsetNote: "# file is unset, so DAC uses the XDG data location"},
+		{name: "trust.max-age", value: FormatDuration(config.TrustMaxAge), quoted: true},
+	}
+}
+
 // Settings returns every effective value with the file that supplied it, in the order the TOML form writes them.
 func (config *Config) Settings() []Setting {
-	keys := []struct {
-		name  string
-		value string
-	}{
-		{"transfer.timeout", FormatDuration(config.Timeout)},
-		{"transfer.retries", strconv.Itoa(config.Retries)},
-		{"transfer.concurrency", strconv.Itoa(config.Concurrency)},
-		{"transfer.download-parts", strconv.Itoa(config.DownloadParts)},
-		{"transfer.max-size", sizeText(config.MaxSize)},
-		{"transfer.progress", strconv.FormatBool(config.Progress)},
-		{"cache.dir", config.CacheDir},
-		{"cache.max-age", FormatDuration(config.MaxAge)},
-		{"cache.max-size", sizeText(config.CacheMaxSize)},
-		{"trust.file", config.TrustFile},
-		{"trust.max-age", FormatDuration(config.TrustMaxAge)},
-	}
+	keys := config.settingKeys()
 	settings := make([]Setting, 0, len(keys))
 	for _, key := range keys {
 		settings = append(settings, Setting{Key: key.name, Value: key.value, Source: config.Sources[key.name]})
@@ -397,34 +416,22 @@ func FormatDuration(value time.Duration) string {
 func (config *Config) TOML() string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "schema-version = %d\n\n[transfer]\n", SchemaVersion)
-	for _, setting := range config.Settings() {
-		switch setting.Key {
-		case "cache.dir":
-			text.WriteString("\n[cache]\n")
-			if config.CacheDir == "" {
-				// Nothing configured it, so DAC resolves it from the XDG cache location.
-				_, _ = fmt.Fprintf(&text, "# dir is unset, so DAC uses the XDG cache location\n")
-				continue
-			}
-			_, _ = fmt.Fprintf(&text, "dir = %q  # %s\n", config.CacheDir, setting.Source)
-			continue
-		case "trust.file":
-			text.WriteString("\n[trust]\n")
-			if config.TrustFile == "" {
-				// Nothing configured it, so DAC resolves it from the XDG data location.
-				_, _ = fmt.Fprintf(&text, "# file is unset, so DAC uses the XDG data location\n")
-				continue
-			}
-			_, _ = fmt.Fprintf(&text, "file = %q  # %s\n", config.TrustFile, setting.Source)
+	for _, key := range config.settingKeys() {
+		if key.section != "" {
+			_, _ = fmt.Fprintf(&text, "\n[%s]\n", key.section)
+		}
+		// Nothing configured the value, so DAC resolves it and says where from.
+		if key.value == "" && key.unsetNote != "" {
+			text.WriteString(key.unsetNote + "\n")
 			continue
 		}
-		key := setting.Key[strings.Index(setting.Key, ".")+1:]
-		switch setting.Key {
-		case "transfer.retries", "transfer.concurrency", "transfer.download-parts", "transfer.progress":
-			_, _ = fmt.Fprintf(&text, "%s = %s  # %s\n", key, setting.Value, setting.Source)
-		case "transfer.timeout", "transfer.max-size", "cache.max-age", "cache.max-size", "trust.max-age":
-			_, _ = fmt.Fprintf(&text, "%s = %q  # %s\n", key, setting.Value, setting.Source)
+		name := key.name[strings.Index(key.name, ".")+1:]
+		source := config.Sources[key.name]
+		if key.quoted {
+			_, _ = fmt.Fprintf(&text, "%s = %q  # %s\n", name, key.value, source)
+			continue
 		}
+		_, _ = fmt.Fprintf(&text, "%s = %s  # %s\n", name, key.value, source)
 	}
 	return text.String()
 }

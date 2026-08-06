@@ -38,9 +38,7 @@ func TestFetcherDecoratorRunsOnceForARedirectedAsset(t *testing.T) {
 	client := httpclient.New(httpclient.Options{Timeout: time.Second})
 	defer client.Close()
 	var calls atomic.Int32
-	decorated := application.DecorateFetcher(client, func(next application.Fetcher) application.Fetcher {
-		return countingFetcher{next: next, calls: &calls}
-	})
+	decorated := countingFetcher{next: client, calls: &calls}
 	response, err := decorated.Fetch(context.Background(), application.FetchRequest{
 		URL:               server.URL + "/source",
 		AllowInsecureHTTP: true,

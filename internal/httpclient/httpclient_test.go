@@ -272,6 +272,71 @@ func TestFetchRejectsUnsafeRedirect(t *testing.T) {
 	}
 }
 
+// redirectOnce answers the first host with a redirect to the second, and the second with an asset,
+// so a test can send a request across hosts that do not exist without reaching a network.
+func redirectOnce(from, to string) TransportDecorator {
+	return func(http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Host == from {
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": {to}},
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    request,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{},
+				Body:          io.NopCloser(strings.NewReader("asset")),
+				ContentLength: 5,
+				Request:       request,
+			}, nil
+		})
+	}
+}
+
+// The permission to use plain HTTP belongs to one asset rather than to the client, so it travels
+// on the request context. These two tests are the pair that gives it meaning: the permission has
+// to still be readable at a redirect, which is the hop a rule applied only to the URL the caller
+// named would miss, and without it the same redirect is refused.
+func TestAPermittedAssetMayBeRedirectedOverPlainHTTP(t *testing.T) {
+	client := New(Options{
+		Timeout:             time.Second,
+		TransportDecorators: []TransportDecorator{redirectOnce("source.example.com", "http://origin.example.com/asset")},
+	})
+	defer client.Close()
+
+	response, err := client.Fetch(context.Background(), application.FetchRequest{
+		URL:               "http://source.example.com/asset",
+		AllowInsecureHTTP: true,
+	})
+	if err != nil {
+		t.Fatalf("a permitted asset was refused at its redirect: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "asset" {
+		t.Fatalf("body = %q, want the asset from the redirect target", body)
+	}
+}
+
+func TestAnUnpermittedAssetIsNotRedirectedOverPlainHTTP(t *testing.T) {
+	client := New(Options{
+		Timeout:             time.Second,
+		TransportDecorators: []TransportDecorator{redirectOnce("source.example.com", "http://origin.example.com/asset")},
+	})
+	defer client.Close()
+
+	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: "https://source.example.com/asset"})
+	if !errors.Is(err, urlpolicy.ErrNotPermitted) {
+		t.Fatalf("expected the redirect to plain HTTP to be refused, got %v", err)
+	}
+}
+
 func TestFetchRejectsEncodedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Encoding", "gzip")

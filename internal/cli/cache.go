@@ -51,10 +51,7 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 			},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what collection would remove."},
 		},
-		Action: runner.run("cache.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("cache.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			maxAge, err := runner.maximumAge(current)
 			if err != nil {
 				return nil, "", err
@@ -90,14 +87,7 @@ func (runner *runner) cacheScrubCommand() *urfave.Command {
 			&urfave.BoolFlag{Name: "all", Usage: "Check every object in the cache instead of this project's."},
 			&urfave.BoolFlag{Name: "repair", Usage: "Remove the objects that fail."},
 		},
-		Action: runner.run("cache.scrub", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
+		Action: runner.runStore("cache.scrub", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
 			result, err := service.VerifyCache(ctx, application.VerifyCacheOptions{
 				All:    current.Bool("all"),
 				Repair: current.Bool("repair"),
@@ -123,10 +113,7 @@ func (runner *runner) cacheDirCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "dir",
 		Usage: "Print the resolved cache directory.",
-		Action: runner.run("cache.dir", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("cache.dir", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			root, err := runner.cacheRoot(current)
 			if err != nil {
 				return nil, "", err
@@ -143,14 +130,7 @@ func (runner *runner) cacheListCommand() *urfave.Command {
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "all", Usage: "List every object in the cache instead of this project's."},
 		},
-		Action: runner.run("cache.list", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
+		Action: runner.runStore("cache.list", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
 			result, err := service.CacheList(ctx, application.CacheListOptions{All: current.Bool("all")})
 			if err != nil {
 				return nil, "", err
@@ -167,14 +147,7 @@ func (runner *runner) cacheClearCommand() *urfave.Command {
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what clearing would remove."},
 		},
-		Action: runner.run("cache.clear", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
+		Action: runner.runStore("cache.clear", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
 			// Clear needs no prompt because dry-run is available and pull restores objects.
 			result, err := service.CacheClear(ctx, current.Bool("dry-run"))
 			if err != nil {
@@ -293,54 +266,18 @@ func gcText(palette style.Palette, result application.GCResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "%s %s (%s)", verb,
 		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
-	if result.TempCount > 0 {
-		_, _ = fmt.Fprintf(&text, ", %s", plural(result.TempCount, "temporary file"))
-	}
-	if result.SidecarCount > 0 {
-		_, _ = fmt.Fprintf(&text, ", %s", plural(result.SidecarCount, "orphaned sidecar"))
-	}
 	text.WriteByte('.')
-	// Eviction is said separately because it means something else.
-	switch result.EvictedCount {
-	case 0:
-	case result.ObjectCount:
-		text.WriteString(" " + palette.Warn("All of them still in use, to stay within the size bound."))
-	default:
-		_, _ = fmt.Fprintf(&text, " %s", palette.Warn(fmt.Sprintf(
-			"%d of them (%s) still in use, to stay within the size bound.",
-			result.EvictedCount, bytesize.Format(result.EvictedBytes))))
-	}
 	return text.String()
 }
 
 // maximumCacheSize reads the collection size bound, preferring the flag over the config.
 func (runner *runner) maximumCacheSize(current *urfave.Command) (int64, error) {
-	if current.IsSet("max-size") {
-		size, err := config.ParseSize(current.String("max-size"))
-		if err != nil {
-			return 0, fault.Wrap("invalid_arguments", "The maximum size is invalid.", err)
-		}
-		return size, nil
-	}
-	settings, err := runner.config(current)
-	if err != nil {
-		return 0, err
-	}
-	return settings.CacheMaxSize, nil
+	return flagOrConfig(runner, current, "max-size", "The maximum size is invalid.", config.ParseSize,
+		func(settings *config.Config) int64 { return settings.CacheMaxSize })
 }
 
 // maximumAge reads the collection age, preferring the flag over the config.
 func (runner *runner) maximumAge(current *urfave.Command) (time.Duration, error) {
-	if current.IsSet("max-age") {
-		age, err := config.ParseDuration(current.String("max-age"))
-		if err != nil {
-			return 0, fault.Wrap("invalid_arguments", "The maximum age is invalid.", err)
-		}
-		return age, nil
-	}
-	settings, err := runner.config(current)
-	if err != nil {
-		return 0, err
-	}
-	return settings.MaxAge, nil
+	return flagOrConfig(runner, current, "max-age", "The maximum age is invalid.", config.ParseDuration,
+		func(settings *config.Config) time.Duration { return settings.MaxAge })
 }

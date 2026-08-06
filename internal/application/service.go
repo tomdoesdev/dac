@@ -109,17 +109,6 @@ type Fetcher interface {
 	Fetch(ctx context.Context, request FetchRequest) (*FetchResponse, error)
 }
 
-// FetcherDecorator adds source behavior before the terminal fetcher runs.
-type FetcherDecorator func(Fetcher) Fetcher
-
-// DecorateFetcher builds the source stage of the download pipeline.
-func DecorateFetcher(fetcher Fetcher, decorators ...FetcherDecorator) Fetcher {
-	for index := len(decorators) - 1; index >= 0; index-- {
-		fetcher = decorators[index](fetcher)
-	}
-	return fetcher
-}
-
 // HostTrust reports whether DAC is willing to download from a host.
 // Info answers without making a request, so it asks the trusted-hosts file
 // rather than the transport stage that enforces the same answer.

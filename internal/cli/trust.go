@@ -37,10 +37,7 @@ func (runner *runner) trustListCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "list",
 		Usage: "List the trusted hosts and when each was last used.",
-		Action: runner.run("trust.list", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("trust.list", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			store, list, err := runner.trustFile(current)
 			if err != nil {
 				return nil, "", err
@@ -71,16 +68,12 @@ func (runner *runner) trustAddCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			var added []string
-			updated, err := store.Update(ctx, func(list trust.List) (trust.List, error) {
-				var changed trust.List
-				changed, added = list.Add(hosts, time.Now().UTC())
-				return changed, nil
+			added, err := runner.changeTrust(ctx, store, func(list trust.List) (trust.List, []string) {
+				return list.Add(hosts, time.Now().UTC())
 			})
 			if err != nil {
-				return nil, "", trustWriteError(err)
+				return nil, "", err
 			}
-			runner.trustList = updated
 			result := application.TrustAddResult{Path: store.Path, Added: added, Present: without(hosts, added)}
 			return result, trustAddText(runner.stdoutPalette, result), nil
 		}),
@@ -102,16 +95,12 @@ func (runner *runner) trustRemoveCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			var removed []string
-			updated, err := store.Update(ctx, func(list trust.List) (trust.List, error) {
-				var changed trust.List
-				changed, removed = list.Remove(hosts)
-				return changed, nil
+			removed, err := runner.changeTrust(ctx, store, func(list trust.List) (trust.List, []string) {
+				return list.Remove(hosts)
 			})
 			if err != nil {
-				return nil, "", trustWriteError(err)
+				return nil, "", err
 			}
-			runner.trustList = updated
 			result := application.TrustRemoveResult{Path: store.Path, Removed: removed, Absent: without(hosts, removed)}
 			return result, trustRemoveText(runner.stdoutPalette, result), nil
 		}),
@@ -133,10 +122,7 @@ func (runner *runner) trustGCCommand() *urfave.Command {
 			},
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what collection would withdraw."},
 		},
-		Action: runner.run("trust.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("trust.gc", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			maxAge, err := runner.trustMaximumAge(current)
 			if err != nil {
 				return nil, "", err
@@ -151,15 +137,12 @@ func (runner *runner) trustGCCommand() *urfave.Command {
 			if dryRun {
 				_, collected = list.Collect(cutoff)
 			} else {
-				updated, err := store.Update(ctx, func(list trust.List) (trust.List, error) {
-					var changed trust.List
-					changed, collected = list.Collect(cutoff)
-					return changed, nil
+				collected, err = runner.changeTrust(ctx, store, func(list trust.List) (trust.List, []string) {
+					return list.Collect(cutoff)
 				})
 				if err != nil {
-					return nil, "", trustWriteError(err)
+					return nil, "", err
 				}
-				runner.trustList = updated
 			}
 			result := application.TrustGCResult{
 				Path: store.Path, Hosts: collected, HostCount: len(collected), DryRun: dryRun,
@@ -173,10 +156,7 @@ func (runner *runner) trustPathCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:  "path",
 		Usage: "Print the resolved trusted-hosts file.",
-		Action: runner.run("trust.path", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("trust.path", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			store, _, err := runner.trustFile(current)
 			if err != nil {
 				return nil, "", err
@@ -185,6 +165,24 @@ func (runner *runner) trustPathCommand() *urfave.Command {
 			return application.TrustPathResult{Path: store.Path}, store.Path, nil
 		}),
 	}
+}
+
+// changeTrust applies one change to the trusted-hosts file under its lock and reports the hosts it touched.
+// Replacing the loaded list is the reason this is one method rather than four call sites: networkService
+// builds the refusal from runner.trustList, and a caller that wrote the file but left the stale list would
+// refuse the host it had just trusted. See trustSource.
+func (runner *runner) changeTrust(ctx context.Context, store *trust.Store, change func(trust.List) (trust.List, []string)) ([]string, error) {
+	var affected []string
+	updated, err := store.Update(ctx, func(list trust.List) (trust.List, error) {
+		var changed trust.List
+		changed, affected = change(list)
+		return changed, nil
+	})
+	if err != nil {
+		return nil, trustWriteError(err)
+	}
+	runner.trustList = updated
+	return affected, nil
 }
 
 // trustSource trusts the host of an add's source URL before the request goes out.
@@ -199,31 +197,16 @@ func (runner *runner) trustSource(ctx context.Context, current *urfave.Command, 
 	if err != nil {
 		return err
 	}
-	updated, err := store.Update(ctx, func(list trust.List) (trust.List, error) {
-		changed, _ := list.Add([]string{host}, time.Now().UTC())
-		return changed, nil
+	_, err = runner.changeTrust(ctx, store, func(list trust.List) (trust.List, []string) {
+		return list.Add([]string{host}, time.Now().UTC())
 	})
-	if err != nil {
-		return trustWriteError(err)
-	}
-	runner.trustList = updated
-	return nil
+	return err
 }
 
 // trustMaximumAge reads the collection age, preferring the flag over the config.
 func (runner *runner) trustMaximumAge(current *urfave.Command) (time.Duration, error) {
-	if current.IsSet("max-age") {
-		age, err := config.ParseDuration(current.String("max-age"))
-		if err != nil {
-			return 0, fault.Wrap("invalid_arguments", "The maximum age is invalid.", err)
-		}
-		return age, nil
-	}
-	settings, err := runner.config(current)
-	if err != nil {
-		return 0, err
-	}
-	return settings.TrustMaxAge, nil
+	return flagOrConfig(runner, current, "max-age", "The maximum age is invalid.", config.ParseDuration,
+		func(settings *config.Config) time.Duration { return settings.TrustMaxAge })
 }
 
 // hostArguments reads the hosts a trust command acts on, accepting URLs for them.

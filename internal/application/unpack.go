@@ -15,8 +15,8 @@ import (
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/filename"
 	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
@@ -51,17 +51,15 @@ type unpackTarget struct {
 	source      string
 	destination string
 	object      Object
-	staged      *unpackStage
+	staged      *atomic.File
 	commit      *atomic.Commit
 }
 
-// unpackStage owns the atomic write for one target until commit transfers that
-// ownership to an atomic.Commit.
-type unpackStage struct {
-	file *atomic.File
-}
-
-const unpackTempPrefix = ".dac-unpack-"
+const (
+	unpackTempPrefix = ".dac-unpack-"
+	// copyBufferSize is the buffer each staged file is copied through, in place of io.Copy's 32 KiB default.
+	copyBufferSize = 1 << 20
+)
 
 // Unpack writes selected cached assets under their friendly file names.
 func (service *Service) Unpack(ctx context.Context, options UnpackOptions) (UnpackResult, error) {
@@ -340,7 +338,7 @@ func stageUnpack(ctx context.Context, targets []*unpackTarget) error {
 // that deletes files it finds there had better be certain no other unpack is
 // running. They are inert, and removing one is a matter for whoever owns the
 // directory.
-func stageUnpackFile(ctx context.Context, destination, source string, expected Object) (*unpackStage, error) {
+func stageUnpackFile(ctx context.Context, destination, source string, expected Object) (*atomic.File, error) {
 	input, err := os.Open(source)
 	if err != nil {
 		return nil, err
@@ -354,12 +352,15 @@ func stageUnpackFile(ctx context.Context, destination, source string, expected O
 	failed := true
 	defer func() {
 		if failed {
-			output.discard()
+			_ = output.Discard()
 		}
 	}()
 
 	hashValue := sha256.New()
-	written, err := io.Copy(io.MultiWriter(output.file, hashValue), &contextReader{ctx: ctx, reader: input})
+	// Neither a hash nor a MultiWriter implements ReaderFrom, so io.Copy would fall back to its 32 KiB
+	// buffer and pay a read and a write syscall for every 32 KiB unpacked. The buffer is sized for the
+	// whole-file copies this path actually does.
+	written, err := io.CopyBuffer(io.MultiWriter(output, hashValue), &contextReader{ctx: ctx, reader: input}, make([]byte, copyBufferSize))
 	if err != nil {
 		return nil, err
 	}
@@ -372,31 +373,18 @@ func stageUnpackFile(ctx context.Context, destination, source string, expected O
 }
 
 // createUnpackStage keeps staging and commit on one file system and prevents the atomic writer from recreating a checked directory boundary.
-func createUnpackStage(destination string) (*unpackStage, error) {
-	file, err := atomic.Create(destination, 0o644, atomic.WithTempPrefix(unpackTempPrefix), atomic.WithoutMkdir())
-	if err != nil {
-		return nil, err
-	}
-	return &unpackStage{file: file}, nil
+func createUnpackStage(destination string) (*atomic.File, error) {
+	return atomic.Create(destination, 0o644, atomic.WithTempPrefix(unpackTempPrefix), atomic.WithoutMkdir())
 }
-
-// Write adds bytes to the atomic write in progress.
-func (stage *unpackStage) Write(data []byte) (int, error) { return stage.file.Write(data) }
-
-// temporaryPath reports the stage name before commit transfers its ownership.
-func (stage *unpackStage) temporaryPath() string { return stage.file.Path() }
-
-// discard removes an uncommitted stage.
-func (stage *unpackStage) discard() { _ = stage.file.Discard() }
 
 // commitUnpack installs all staged files and restores the destination on failure.
 func commitUnpack(targets []*unpackTarget, force bool) error {
 	for _, target := range targets {
 		var err error
 		if force {
-			target.commit, err = target.staged.file.CommitReversible()
+			target.commit, err = target.staged.CommitReversible()
 		} else {
-			target.commit, err = target.staged.file.CommitNoReplace()
+			target.commit, err = target.staged.CommitNoReplace()
 			if err != nil {
 				err = unpackNoReplaceError(err, target.destination)
 			}
@@ -462,7 +450,7 @@ func failUnpackCommit(targets []*unpackTarget, cause error) error {
 func cleanupUnpack(targets []*unpackTarget) {
 	for _, target := range targets {
 		if target.staged != nil {
-			target.staged.discard()
+			_ = target.staged.Discard()
 			target.staged = nil
 		}
 		if target.commit != nil {

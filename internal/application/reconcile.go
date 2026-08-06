@@ -10,7 +10,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 

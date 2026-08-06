@@ -29,13 +29,8 @@ func TestGCEvictsTheLeastRecentlyUsedUntilItFits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.EvictedCount != 2 || result.EvictedBytes != oldest.Size+middle.Size {
+	if result.ObjectCount != 2 || result.ByteCount != oldest.Size+middle.Size {
 		t.Fatalf("unexpected eviction: %#v", result)
-	}
-	// Eviction is part of the removal rather than beside it, so the totals
-	// count it.
-	if result.ObjectCount != 2 || result.ByteCount != result.EvictedBytes {
-		t.Fatalf("evicted objects missing from the totals: %#v", result)
 	}
 	want := []string{oldest.Digest, middle.Digest}
 	slices.Sort(want)
@@ -44,6 +39,29 @@ func TestGCEvictsTheLeastRecentlyUsedUntilItFits(t *testing.T) {
 	}
 	if _, valid, err := stored(store, newest); err != nil || !valid {
 		t.Fatalf("the most recently used object was evicted, valid=%v err=%v", valid, err)
+	}
+}
+
+// TestGCEvictsEqualAgeObjectsByDigest makes the LRU tie-break deterministic so
+// repeated dry runs and collections select the same object.
+func TestGCEvictsEqualAgeObjectsByDigest(t *testing.T) {
+	store := New(t.TempDir())
+	first := put(t, store, strings.Repeat("a", 400))
+	second := put(t, store, strings.Repeat("b", 400))
+	used := time.Now().Add(-time.Hour)
+	ageUse(t, store, first.Digest, used)
+	ageUse(t, store, second.Digest, used)
+
+	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := first.Digest
+	if second.Digest < want {
+		want = second.Digest
+	}
+	if !slices.Equal(result.Digests, []string{want}) {
+		t.Fatalf("evicted %v, want digest tie-breaker %s", result.Digests, want)
 	}
 }
 
@@ -57,7 +75,7 @@ func TestGCLeavesACacheInsideItsBoundAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ObjectCount != 0 || result.EvictedCount != 0 {
+	if result.ObjectCount != 0 {
 		t.Fatalf("a cache inside its bound lost objects: %#v", result)
 	}
 	if _, valid, err := stored(store, object); err != nil || !valid {
@@ -75,8 +93,8 @@ func TestGCWithoutASizeBoundEvictsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.EvictedCount != 0 {
-		t.Fatalf("an unbounded cache evicted: %#v", result)
+	if result.ObjectCount != 0 {
+		t.Fatalf("an unbounded cache collected an object: %#v", result)
 	}
 	if _, valid, err := stored(store, object); err != nil || !valid {
 		t.Fatalf("the object was removed, valid=%v err=%v", valid, err)
@@ -98,7 +116,7 @@ func TestGCCollectsByAgeBeforeEvicting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ObjectCount != 1 || result.EvictedCount != 0 {
+	if result.ObjectCount != 1 || !slices.Equal(result.Digests, []string{stale.Digest}) {
 		t.Fatalf("collection and eviction overlapped: %#v", result)
 	}
 	if _, valid, err := stored(store, live); err != nil || !valid {
@@ -120,7 +138,7 @@ func TestGCDryRunEvictsNothingAndCountsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ObjectCount != 1 || result.EvictedCount != 0 || len(result.Digests) != 1 {
+	if result.ObjectCount != 1 || len(result.Digests) != 1 {
 		t.Fatalf("a dry run counted the stale object twice: %#v", result)
 	}
 	for _, object := range []application.Object{stale, live} {
@@ -141,8 +159,24 @@ func TestGCClearIgnoresTheSizeBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ObjectCount != 2 || result.EvictedCount != 0 {
+	if result.ObjectCount != 2 {
 		t.Fatalf("clearing reported an eviction: %#v", result)
+	}
+}
+
+// TestGCClearDoesNotDependOnTimestamps keeps All as an explicit instruction,
+// including for an object whose metadata clock is far in the future.
+func TestGCClearDoesNotDependOnTimestamps(t *testing.T) {
+	store := New(t.TempDir())
+	object := put(t, store, "future asset")
+	ageUse(t, store, object.Digest, time.Now().Add(200*365*24*time.Hour))
+
+	result, err := store.GC(context.Background(), application.GCOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Digests, []string{object.Digest}) {
+		t.Fatalf("clear kept an object with a future timestamp: %#v", result)
 	}
 }
 

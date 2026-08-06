@@ -155,16 +155,10 @@ type GCOptions struct {
 
 // GCResult reports the objects that a collection removed or would remove.
 type GCResult struct {
-	Digests      []string `json:"digests"`
-	ObjectCount  int      `json:"objectCount"`
-	ByteCount    int64    `json:"byteCount"`
-	TempCount    int      `json:"tempCount"`
-	SidecarCount int      `json:"sidecarCount"`
-	// EvictedCount and EvictedBytes separate size eviction from age collection.
-	// They are included in ObjectCount and ByteCount, which stay the total.
-	EvictedCount int   `json:"evictedCount"`
-	EvictedBytes int64 `json:"evictedBytes"`
-	DryRun       bool  `json:"dryRun"`
+	Digests     []string `json:"digests"`
+	ObjectCount int      `json:"objectCount"`
+	ByteCount   int64    `json:"byteCount"`
+	DryRun      bool     `json:"dryRun"`
 }
 
 // ConfigPathResult reports the config files one run read, most important first.
@@ -300,11 +294,16 @@ func (service *Service) verifyTargets(ctx context.Context, all bool) ([]string, 
 	if err != nil {
 		return nil, err
 	}
+	return lockedDigests(manifest, lock), nil
+}
+
+// lockedDigests returns the digest of every locked asset, in manifest order.
+func lockedDigests(manifest project.Manifest, lock project.Lock) []string {
 	digests := make([]string, 0, len(lock.Assets))
 	for _, name := range manifest.Coordinates() {
 		digests = append(digests, lock.Assets[name].Digest)
 	}
-	return digests, nil
+	return digests
 }
 
 // ObjectDescription reports what the cache holds for one digest.
@@ -338,14 +337,18 @@ type CacheListResult struct {
 
 // CacheList reports the objects in the cache, newest use first.
 func (service *Service) CacheList(ctx context.Context, options CacheListOptions) (CacheListResult, error) {
-	digests, err := service.verifyTargets(ctx, options.All)
+	// One read serves both the target list and the owner map: a single command cannot see the project change.
+	manifest, lock, err := service.readProject()
 	if err != nil {
 		return CacheListResult{}, err
 	}
-	owners, err := service.objectOwners()
-	if err != nil {
-		return CacheListResult{}, err
+	digests := lockedDigests(manifest, lock)
+	if options.All {
+		if digests, err = service.Store.List(ctx); err != nil {
+			return CacheListResult{}, fault.Wrap("cache_read_failed", "DAC could not list the cache.", err)
+		}
 	}
+	owners := objectOwners(manifest, lock)
 	result := CacheListResult{Objects: []CacheObject{}}
 	seen := map[string]struct{}{}
 	for _, value := range digests {
@@ -382,11 +385,9 @@ func (service *Service) CacheList(ctx context.Context, options CacheListOptions)
 }
 
 // objectOwners maps each locked digest to the coordinates that resolve to it.
-func (service *Service) objectOwners() (map[string][]string, error) {
-	manifest, lock, err := service.readProject()
-	if err != nil {
-		return nil, err
-	}
+// It takes the project its caller has already read, because re-reading it would parse, normalize and
+// re-validate every asset a second time within one command that cannot see the file change.
+func objectOwners(manifest project.Manifest, lock project.Lock) map[string][]string {
 	owners := map[string][]string{}
 	for _, name := range manifest.Coordinates() {
 		locked, exists := lock.Assets[name]
@@ -398,7 +399,7 @@ func (service *Service) objectOwners() (map[string][]string, error) {
 	for _, names := range owners {
 		slices.Sort(names)
 	}
-	return owners, nil
+	return owners
 }
 
 // CacheRemoveOptions controls the removal of specific assets' objects.
@@ -425,10 +426,7 @@ func (service *Service) CacheRemove(ctx context.Context, options CacheRemoveOpti
 	if err != nil {
 		return CacheRemoveResult{}, err
 	}
-	owners, err := service.objectOwners()
-	if err != nil {
-		return CacheRemoveResult{}, err
-	}
+	owners := objectOwners(manifest, lock)
 	result := CacheRemoveResult{Digests: []string{}, Shared: []string{}, Missing: []string{}}
 	named := map[string]struct{}{}
 	targets := map[string]struct{}{}

@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
 )
 
 // testUnpackStage builds a production-shaped stage so commit tests exercise the atomic file lifecycle.
-func testUnpackStage(t *testing.T, destination, content string) *unpackStage {
+func testUnpackStage(t *testing.T, destination, content string) *atomic.File {
 	t.Helper()
 	stage, err := createUnpackStage(destination)
 	if err != nil {
@@ -20,7 +21,7 @@ func testUnpackStage(t *testing.T, destination, content string) *unpackStage {
 	if _, err := stage.Write([]byte(content)); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(stage.discard)
+	t.Cleanup(func() { _ = stage.Discard() })
 	return stage
 }
 
@@ -85,7 +86,7 @@ func TestCommitUnpackNamesADestinationThatAppeared(t *testing.T) {
 	if err != nil || string(content) != "somebody else" {
 		t.Fatalf("destination = %q (%v), want it left alone", content, err)
 	}
-	if _, err := os.Stat(staged.temporaryPath()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(staged.Path()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the staged file survived a failed commit")
 	}
 }
@@ -104,7 +105,7 @@ func TestCommitUnpackRestoresReplacedFilesAfterFailure(t *testing.T) {
 	}
 	firstStage := testUnpackStage(t, firstPath, "new first")
 	missingStage := testUnpackStage(t, secondPath, "new second")
-	if err := os.Remove(missingStage.temporaryPath()); err != nil {
+	if err := os.Remove(missingStage.Path()); err != nil {
 		t.Fatal(err)
 	}
 	targets := []*unpackTarget{
