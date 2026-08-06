@@ -3,12 +3,15 @@ package jsonfile
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+
+	"github.com/tomdoesdev/dac/internal/fs/atomic"
+	"github.com/tomdoesdev/dac/internal/fs/flock"
 )
 
 // ReadStrict reads one JSON value. It rejects unknown fields and duplicate keys.
@@ -39,37 +42,11 @@ func DecodeStrict(data []byte, value any) error {
 	return nil
 }
 
-// TempPrefix names the temporary files WriteAtomic creates.
-const TempPrefix = ".dac-"
-
-// WriteAtomic writes data through a synced temporary file and one rename.
+// WriteAtomic locks path, writes data through a synced temporary file, and renames it once.
 func WriteAtomic(path string, data []byte, mode os.FileMode) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, TempPrefix+"*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() {
-		_ = temporary.Close()
-		_ = os.Remove(temporaryPath)
-	}()
-	if err := temporary.Chmod(mode); err != nil {
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
+	return flock.Hold(context.Background(), path+".lock", func(context.Context) error {
+		return atomic.WriteFile(path, data, mode)
+	})
 }
 
 // maxDepth bounds how deeply the duplicate-key scan will nest.
