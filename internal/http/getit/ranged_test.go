@@ -331,9 +331,7 @@ func TestConcurrentTransfersAreIndependent(t *testing.T) {
 
 	var group sync.WaitGroup
 	for range 8 {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			response, err := getter.Get(t.Context(), target)
 			if err != nil {
 				t.Errorf("Get: %v", err)
@@ -348,7 +346,7 @@ func TestConcurrentTransfersAreIndependent(t *testing.T) {
 			if !equal(data, server.data) {
 				t.Error("a transfer did not reassemble to the bytes the server holds")
 			}
-		}()
+		})
 	}
 	group.Wait()
 

@@ -208,14 +208,12 @@ func TestTheGateHoldsUpUnderParallelRanges(t *testing.T) {
 	}
 	var group sync.WaitGroup
 	for _, value := range requests {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			response, err := transport.RoundTrip(value)
 			if err == nil {
 				_ = response.Body.Close()
 			}
-		}()
+		})
 	}
 	group.Wait()
 

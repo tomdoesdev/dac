@@ -126,7 +126,7 @@ func configDirs() []string {
 		return []string{"/etc/xdg"}
 	}
 	var directories []string
-	for _, entry := range strings.Split(value, string(os.PathListSeparator)) {
+	for entry := range strings.SplitSeq(value, string(os.PathListSeparator)) {
 		if filepath.IsAbs(entry) {
 			directories = append(directories, entry)
 		}

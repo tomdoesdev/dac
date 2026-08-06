@@ -56,10 +56,7 @@ func TestGCEvictsEqualAgeObjectsByDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := first.Digest
-	if second.Digest < want {
-		want = second.Digest
-	}
+	want := min(second.Digest, first.Digest)
 	if !slices.Equal(result.Digests, []string{want}) {
 		t.Fatalf("evicted %v, want digest tie-breaker %s", result.Digests, want)
 	}
