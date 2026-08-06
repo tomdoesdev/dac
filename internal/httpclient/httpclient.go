@@ -1,21 +1,25 @@
 // Package httpclient fetches remote asset bytes.
+//
+// The transfer itself -- retries, stall detection, split range downloads,
+// redirect limits -- belongs to internal/http/getit. This package is the
+// adapter between that engine and the application.Fetcher boundary, and it
+// holds only what is DAC's own decision: which URLs may be requested, what an
+// asset is called, and which failures are worth asking about again.
 package httpclient
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"math/rand/v2"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/debug"
-	"github.com/tomdoesdev/dac/internal/filename"
+	"github.com/tomdoesdev/dac/internal/fs/util/filename"
+	"github.com/tomdoesdev/dac/internal/http/getit"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
@@ -40,67 +44,136 @@ type TransportDecorator func(http.RoundTripper) http.RoundTripper
 
 // Client owns the connections used for asset requests.
 type Client struct {
-	options   Options
-	transport http.RoundTripper
-	base      *http.Transport
-	// budget holds one slot per range request the client may add to the transfers it is already running.
-	budget chan struct{}
+	getter *getit.Getter
 }
 
 // New creates an HTTP asset client.
 func New(options Options) *Client {
 	options.Parallelism = max(options.Parallelism, 1)
-	options.Logger = debug.Or(options.Logger)
-	base := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: options.Timeout, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          max(32, options.Parallelism*4),
-		MaxIdleConnsPerHost:   max(8, options.Parallelism*2),
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   options.Timeout,
-		ResponseHeaderTimeout: options.Timeout,
-		DisableCompression:    true,
+	// The URL rule is the outermost stage, so a redirect to a URL DAC will not request is
+	// refused before anything under it -- the trust gate included -- is asked about its host.
+	decorators := make([]getit.TransportDecorator, 0, len(options.TransportDecorators)+1)
+	decorators = append(decorators, checkURL)
+	for _, decorator := range options.TransportDecorators {
+		decorators = append(decorators, getit.TransportDecorator(decorator))
 	}
-	var transport http.RoundTripper = base
-	for index := len(options.TransportDecorators) - 1; index >= 0; index-- {
-		transport = options.TransportDecorators[index](transport)
-	}
-	return &Client{
-		options:   options,
-		transport: transport,
-		base:      base,
-		budget:    make(chan struct{}, options.Parallelism),
-	}
+	return &Client{getter: getit.New(
+		getit.WithConnectTimeout(options.Timeout),
+		// One asset may split across Parallelism requests, and the whole client may not
+		// exceed that many range requests at once however many assets are running.
+		getit.WithBudget(options.Parallelism),
+		getit.WithMaxRedirects(maxRedirects),
+		getit.WithRetryPolicy(retryable),
+		getit.WithLogger(debug.Or(options.Logger)),
+		getit.WithTransportDecorator(decorators...),
+		getit.WithDefaults(
+			getit.WithParts(options.Parallelism),
+			getit.WithRetries(options.Retries),
+			// A large asset over a slow link is slow rather than broken, so the timeout
+			// bounds silence rather than the transfer.
+			getit.WithStallTimeout(options.Timeout),
+		),
+	)}
 }
 
 // Close releases idle connections.
-func (client *Client) Close() { client.base.CloseIdleConnections() }
+func (client *Client) Close() { client.getter.Close() }
 
 // Fetch sends an unconditional or conditional asset request.
 func (client *Client) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	// The URL a caller named is checked before a request goes out at all, so a URL DAC
+	// will not request costs nothing. Every later hop is checked by the transport stage.
 	parsed, err := urlpolicy.ParseAndCheck(request.URL, request.AllowInsecureHTTP)
 	if err != nil {
 		return nil, &RequestError{URL: request.URL, Err: err}
 	}
-	request.URL = parsed.String()
-	trace := client.options.Logger
-	trace.Debug("fetching", "url", request.URL, "conditional", request.ETag != "")
-	response, attempts, err := retry(ctx, client.options.Retries, func() (*application.FetchResponse, error) {
-		return client.attempt(ctx, request)
-	}, func(attempt int, err error, wait time.Duration) {
-		trace.Debug("retrying", "url", request.URL, "attempt", attempt,
-			"after", wait, "status", statusOf(err), "error", err)
-	})
-	if err != nil {
-		trace.Debug("giving up", "url", request.URL, "attempts", attempts,
-			"status", statusOf(err), "retryable", retryable(err), "error", err)
-		return nil, &RequestError{URL: request.URL, Status: statusOf(err), Err: err}
+	var options []getit.RequestOption
+	if request.ETag != "" {
+		options = append(options, getit.WithValidator(getit.Validator{ETag: request.ETag}))
 	}
-	trace.Debug("response", "url", request.URL, "attempt", attempts-1,
-		"notModified", response.NotModified, "length", response.Length,
-		"etag", response.ETag, "filename", response.Filename)
-	return response, nil
+	response, err := client.getter.Get(withInsecure(ctx, request.AllowInsecureHTTP), parsed.String(), options...)
+	if err != nil {
+		return nil, requestError(parsed.String(), err)
+	}
+	return &application.FetchResponse{
+		NotModified: response.NotModified,
+		ETag:        response.Validator.ETag,
+		Filename:    responseFilename(response),
+		Length:      response.Length,
+		Body:        &assetBody{inner: response.Body},
+	}, nil
+}
+
+// insecureKey carries one asset's permission to be fetched over plain HTTP.
+//
+// The permission is a property of the asset rather than of the client, and the URL rule has
+// to hold for every hop, so it travels on the request context: that is the one thing the
+// first request, each redirect it follows, and each range of a split all still have in common
+// by the time they reach the transport.
+type insecureKey struct{}
+
+func withInsecure(ctx context.Context, allow bool) context.Context {
+	return context.WithValue(ctx, insecureKey{}, allow)
+}
+
+func allowsInsecure(ctx context.Context) bool {
+	allow, _ := ctx.Value(insecureKey{}).(bool)
+	return allow
+}
+
+// checkURL is the transport stage that applies the URL rule to every request.
+// A redirect is where a rule that only looked at the URL a caller gave would be got around.
+func checkURL(next http.RoundTripper) http.RoundTripper {
+	return &urlGuard{next: next}
+}
+
+type urlGuard struct{ next http.RoundTripper }
+
+func (transport *urlGuard) RoundTrip(request *http.Request) (*http.Response, error) {
+	if err := urlpolicy.Check(request.URL, allowsInsecure(request.Context())); err != nil {
+		// Permanent, or the same refusal is made again on every retry of every range.
+		return nil, getit.Permanent(err)
+	}
+	return transport.next.RoundTrip(request)
+}
+
+// retryable reports whether a failure is worth another attempt.
+// DAC adds the two refusals of its own that the engine cannot recognize; everything else is
+// the engine's rule. A refusal that were retried would be made once per range of every split.
+func retryable(err error) bool {
+	if errors.Is(err, application.ErrHostNotTrusted) || errors.Is(err, urlpolicy.ErrNotPermitted) {
+		return false
+	}
+	return getit.Retryable(err)
+}
+
+// assetBody restates a stalled transfer as the failure the application classifies on.
+// The stall arrives through Read, part way through the store hashing the bytes, so it is the
+// body rather than the request that has to say so.
+type assetBody struct{ inner io.ReadCloser }
+
+func (body *assetBody) Read(buffer []byte) (int, error) {
+	count, err := body.inner.Read(buffer)
+	// io.EOF is passed back exactly as it arrived, because io.Copy compares it rather than unwrapping it.
+	if err != nil && errors.Is(err, getit.ErrStalled) {
+		return count, fmt.Errorf("%w: %w", application.ErrStalled, err)
+	}
+	return count, err
+}
+
+func (body *assetBody) Close() error { return body.inner.Close() }
+
+// responseFilename reports the name the origin gives an asset.
+// A Content-Disposition header is the origin saying the name outright, so it wins.
+func responseFilename(response *getit.Response) string {
+	if name := filename.FromDisposition(response.Header.Get("Content-Disposition")); name != "" {
+		return name
+	}
+	// URL is the end of the redirect chain, which is the request that actually answered.
+	if response.URL == nil {
+		return ""
+	}
+	return filename.FromURL(response.URL.String())
 }
 
 // RequestError names the request behind a transport failure.
@@ -121,177 +194,13 @@ func (value *RequestError) RequestURL() string { return value.URL }
 
 func (value *RequestError) StatusCode() int { return value.Status }
 
-func statusOf(err error) int {
-	var status *statusError
-	if errors.As(err, &status) {
-		return status.statusCode
+// requestError restates the engine's failure as the one the application reports on.
+// The cause is carried through unchanged, so the refusals DAC classifies by -- a trust
+// refusal, a URL the policy would not permit -- are still found under it.
+func requestError(url string, err error) error {
+	var request *getit.RequestError
+	if errors.As(err, &request) {
+		return &RequestError{URL: request.URL, Status: request.Status, Err: request.Err}
 	}
-	return 0
-}
-
-func (client *Client) attempt(ctx context.Context, input application.FetchRequest) (*application.FetchResponse, error) {
-	downloadCtx, cancelDownload := context.WithCancel(ctx)
-	// A child context lets split mode close the first response without stopping ranges.
-	headCtx, cancelHead := context.WithCancel(downloadCtx)
-	cancel := func() { cancelHead(); cancelDownload() }
-	request, err := http.NewRequestWithContext(headCtx, http.MethodGet, input.URL, nil)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	if input.ETag != "" {
-		request.Header.Set("If-None-Match", input.ETag)
-	}
-	httpClient := &http.Client{Transport: client.transport, CheckRedirect: client.checkRedirect(input.AllowInsecureHTTP)}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	if err := checkResponse(response, input.ETag); err != nil {
-		_ = response.Body.Close()
-		cancel()
-		return nil, err
-	}
-	return &application.FetchResponse{
-		NotModified: response.StatusCode == http.StatusNotModified,
-		ETag:        response.Header.Get("ETag"),
-		Filename:    responseFilename(response),
-		Length:      response.ContentLength,
-		Body:        client.body(downloadCtx, input, response, cancel, cancelHead),
-	}, nil
-}
-
-// responseFilename reports the name the origin gives an asset.
-// A Content-Disposition header is the origin saying the name outright, so it wins.
-func responseFilename(response *http.Response) string {
-	if name := filename.FromDisposition(response.Header.Get("Content-Disposition")); name != "" {
-		return name
-	}
-	// Request is the final request of the redirect chain, and its URL is resolved against the one before it.
-	if response.Request == nil || response.Request.URL == nil {
-		return ""
-	}
-	return filename.FromURL(response.Request.URL.String())
-}
-
-// checkRedirect applies the URL policy to each redirect target.
-func (client *Client) checkRedirect(allowInsecure bool) func(*http.Request, []*http.Request) error {
-	return func(request *http.Request, via []*http.Request) error {
-		if len(via) > maxRedirects {
-			return fmt.Errorf("server returned more than %d redirects", maxRedirects)
-		}
-		if err := urlpolicy.Check(request.URL, allowInsecure); err != nil {
-			return err
-		}
-		client.options.Logger.Debug("redirect", "to", request.URL.String(), "hops", len(via))
-		return nil
-	}
-}
-
-func checkResponse(response *http.Response, etag string) error {
-	encoding := strings.TrimSpace(response.Header.Get("Content-Encoding"))
-	if encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return fmt.Errorf("response content encoding %q is not identity", encoding)
-	}
-	if response.StatusCode == http.StatusOK || etag != "" && response.StatusCode == http.StatusNotModified {
-		return nil
-	}
-	kind := "unconditional"
-	if etag != "" {
-		kind = "conditional"
-	}
-	return &statusError{kind: kind, statusCode: response.StatusCode, retryAfter: retryAfter(response)}
-}
-
-type statusError struct {
-	kind       string
-	statusCode int
-	retryAfter time.Duration
-}
-
-func (value *statusError) Error() string {
-	return fmt.Sprintf("%s request returned HTTP %d", value.kind, value.statusCode)
-}
-
-func retryAfter(response *http.Response) time.Duration {
-	value := strings.TrimSpace(response.Header.Get("Retry-After"))
-	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		return max(time.Until(when), 0)
-	}
-	return 0
-}
-
-// permanent names the refusals that asking again cannot change.
-// A transport decorator that refuses a request is not asked the same question
-// Retries more times, on every range of a split download.
-var permanent = []error{
-	context.Canceled,
-	context.DeadlineExceeded,
-	urlpolicy.ErrNotPermitted,
-	application.ErrHostNotTrusted,
-}
-
-// retryable reports whether an error is worth another attempt.
-// The answer defaults to yes, because a transport error DAC does not recognize
-// is more often a network that dropped than a request nobody will ever answer.
-func retryable(err error) bool {
-	var status *statusError
-	if errors.As(err, &status) {
-		return status.statusCode == http.StatusTooManyRequests ||
-			status.statusCode == http.StatusRequestTimeout ||
-			status.statusCode >= 500 && status.statusCode <= 599
-	}
-	for _, sentinel := range permanent {
-		if errors.Is(err, sentinel) {
-			return false
-		}
-	}
-	return true
-}
-
-// retry applies one retry policy to full requests and range requests.
-func retry[T any](ctx context.Context, retries int, operation func() (T, error), notify func(int, error, time.Duration)) (T, int, error) {
-	for attempt := 0; ; attempt++ {
-		value, err := operation()
-		if err == nil {
-			return value, attempt + 1, nil
-		}
-		if attempt >= retries || !retryable(err) || ctx.Err() != nil {
-			var zero T
-			return zero, attempt + 1, err
-		}
-		wait := backoff(attempt, err)
-		if notify != nil {
-			notify(attempt+1, err, wait)
-		}
-		if err := sleep(ctx, wait); err != nil {
-			var zero T
-			return zero, attempt + 1, err
-		}
-	}
-}
-
-func backoff(attempt int, err error) time.Duration {
-	var status *statusError
-	if errors.As(err, &status) && status.retryAfter > 0 {
-		return min(status.retryAfter, 30*time.Second)
-	}
-	wait := min(time.Duration(1<<attempt)*250*time.Millisecond, 8*time.Second)
-	return wait + rand.N(wait/2+time.Millisecond)
-}
-
-func sleep(ctx context.Context, duration time.Duration) error {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return &RequestError{URL: url, Err: err}
 }

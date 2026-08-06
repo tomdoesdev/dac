@@ -129,6 +129,29 @@ func (runner *runner) networkFlags(withConcurrency bool) []urfave.Flag {
 	return flags
 }
 
+// flagOrConfig reads one setting that a command flag may override for a single run.
+// The flag is parsed with the function that parses the same setting out of the config file, so a
+// value is accepted or refused identically whichever way it arrives, and the rule that a flag beats
+// the file is stated once. It is a function rather than a method because Go methods take no type
+// parameters. Settings with no flag, or whose flag is not a parsed string, read the config directly.
+func flagOrConfig[T any](runner *runner, current *urfave.Command, flag, invalid string,
+	parse func(string) (T, error), pick func(*config.Config) T,
+) (T, error) {
+	var zero T
+	if current.IsSet(flag) {
+		value, err := parse(current.String(flag))
+		if err != nil {
+			return zero, fault.Wrap("invalid_arguments", invalid, err)
+		}
+		return value, nil
+	}
+	settings, err := runner.config(current)
+	if err != nil {
+		return zero, err
+	}
+	return pick(settings), nil
+}
+
 // concurrency reads the asset parallelism, preferring the flag over the config.
 func (runner *runner) concurrency(current *urfave.Command) (int, error) {
 	if current.IsSet("concurrency") {

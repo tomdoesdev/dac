@@ -86,21 +86,10 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		if !options.All && !object.used.Before(cutoff) {
 			continue
 		}
-		outcome, err := store.collectObject(ctx, *object, options.DryRun, func(used time.Time) bool {
+		if _, err := store.take(ctx, object, &inventory, &result, options.DryRun, func(used time.Time) bool {
 			return options.All || used.Before(cutoff)
-		})
-		if err != nil {
+		}); err != nil {
 			return application.GCResult{}, err
-		}
-		if !outcome.present {
-			object.done = true
-			inventory.totalSize -= object.size
-			continue
-		}
-		if outcome.removed {
-			object.done = true
-			inventory.totalSize -= object.size
-			addCollection(&result, object.digest, outcome.size)
 		}
 	}
 
@@ -115,21 +104,13 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 				continue
 			}
 			observed := object.used
-			outcome, err := store.collectObject(ctx, *object, options.DryRun, func(used time.Time) bool {
+			outcome, err := store.take(ctx, object, &inventory, &result, options.DryRun, func(used time.Time) bool {
 				return !used.After(observed)
 			})
 			if err != nil {
 				return application.GCResult{}, err
 			}
-			if !outcome.present {
-				object.done = true
-				inventory.totalSize -= object.size
-				continue
-			}
 			if outcome.removed {
-				object.done = true
-				inventory.totalSize -= object.size
-				addCollection(&result, object.digest, outcome.size)
 				store.trace().Debug("evicted", "digest", object.digest, "size", outcome.size,
 					"lastUsed", object.used, "remaining", inventory.totalSize, "bound", options.MaxSize)
 			}
@@ -209,7 +190,7 @@ func (store *Store) scanCache(ctx context.Context) (cacheInventory, error) {
 		}
 	}
 
-	temporaryDirectory := filepath.Join(store.Root, "tmp")
+	temporaryDirectory := filepath.Join(store.Root, temporaryDirectoryName)
 	entries, err = os.ReadDir(temporaryDirectory)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return cacheInventory{}, err
@@ -218,7 +199,7 @@ func (store *Store) scanCache(ctx context.Context) (cacheInventory, error) {
 		if err := ctx.Err(); err != nil {
 			return cacheInventory{}, err
 		}
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "download-") {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), downloadTempPrefix) {
 			continue
 		}
 		info, found, err := currentInfo(entry)
@@ -266,6 +247,31 @@ func addCollection(result *application.GCResult, value string, size int64) {
 
 // collectObject removes one eligible object under its digest lock. The second
 // eligibility check prevents GC from removing an object used while it waited.
+// take runs one collection decision and applies the bookkeeping that follows it.
+// Expiration and eviction differ only in which objects they offer and which last-used times they accept,
+// so the accounting is written once here. The eligibility recheck itself stays inside collectObject,
+// under the digest lock, where it closes the window between the inventory scan and the removal.
+// An object that has already gone stops counting against the size bound exactly as a collected one does.
+func (store *Store) take(ctx context.Context, object *cacheObject, inventory *cacheInventory,
+	result *application.GCResult, dryRun bool, eligible func(time.Time) bool,
+) (collection, error) {
+	outcome, err := store.collectObject(ctx, *object, dryRun, eligible)
+	if err != nil {
+		return collection{}, err
+	}
+	if !outcome.present {
+		object.done = true
+		inventory.totalSize -= object.size
+		return outcome, nil
+	}
+	if outcome.removed {
+		object.done = true
+		inventory.totalSize -= object.size
+		addCollection(result, object.digest, outcome.size)
+	}
+	return outcome, nil
+}
+
 func (store *Store) collectObject(ctx context.Context, object cacheObject, dryRun bool, eligible func(time.Time) bool) (collection, error) {
 	var outcome collection
 	err := store.WithLock(ctx, object.digest, func() error {

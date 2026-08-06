@@ -17,10 +17,7 @@ func (runner *runner) verifyCommand() *urfave.Command {
 		Name:  "verify",
 		Usage: "Check that the project files agree.",
 		Flags: flags,
-		Action: runner.run("verify", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("verify", func(ctx context.Context, current *urfave.Command) (any, string, error) {
 			// The plain form reads two files and stops, which is what makes it usable in a job with no network and no cache.
 			if !current.Bool("refresh") {
 				result, err := runner.projectService(current).Verify(ctx, application.VerifyOptions{})

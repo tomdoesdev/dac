@@ -22,6 +22,14 @@ import (
 	"github.com/tomdoesdev/dac/internal/fs/flock"
 )
 
+// A download stages into its own directory under a distinct prefix, and garbage collection finds abandoned
+// downloads by that same pair. Both halves are named here so a change to one cannot silently strand the other:
+// a collector that stops recognising staging files reports nothing and grows the cache forever.
+const (
+	temporaryDirectoryName = "tmp"
+	downloadTempPrefix     = "download-"
+)
+
 // Store manages one filesystem cache.
 // A store must not be copied: verified carries the objects this process has already hashed, and a copy would hash them all over again.
 type Store struct {
@@ -200,8 +208,8 @@ func (store *Store) WithLock(ctx context.Context, value string, operation func()
 
 // Put installs bytes.
 func (store *Store) Put(ctx context.Context, reader io.Reader, options application.PutOptions) (application.Object, error) {
-	temporaryDirectory := filepath.Join(store.Root, "tmp")
-	temporary, err := atomic.CreateIn(temporaryDirectory, 0o444, atomic.WithTempPrefix("download-"))
+	temporaryDirectory := filepath.Join(store.Root, temporaryDirectoryName)
+	temporary, err := atomic.CreateIn(temporaryDirectory, 0o444, atomic.WithTempPrefix(downloadTempPrefix))
 	if err != nil {
 		return application.Object{}, err
 	}

@@ -20,10 +20,7 @@ func (runner *runner) initCommand() *urfave.Command {
 		Name:  "init",
 		Usage: "Create matching empty project files.",
 		Flags: []urfave.Flag{&urfave.BoolFlag{Name: "force", Usage: "Replace existing project files."}},
-		Action: runner.run("init", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			if err := noArguments(current); err != nil {
-				return nil, "", err
-			}
+		Action: runner.runBare("init", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			result, err := runner.projectService(current).Init(current.Bool("force"))
 			return result, "Created project files.", err
 		}),

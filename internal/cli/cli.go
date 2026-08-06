@@ -257,6 +257,32 @@ func (runner *runner) app() *urfave.Command {
 	return app
 }
 
+// runBare wires a command that takes no positional arguments, so the rejection is
+// stated once here rather than opening the body of every such command.
+func (runner *runner) runBare(name string, operation action) urfave.ActionFunc {
+	return runner.run(name, func(ctx context.Context, current *urfave.Command) (any, string, error) {
+		if err := noArguments(current); err != nil {
+			return nil, "", err
+		}
+		return operation(ctx, current)
+	})
+}
+
+// storeAction is a command body that takes no positional arguments and needs the object store.
+type storeAction func(context.Context, *urfave.Command, *application.Service) (any, string, error)
+
+// runStore wires a command whose only preparation is opening the object store.
+// Commands that must read a flag before the store, or that take arguments, call storeService themselves.
+func (runner *runner) runStore(name string, operation storeAction) urfave.ActionFunc {
+	return runner.runBare(name, func(ctx context.Context, current *urfave.Command) (any, string, error) {
+		service, err := runner.storeService(current)
+		if err != nil {
+			return nil, "", err
+		}
+		return operation(ctx, current, service)
+	})
+}
+
 func (runner *runner) run(name string, operation action) urfave.ActionFunc {
 	return func(ctx context.Context, current *urfave.Command) error {
 		runner.commandName = name

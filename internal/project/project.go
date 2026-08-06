@@ -2,7 +2,6 @@
 package project
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +11,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/filename"
-	"github.com/tomdoesdev/dac/internal/fs/atomic"
-	"github.com/tomdoesdev/dac/internal/fs/flock"
+	"github.com/tomdoesdev/dac/internal/fs/util/filename"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
@@ -277,9 +274,7 @@ func Write[T File](path string, value T) error {
 
 // WriteBytes atomically writes project file bytes that a caller has already marshalled, so lock does not have to encode the same document twice.
 func WriteBytes(path string, data []byte) error {
-	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
-		return atomic.WriteFile(path, data, fileMode)
-	}, flock.RemoveOnRelease())
+	return jsonfile.WriteAtomic(path, data, fileMode)
 }
 
 // WritePair writes matching project files and restores the manifest if the second write fails.
