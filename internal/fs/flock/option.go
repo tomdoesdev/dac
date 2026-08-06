@@ -1,4 +1,4 @@
-package lockfile
+package flock
 
 import (
 	"io/fs"
