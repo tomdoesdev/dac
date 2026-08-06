@@ -205,6 +205,129 @@ func TestCommitAsWritesIntoAnotherDirectory(t *testing.T) {
 	assertOnly(t, staging)
 }
 
+func TestCommitNoReplaceInstallsAnAbsentDestination(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "object")
+	file, err := atomic.Create(path, 0o640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Discard() }()
+	if _, err := file.Write([]byte("contents")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := file.CommitNoReplace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commit.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, "contents", 0o640)
+	assertOnly(t, directory, "object")
+}
+
+func TestCommitNoReplaceLeavesAnExistingDestinationAlone(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "object")
+	if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := atomic.Create(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	if commit, err := file.CommitNoReplace(); !errors.Is(err, fs.ErrExist) || commit != nil {
+		t.Fatalf("CommitNoReplace = (%v, %v), want nil and fs.ErrExist", commit, err)
+	}
+	if err := file.Discard(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, "existing", 0o600)
+	assertOnly(t, directory, "object")
+}
+
+func TestNoReplaceCommitCanBeRolledBack(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "object")
+	file, err := atomic.Create(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("contents")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := file.CommitNoReplace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commit.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("destination survived rollback: %v", err)
+	}
+	assertOnly(t, directory)
+}
+
+func TestReversibleCommitRestoresThePreviousDestination(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "object")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := atomic.Create(path, 0o644, atomic.WithTempPrefix(".change-"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := file.CommitReversible()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, "replacement", 0o644)
+	if err := commit.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, "previous", 0o600)
+	assertOnly(t, directory, "object")
+}
+
+func TestCompletingAReversibleCommitKeepsTheReplacement(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "object")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := atomic.Create(path, 0o644, atomic.WithTempPrefix(".change-"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := file.CommitReversible()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commit.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if err := commit.Complete(); err != nil {
+		t.Fatalf("second Complete returned %v", err)
+	}
+	if err := commit.Rollback(); err != nil {
+		t.Fatalf("Rollback after Complete returned %v", err)
+	}
+	assertFile(t, path, "replacement", 0o644)
+	assertOnly(t, directory, "object")
+}
+
 func TestCommitWithoutADestinationFails(t *testing.T) {
 	directory := t.TempDir()
 	file, err := atomic.CreateIn(directory, 0o644)

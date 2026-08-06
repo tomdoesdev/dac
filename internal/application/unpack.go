@@ -52,14 +52,13 @@ type unpackTarget struct {
 	destination string
 	object      Object
 	staged      *unpackStage
-	backup      string
-	committed   bool
+	commit      *atomic.Commit
 }
 
-// unpackStage owns the atomic write for one target and, for no-replace commits, its sealed temporary path.
+// unpackStage owns the atomic write for one target until commit transfers that
+// ownership to an atomic.Commit.
 type unpackStage struct {
-	file       *atomic.File
-	sealedPath string
+	file *atomic.File
 }
 
 const unpackTempPrefix = ".dac-unpack-"
@@ -384,109 +383,43 @@ func createUnpackStage(destination string) (*unpackStage, error) {
 // Write adds bytes to the atomic write in progress.
 func (stage *unpackStage) Write(data []byte) (int, error) { return stage.file.Write(data) }
 
-// temporaryPath reports the source name whose disappearance proves Commit completed its rename.
+// temporaryPath reports the stage name before commit transfers its ownership.
 func (stage *unpackStage) temporaryPath() string { return stage.file.Path() }
 
-// commit atomically replaces the intended destination with the staged bytes.
-func (stage *unpackStage) commit() error { return stage.file.Commit() }
-
-// seal closes and syncs the staged inode at a unique non-destination path so a hard link can provide no-replace semantics.
-func (stage *unpackStage) seal() error {
-	stage.sealedPath = stage.file.Path() + ".ready"
-	return stage.file.CommitAs(stage.sealedPath)
-}
-
-// discard removes either form of the stage, including one that CommitAs sealed before a final directory-sync error.
-func (stage *unpackStage) discard() {
-	_ = stage.file.Discard()
-	_ = os.Remove(stage.file.Path())
-	if stage.sealedPath != "" {
-		_ = os.Remove(stage.sealedPath)
-	}
-}
+// discard removes an uncommitted stage.
+func (stage *unpackStage) discard() { _ = stage.file.Discard() }
 
 // commitUnpack installs all staged files and restores the destination on failure.
 func commitUnpack(targets []*unpackTarget, force bool) error {
 	for _, target := range targets {
+		var err error
 		if force {
-			if err := backupUnpackTarget(target); err != nil {
-				return failUnpackCommit(targets, err)
-			}
-			stagedPath := target.staged.temporaryPath()
-			if err := target.staged.commit(); err != nil {
-				// Commit removes its temporary path before syncing the directory. If
-				// that final sync fails, rollback still owns the installed destination.
-				if _, statErr := os.Stat(stagedPath); errors.Is(statErr, os.ErrNotExist) {
-					target.staged = nil
-					target.committed = true
-				}
-				return failUnpackCommit(targets, err)
-			}
-			target.staged = nil
+			target.commit, err = target.staged.file.CommitReversible()
 		} else {
-			// Sealing lets atomic own syncing, mode, and closing while leaving
-			// the destination free for the no-replace link.
-			if err := target.staged.seal(); err != nil {
-				return failUnpackCommit(targets, err)
+			target.commit, err = target.staged.file.CommitNoReplace()
+			if err != nil {
+				err = unpackNoReplaceError(err, target.destination)
 			}
-			// A hard link makes the no-replace check atomic on the destination file system.
-			if err := os.Link(target.staged.sealedPath, target.destination); err != nil {
-				return failUnpackCommit(targets, unpackLinkError(err, target.destination))
-			}
-			// Set before the staged file is removed, because from here the destination is this target's to roll back.
-			target.committed = true
-			if err := os.Remove(target.staged.sealedPath); err != nil {
-				return failUnpackCommit(targets, err)
-			}
+		}
+		if target.commit != nil {
 			target.staged = nil
 		}
-		target.committed = true
+		if err != nil {
+			return failUnpackCommit(targets, err)
+		}
 	}
 	for _, target := range targets {
-		if target.backup != "" {
-			_ = os.Remove(target.backup)
-			target.backup = ""
+		if target.commit != nil {
+			_ = target.commit.Complete()
+			target.commit = nil
 		}
 	}
 	return nil
 }
 
-// backupUnpackTarget moves an existing non-directory entry out of the commit path.
-func backupUnpackTarget(target *unpackTarget) error {
-	info, err := os.Lstat(target.destination)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return fmt.Errorf("destination %s is a directory", target.destination)
-	}
-	file, err := os.CreateTemp(filepath.Dir(target.destination), ".dac-unpack-backup-*")
-	if err != nil {
-		return err
-	}
-	backup := file.Name()
-	if err := file.Close(); err != nil {
-		_ = os.Remove(backup)
-		return err
-	}
-	if err := os.Remove(backup); err != nil {
-		return err
-	}
-	if err := os.Rename(target.destination, backup); err != nil {
-		return err
-	}
-	target.backup = backup
-	return nil
-}
-
-// unpackLinkError names what a refused link actually means.
-// The link is the no-replace check, so the interesting failure is a destination
-// that appeared between the check and the commit: reporting that as a write
-// failure would send somebody looking at their disk for a file somebody made.
-func unpackLinkError(err error, destination string) error {
+// unpackNoReplaceError names a destination that appeared between validation
+// and commit instead of reporting it as an opaque write failure.
+func unpackNoReplaceError(err error, destination string) error {
 	if !errors.Is(err, os.ErrExist) {
 		return err
 	}
@@ -505,16 +438,11 @@ func failUnpackCommit(targets []*unpackTarget, cause error) error {
 	var rollback []error
 	for index := len(targets) - 1; index >= 0; index-- {
 		target := targets[index]
-		if target.committed {
-			if err := os.Remove(target.destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if target.commit != nil {
+			if err := target.commit.Rollback(); err != nil {
 				rollback = append(rollback, err)
 			}
-		}
-		if target.backup != "" {
-			if err := os.Rename(target.backup, target.destination); err != nil {
-				rollback = append(rollback, err)
-			}
-			target.backup = ""
+			target.commit = nil
 		}
 	}
 	cleanupUnpack(targets)
@@ -537,9 +465,9 @@ func cleanupUnpack(targets []*unpackTarget) {
 			target.staged.discard()
 			target.staged = nil
 		}
-		if target.backup != "" {
-			_ = os.Remove(target.backup)
-			target.backup = ""
+		if target.commit != nil {
+			_ = target.commit.Complete()
+			target.commit = nil
 		}
 	}
 }
