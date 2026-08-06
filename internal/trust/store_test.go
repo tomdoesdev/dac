@@ -2,6 +2,7 @@ package trust
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/proclock"
+	"github.com/tomdoesdev/dac/internal/fs/flock"
 )
 
 func testStore(t *testing.T) *Store {
@@ -74,14 +75,17 @@ func TestUpdateWritesAFileDACCanReadBack(t *testing.T) {
 // race: without the lock, two runs adding one host each would keep one host.
 func TestUpdateWaitsForAnotherProcessHoldingTheFile(t *testing.T) {
 	store := testStore(t)
-	held, err := proclock.Acquire(context.Background(), store.Path+".lock")
+	held, err := flock.TryAcquire(store.Path + ".lock")
 	if err != nil {
-		t.Fatalf("Acquire: %v", err)
+		t.Fatalf("TryAcquire: %v", err)
 	}
+	// Update waits by design, so a bounded context is the only way to see it
+	// wait. The deadline error is the proof that it waited for the lock.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := store.Update(ctx, func(list List) (List, error) { return list, nil }); err == nil {
-		t.Fatal("Update wrote the file while another process held it")
+	_, err = store.Update(ctx, func(list List) (List, error) { return list, nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Update returned %v while another process held the file", err)
 	}
 	if err := held.Release(); err != nil {
 		t.Fatalf("Release: %v", err)

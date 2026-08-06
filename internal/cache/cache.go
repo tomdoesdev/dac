@@ -19,8 +19,8 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
+	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
-	"github.com/tomdoesdev/dac/internal/proclock"
 )
 
 // Store manages one filesystem cache.
@@ -584,12 +584,8 @@ func (store *Store) WithLock(ctx context.Context, value string, operation func()
 	if err != nil {
 		return err
 	}
-	lock, err := proclock.Acquire(ctx, filepath.Join(store.Root, "locks", hexValue+".lock"))
-	if err != nil {
-		return err
-	}
-	operationErr := operation()
-	return errors.Join(operationErr, lock.Release())
+	path := filepath.Join(store.Root, "locks", hexValue+".lock")
+	return flock.Hold(ctx, path, func(context.Context) error { return operation() })
 }
 
 // Put installs bytes.

@@ -13,8 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # DAC targets Unix. proclock carries a unix build constraint, so a
-        # Windows job would fail to build rather than fail a test.
+        # DAC targets Unix. internal/fs/flock builds everywhere and reports
+        # errors.ErrUnsupported where there is no flock(2), so a Windows job
+        # would build and then fail every test that takes a lock.
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:

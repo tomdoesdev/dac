@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tomdoesdev/dac/internal/fs/flock"
 	"github.com/tomdoesdev/dac/internal/jsonfile"
-	"github.com/tomdoesdev/dac/internal/proclock"
 )
 
 // ResolvePath returns the absolute trusted-hosts file path.
@@ -62,12 +62,16 @@ func (store *Store) Load() (List, error) {
 // Every mutation goes through here, because two DAC processes that each loaded,
 // changed, and saved would keep only one of the two changes.
 func (store *Store) Update(ctx context.Context, change func(List) (List, error)) (List, error) {
-	lock, err := proclock.Acquire(ctx, store.Path+".lock")
+	var updated List
+	err := flock.Hold(ctx, store.Path+".lock", func(context.Context) error {
+		var changeErr error
+		updated, changeErr = store.write(change)
+		return changeErr
+	})
 	if err != nil {
 		return List{}, err
 	}
-	updated, changeErr := store.write(change)
-	return updated, errors.Join(changeErr, lock.Release())
+	return updated, nil
 }
 
 // write reads, changes, and replaces the file. Its caller holds the lock.
