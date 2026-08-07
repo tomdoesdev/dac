@@ -3,9 +3,10 @@ package application_test
 import (
 	"context"
 	"errors"
-	"net/http"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -38,14 +39,6 @@ func (prober *fakeProber) count() int {
 	defer prober.mutex.Unlock()
 	return len(prober.requests)
 }
-
-type probeRequestError struct {
-	status int
-}
-
-func (value *probeRequestError) Error() string      { return http.StatusText(value.status) }
-func (value *probeRequestError) RequestURL() string { return "https://example.com/asset" }
-func (value *probeRequestError) StatusCode() int    { return value.status }
 
 type forbiddenCatalog struct{ t *testing.T }
 
@@ -120,7 +113,7 @@ func TestCheckOfflineRetainsProjectFailureClassifications(t *testing.T) {
 	}
 }
 
-func TestCheckUpstreamUsesMatchingStoredValidatorsWithoutGET(t *testing.T) {
+func TestCheckMetadataUsesMatchingStoredValidatorsWithoutGET(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	setCheckValidators(t, lockPath, "W/\"known\"", checkLastModified)
@@ -137,16 +130,16 @@ func TestCheckUpstreamUsesMatchingStoredValidatorsWithoutGET(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	service.Prober = prober
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Downloaded != 0 || fetcher.count() != 0 || prober.count() != 1 {
+	if !result.Upstream || result.Verified || result.Downloaded != 0 || fetcher.count() != 0 || prober.count() != 1 {
 		t.Fatalf("unexpected probe result: %#v, HEAD=%d GET=%d", result, prober.count(), fetcher.count())
 	}
 }
 
-func TestCheckUpstreamIgnoresANewValidatorWhenKnownHintsMatch(t *testing.T) {
+func TestCheckMetadataIgnoresANewValidatorWhenNoHintWasLocked(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	setCheckValidators(t, lockPath, "\"known\"", "")
@@ -162,7 +155,7 @@ func TestCheckUpstreamIgnoresANewValidatorWhenKnownHintsMatch(t *testing.T) {
 		}, nil
 	}}
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,61 +164,64 @@ func TestCheckUpstreamIgnoresANewValidatorWhenKnownHintsMatch(t *testing.T) {
 	}
 }
 
-func TestCheckUpstreamDownloadsWhenAKnownHintChangesOrDisappears(t *testing.T) {
+func TestCheckMetadataAggregatesChangedHintsWithoutGET(t *testing.T) {
 	content := []byte("asset bytes")
-	tests := map[string]application.ProbeResponse{
-		"etag changed":          {ETag: "\"new\"", LastModified: checkLastModified, Length: int64(len(content))},
-		"etag missing":          {LastModified: checkLastModified, Length: int64(len(content))},
-		"last modified changed": {ETag: "\"known\"", LastModified: "Thu, 22 Oct 2015 07:28:00 GMT", Length: int64(len(content))},
-		"last modified missing": {ETag: "\"known\"", Length: int64(len(content))},
-		"length changed":        {ETag: "\"known\"", LastModified: checkLastModified, Length: int64(len(content) + 1)},
-	}
-	for name, answer := range tests {
-		t.Run(name, func(t *testing.T) {
-			manifestPath, lockPath := lockedProject(t, content)
-			setCheckValidators(t, lockPath, "\"known\"", checkLastModified)
-			fetcher := staticFetcher(content)
-			prober := &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-				return &answer, nil
-			}}
-			service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-			service.Prober = prober
+	manifestPath, lockPath := lockedProject(t, content)
+	setCheckValidators(t, lockPath, "\"known\"", checkLastModified)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		return nil, errors.New("GET should not have been sent")
+	}}
+	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
+		return &application.ProbeResponse{ETag: "\"new\"", Length: int64(len(content) + 1)}, nil
+	}}
 
-			result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.Downloaded != 1 || fetcher.count() != 1 {
-				t.Fatalf("changed hint did not force one GET: %#v, requests=%d", result, fetcher.count())
-			}
-		})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
+	value := fault.As(err)
+	if value.Code != "metadata_mismatch" || fetcher.count() != 0 {
+		t.Fatalf("unexpected metadata error: %v, GET=%d", err, fetcher.count())
+	}
+	assets, _ := value.Details["assets"].([]string)
+	if len(assets) != 1 || assets[0] != "test/asset@1" || !strings.Contains(value.Message, "test/asset@1") {
+		t.Fatalf("metadata error did not identify the asset: %#v", value)
 	}
 }
 
-func TestCheckUpstreamFallsBackWhenHEADIsUnsupported(t *testing.T) {
-	for _, status := range []int{http.StatusMethodNotAllowed, http.StatusNotImplemented} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			content := []byte("asset bytes")
-			manifestPath, lockPath := lockedProject(t, content)
-			setCheckValidators(t, lockPath, "\"known\"", "")
-			fetcher := staticFetcher(content)
-			service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-			service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-				return nil, &probeRequestError{status: status}
-			}}
+func TestCheckMetadataSelectsExactCoordinatesOnce(t *testing.T) {
+	manifestPath, lockPath, _ := multiAssetProject(t)
+	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+		return nil, errors.New("GET should not have been sent")
+	}}
+	prober := &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
+		return &application.ProbeResponse{Length: application.Unknown}, nil
+	}}
+	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service.Prober = prober
 
-			result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.Downloaded != 1 || fetcher.count() != 1 {
-				t.Fatalf("HEAD %d did not fall back: %#v", status, result)
-			}
-		})
+	result, err := service.Check(context.Background(), application.CheckOptions{
+		Concurrency: 1,
+		Mode:        application.CheckMetadata,
+		Assets: []coord.Coordinate{
+			at("geo@1"), at("geo@1"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProjectCount != 3 || result.AssetCount != 1 || prober.count() != 1 || fetcher.count() != 0 {
+		t.Fatalf("unexpected selected metadata result: %#v, HEAD=%d GET=%d", result, prober.count(), fetcher.count())
+	}
+
+	_, err = service.Check(context.Background(), application.CheckOptions{
+		Mode:   application.CheckMetadata,
+		Assets: []coord.Coordinate{at("geo@9")},
+	})
+	if fault.As(err).Code != "asset_unknown" || prober.count() != 1 {
+		t.Fatalf("unknown asset made a request: %v, HEAD=%d", err, prober.count())
 	}
 }
 
-func TestCheckUpstreamDownloadsAssetsWithoutValidatorsAndNeverCachesThem(t *testing.T) {
+func TestCheckBytesDownloadsPinnedAssetsWithoutProbingOrCaching(t *testing.T) {
 	content := []byte("shared bytes")
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
@@ -251,24 +247,32 @@ func TestCheckUpstreamDownloadsAssetsWithoutValidatorsAndNeverCachesThem(t *test
 		t.Fatal(err)
 	}
 	store := newFakeStore()
-	fetcher := staticFetcher(content)
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+		if request.ETag != "" || request.LastModified != "" {
+			return nil, fmt.Errorf("byte verification sent validators: %#v", request)
+		}
+		return response(content), nil
+	}}
 	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
+		return nil, errors.New("HEAD should not have been sent")
+	}}
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 2, Upstream: true})
+	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 2, Mode: application.CheckBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Downloaded != 2 || fetcher.count() != 2 || len(store.objects) != 0 {
-		t.Fatalf("unexpected no-validator check: %#v, GET=%d cache=%d", result, fetcher.count(), len(store.objects))
+	if !result.Verified || result.Downloaded != 2 || fetcher.count() != 2 || service.Prober.(*fakeProber).count() != 0 || len(store.objects) != 0 {
+		t.Fatalf("unexpected byte check: %#v, GET=%d cache=%d", result, fetcher.count(), len(store.objects))
 	}
 }
 
-func TestCheckUpstreamAggregatesChangedBytesAsLockDrift(t *testing.T) {
+func TestCheckBytesAggregatesChangedBytesAsLockDrift(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("changed bytes")), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %v", err)

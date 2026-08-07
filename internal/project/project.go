@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
@@ -234,17 +235,28 @@ func CheckLock(manifest Manifest, lock Lock) error {
 	if err != nil {
 		return err
 	}
-	if lock.ManifestDigest != manifestDigest {
-		return errors.New("lock manifest digest does not match")
-	}
+	digestChanged := lock.ManifestDigest != manifestDigest
+	issues := make([]string, 0)
 	if len(manifest.Assets) != len(lock.Assets) {
-		return errors.New("lock asset coordinates do not match")
+		issues = append(issues, "lock asset coordinates do not match")
 	}
-	for name, asset := range manifest.Assets {
+	for _, name := range manifest.Coordinates() {
+		asset := manifest.Assets[name]
 		locked, exists := lock.Assets[name]
 		if reason := disagreement(asset, locked, exists); reason != "" {
-			return fmt.Errorf("lock asset %q %s", name, reason)
+			issues = append(issues, fmt.Sprintf("lock asset %q %s", name, reason))
 		}
+	}
+	for _, name := range coord.Sorted(lock.Assets) {
+		if _, exists := manifest.Assets[name]; !exists {
+			issues = append(issues, fmt.Sprintf("lock asset %q is no longer declared", name))
+		}
+	}
+	if digestChanged {
+		issues = append([]string{"lock manifest digest does not match"}, issues...)
+	}
+	if len(issues) > 0 {
+		return errors.New(strings.Join(issues, "; "))
 	}
 	return nil
 }

@@ -422,7 +422,8 @@ func (config *Config) TOML() string {
 		}
 		// Nothing configured the value, so DAC resolves it and says where from.
 		if key.value == "" && key.unsetNote != "" {
-			text.WriteString(key.unsetNote + "\n")
+			text.WriteString(key.unsetNote)
+			text.WriteString("\n")
 			continue
 		}
 		name := key.name[strings.Index(key.name, ".")+1:]

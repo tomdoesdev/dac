@@ -54,11 +54,13 @@ rewrites the lock file. Naming assets narrows which origins it reaches; the lock
 file it writes still describes the whole project.
 
 `check` is a completely offline comparison of the normalized manifest and the
-complete lock file. `check --upstream` first performs that comparison, then uses
-stored ETag and Last-Modified hints to avoid downloads when the origin repeats
-them. A missing or changed hint causes DAC to download, hash, and discard the
-asset. Validator changes alone do not fail the check; only changed bytes or size
-produce `lock_drift`. Neither form modifies project files or the cache.
+complete lock file. `check upstream [<coordinate>...]` first performs that
+comparison, then issues HEAD requests for the selected assets (or every asset)
+and compares the locked size plus any stored ETag and Last-Modified values. It
+never downloads asset bodies. Add `--verify` to download, hash, and discard each
+selected asset instead; byte verification deliberately skips metadata checks and
+never writes to the cache. Neither upstream form modifies project files or the
+cache.
 
 `remove` also changes only the manifest. It neither reads nor writes the lock
 file, so it works when that file is missing, stale, or invalid. Run `dac pull`
@@ -74,7 +76,8 @@ initial empty project files, pull is the only command that writes lock state.
 | `dac remove <coordinate>` | Remove one asset version from the manifest. |
 | `dac info [<asset>[@<version>]]` | Show project and cache state. |
 | `dac pull [<asset>[@<version>]...] [--refresh] [options]` | Reconcile lock state and install locked objects. |
-| `dac check [--upstream] [--concurrency <n>]` | Check project files offline and optionally inspect upstream bytes. |
+| `dac check` | Check the manifest and lock file offline. |
+| `dac check upstream [<coordinate>...] [--verify] [options]` | Check upstream metadata, or download and verify locked bytes. |
 | `dac unpack [<asset>[@<version>]...] [options]` | Write cached assets to a directory. |
 | `dac cache <dir\|list\|gc\|clear\|remove\|scrub>` | Inspect or maintain the cache. |
 | `dac trust <list\|add\|remove\|gc\|path>` | Manage trusted hosts. |

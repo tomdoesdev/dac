@@ -260,9 +260,10 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		// Every lock operation lives on pull now, so the command that used to spell them is gone.
 		appendArgs(base, "lock"),
 		appendArgs(base, "lock", "--refresh"),
-		// Project verification was renamed without an alias, and upstream checking
-		// has one explicit spelling.
+		// Project verification and the old upstream flag were both removed without
+		// aliases; upstream checking now has its own subcommand.
 		appendArgs(base, "verify"),
+		appendArgs(base, "check", "--upstream"),
 		appendArgs(base, "check", "--refresh"),
 		// The transfer tuning options moved into the config file, so the command line no longer answers to them at all.
 		appendArgs(base, "pull", "--max-size", "1GiB"),
@@ -449,8 +450,12 @@ func TestCheckHelpUsesOnlyTheNewCommandAndFlagNames(t *testing.T) {
 		t.Fatalf("unexpected root help: %#v", root)
 	}
 	check := run(t, []string{"check", "--help"})
-	if check.status != ExitOK || !strings.Contains(check.stderr, "--upstream") || strings.Contains(check.stderr, "--refresh") {
+	if check.status != ExitOK || !strings.Contains(check.stderr, "upstream") || strings.Contains(check.stderr, "--refresh") {
 		t.Fatalf("unexpected check help: %#v", check)
+	}
+	upstream := run(t, []string{"check", "upstream", "--help"})
+	if upstream.status != ExitOK || !strings.Contains(upstream.stderr, "--verify") || strings.Contains(upstream.stderr, "--refresh") {
+		t.Fatalf("unexpected upstream check help: %#v", upstream)
 	}
 }
 
@@ -1123,19 +1128,23 @@ func TestCheckUpstreamFailsOnDrift(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 	settleCLIProject(t, base)
-	checked := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
-	assertSuccess(t, checked, "check")
+	checked := runJSON(t, appendArgs(base, "check", "upstream", "--verify", "--no-progress"))
+	assertSuccess(t, checked, "check.upstream")
 	checkData := checked.value["data"].(map[string]any)
-	if checkData["upstream"] != true || checkData["downloaded"] != float64(1) {
+	if checkData["upstream"] != true || checkData["verified"] != true || checkData["downloaded"] != float64(1) {
 		t.Fatalf("unexpected upstream check data: %#v", checkData)
 	}
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
+	result := runJSON(t, appendArgs(base, "check", "upstream", "--verify", "--no-progress"))
 	assertError(t, result, "lock_drift")
+	human := run(t, appendArgs(base, "check", "upstream", "--verify", "--no-progress"))
+	if !strings.Contains(human.stderr, "app/geo@1") || !strings.Contains(human.stderr, "expected") {
+		t.Fatalf("human drift error did not explain the asset: %#v", human)
+	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--upstream rewrote the lock file")
+		t.Fatal("check upstream --verify rewrote the lock file")
 	}
 	refreshed := runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress"))
 	assertSuccess(t, refreshed, "pull")
@@ -1189,17 +1198,17 @@ func TestCheckUpstreamReportsDriftForAPinnedAsset(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
 		server.URL, "--pin", "--no-progress")), "add")
 	settleCLIProject(t, base)
-	assertSuccess(t, runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress")), "check")
+	assertSuccess(t, runJSON(t, appendArgs(base, "check", "upstream", "--verify", "--no-progress")), "check.upstream")
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
+	result := runJSON(t, appendArgs(base, "check", "upstream", "--verify", "--no-progress"))
 	assertError(t, result, "lock_drift")
 	if !bytes.Contains([]byte(result.stdout), []byte(`"app/geo@1"`)) {
 		t.Fatalf("lock_drift did not name the drifted asset: %s", result.stdout)
 	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--upstream rewrote the lock file")
+		t.Fatal("check upstream --verify rewrote the lock file")
 	}
 	// The same origin against the same pin, from the command that writes: a pin is a rule there, and bytes that fail it must not reach the lock file.
 	assertError(t, runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress")), "content_mismatch")

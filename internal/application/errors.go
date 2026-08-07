@@ -234,5 +234,13 @@ func withAsset(err error, name string) error {
 		details = map[string]any{}
 	}
 	details["asset"] = name
-	return &fault.Error{Code: value.Code, Message: value.Message, Details: details, Cause: value.Cause}
+	message := strings.TrimSuffix(value.Message, ".")
+	return &fault.Error{
+		Code: value.Code,
+		// The coordinate belongs in the text as well as JSON details: a parallel
+		// operation otherwise leaves terminal users guessing which asset failed.
+		Message: fmt.Sprintf("%s for %s.", message, name),
+		Details: details,
+		Cause:   value.Cause,
+	}
 }

@@ -1074,7 +1074,7 @@ func TestCheckUpstreamReportsDriftWithoutWriting(t *testing.T) {
 	before := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
@@ -1092,7 +1092,7 @@ func TestCheckUpstreamSucceedsWhenTheOriginsAgree(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +1112,7 @@ func TestCheckUpstreamIgnoresARotatedETagWhenBytesAgree(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true}); err != nil {
+	if _, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1129,7 +1129,7 @@ func TestCheckUpstreamReportsAStaleLockRatherThanDrift(t *testing.T) {
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
 	if fault.As(err).Code != "lock_stale" {
 		t.Fatalf("expected lock_stale, got %v", err)
 	}
