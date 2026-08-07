@@ -29,9 +29,15 @@ func projectPaths(current *urfave.Command) (string, string) {
 	return manifest, filepath.Join(filepath.Dir(manifest), DefaultLock)
 }
 
-func (runner *runner) projectService(current *urfave.Command) *dac.Service {
+// projectFilesService builds a service whose dependencies are only the two
+// project paths. It deliberately opens no cache, network, or catalog state.
+func projectFilesService(current *urfave.Command) *dac.Service {
 	manifest, lock := projectPaths(current)
-	service := dac.New(manifest, lock, nil, nil, nil)
+	return dac.New(manifest, lock, nil, nil, nil)
+}
+
+func (runner *runner) projectService(current *urfave.Command) *dac.Service {
+	service := projectFilesService(current)
 	runner.attachCatalog(current, service)
 	return service
 }
