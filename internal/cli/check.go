@@ -8,6 +8,7 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/dac"
+	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
 // checkCommand builds the offline project check and its explicit upstream mode.
@@ -66,7 +67,7 @@ func (runner *runner) checkUpstreamCommand() *urfave.Command {
 				Mode:        mode,
 				Assets:      assets,
 			})
-			return result, checkUpstreamText(runner, result), err
+			return result, checkUpstreamText(runner.stdoutPalette, result), err
 		}),
 	}
 }
@@ -86,14 +87,14 @@ func checkCoordinates(current *urfave.Command) ([]coord.Coordinate, error) {
 	return assets, nil
 }
 
-func checkUpstreamText(runner *runner, result dac.CheckResult) string {
-	count := runner.stdoutPalette.Strong(plural(result.AssetCount, "asset"))
+func checkUpstreamText(palette style.Palette, result dac.CheckResult) string {
+	count := palette.Strong(plural(result.AssetCount, "asset"))
 	if result.AssetCount < result.ProjectCount {
-		count = fmt.Sprintf("%s of %d assets", runner.stdoutPalette.Strong(plural(result.AssetCount, "asset")), result.ProjectCount)
+		count = fmt.Sprintf("%s of %d assets", palette.Strong(plural(result.AssetCount, "asset")), result.ProjectCount)
 	}
 	if result.Verified {
 		return fmt.Sprintf("The upstream bytes match the lock for %s. Downloaded %s for verification.",
-			count, runner.stdoutPalette.Strong(plural(result.Downloaded, "asset")))
+			count, palette.Strong(plural(result.Downloaded, "asset")))
 	}
 	return fmt.Sprintf("The upstream metadata matches the lock for %s.", count)
 }
