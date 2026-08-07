@@ -13,31 +13,17 @@ import (
 	"github.com/tomdoesdev/kit/strictjson"
 )
 
-// ResolvePath returns the absolute catalog file path.
-// The catalog sits under the XDG data location because it is data DAC writes and
-// means to keep. It is deliberately not in the cache: a record that lived where
-// the objects live would be emptied by the same commands that empty them, and a record of what
-// DAC has downloaded is worth more than that.
+// Path returns the catalog file for one cache root.
 //
-// One catalog therefore serves every cache root. A run pointed at another root by --cache-dir
-// reads records for objects that root does not hold, which costs a listing nothing, because a
-// listing only reports objects the cache answers for.
-func ResolvePath(option string) (string, error) {
-	selected := option
-	if selected == "" {
-		// Relative XDG paths are ignored so a build cannot write beside its source.
-		if value := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(value) {
-			selected = filepath.Join(value, DirName, FileName)
-		}
-	}
-	if selected == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || !filepath.IsAbs(home) {
-			return "", errors.New("set XDG_DATA_HOME or HOME")
-		}
-		selected = filepath.Join(home, ".local", "share", DirName, FileName)
-	}
-	return filepath.Abs(selected)
+// The catalog sits at the root of the cache rather than among the objects, because collection
+// walks the object and staging directories and nothing else: a file at the root is out of its
+// reach. Keeping it there means a cache that is moved, copied, or shared carries the record of
+// what it holds with it, instead of leaving that record behind on the machine that wrote it.
+//
+// A catalog therefore belongs to one cache root. A run pointed at another root by --cache-dir
+// reads that root's record, which is the record describing the objects it can answer for.
+func Path(cacheRoot string) string {
+	return filepath.Join(cacheRoot, FileName)
 }
 
 // Store reads and writes one catalog file.

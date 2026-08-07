@@ -6,8 +6,9 @@
 // the bytes stay while every way of identifying them goes, which leaves a cache full of objects
 // nobody can account for.
 //
-// The catalog is the record that survives the project. It is written in DAC's
-// XDG data directory rather than in the cache, which collection is free to empty.
+// The catalog is the record that survives the project. It is written at the root of the cache it
+// describes, beside the objects rather than among them: collection walks the object directories
+// and never the root, so emptying a cache cannot take the record of it away.
 package catalog
 
 import (
@@ -24,11 +25,8 @@ import (
 // SchemaVersion is the catalog file version DAC reads and writes.
 const SchemaVersion = 1
 
-// The catalog file name and the directory it sits in under the XDG data location.
-const (
-	DirName  = "dac"
-	FileName = "catalog.json"
-)
+// FileName is the catalog, which sits at the root of the cache it describes.
+const FileName = "catalog.json"
 
 // fileMode is the permission the catalog file carries.
 const fileMode = 0o644

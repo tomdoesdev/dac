@@ -51,7 +51,8 @@ func (runner *runner) projectService(current *urfave.Command) *dac.Service {
 //
 // The catalog is attached to every service, including the ones holding no object store. Reading
 // a project is what advances a record, and remove does that without ever opening the
-// cache.
+// cache. Such a service still resolves the cache root, because that is where the record it
+// writes lives, but it opens no object store there.
 func (runner *runner) attachCatalog(current *urfave.Command, service *dac.Service) {
 	if recorder := runner.catalogRecorder(current); recorder != nil {
 		service.Catalog = recorder
