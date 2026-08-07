@@ -23,6 +23,7 @@ func TestCacheGCEvictsToASizeBound(t *testing.T) {
 	for _, asset := range [][2]string{{"app/one@1", "/a"}, {"app/two@1", "/b"}} {
 		assertSuccess(t, runJSON(t, appendArgs(base, "add", asset[0], server.URL+asset[1], "--no-progress")), "add")
 	}
+	settleCLIProject(t, base)
 
 	// A bound nothing exceeds takes nothing, however recently used.
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "30d", "--max-size", "1GiB"))
@@ -57,6 +58,7 @@ func TestCacheGCReportsEvictionInTheObjectTotal(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL+"/a", "--no-progress")), "add")
+	settleCLIProject(t, base)
 
 	human := run(t, appendArgs(base, "cache", "gc", "--max-age", "30d", "--max-size", "1"))
 	if human.status != ExitOK || !strings.Contains(human.stdout, "Removed 1 object") || strings.Contains(human.stdout, "size bound") {

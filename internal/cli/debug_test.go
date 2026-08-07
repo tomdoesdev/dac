@@ -23,7 +23,7 @@ func TestDebugTracesToStandardErrorOnly(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := run(t, appendArgs(base, "--json", "--debug", "add", "app/geo@1", server.URL))
+	result := run(t, appendArgs(base, "--json", "--debug", "add", "app/geo@1", server.URL, "--pin"))
 	if result.status != ExitOK {
 		t.Fatalf("add failed: %#v", result)
 	}
@@ -57,7 +57,7 @@ func TestWithoutDebugNothingIsTraced(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := run(t, appendArgs(base, "--json", "add", "app/geo@1", server.URL, "--no-progress"))
+	result := run(t, appendArgs(base, "--json", "add", "app/geo@1", server.URL, "--pin", "--no-progress"))
 	if result.status != ExitOK {
 		t.Fatalf("add failed: %#v", result)
 	}
@@ -77,9 +77,10 @@ func TestDebugTracesTheCacheDecision(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL)), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin")), "add")
+	settleCLIProject(t, base)
 
-	// Adding resolved it, so the object is already there and the pull is a hit.
+	// Pinning downloaded it and the settling pull locked it, so this pull is a hit.
 	result := run(t, appendArgs(base, "--debug", "pull"))
 	if result.status != ExitOK {
 		t.Fatalf("pull failed: %#v", result)

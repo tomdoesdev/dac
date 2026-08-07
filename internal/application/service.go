@@ -182,7 +182,7 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_invalid", "The lock file is invalid.", err)
 	}
 	if err := project.CheckLock(manifest, lock); err != nil {
-		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull --refresh.", err)
+		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull.", err)
 	}
 	// Reading a project is the moment DAC learns what its objects are called, so it is where the
 	// catalog is told. Every command that works from a settled project reaches here.

@@ -49,3 +49,7 @@ run = "govulncheck ./..."
 [tasks.check]
 description = "Run the checks that CI runs."
 depends = ["vet", "lint", "vuln", "test"]
+
+[tasks.add-path]
+description = "Copy the binary from bin to ~/.local/bin"
+run = "mv -f ./bin/dac ~/.local/bin/dac && chmod +x ~/.local/bin/dac"

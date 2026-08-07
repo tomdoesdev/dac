@@ -42,6 +42,9 @@ type reconcileOptions struct {
 	concurrency int
 	maxSize     int64
 	mode        resolveMode
+	// offline allows reconciliation to reuse existing lock/cache state but forbids
+	// the origin request a changed unpinned asset would otherwise require.
+	offline bool
 	// refresh names the assets to resolve against their origins even where the lock already agrees.
 	// Everything else still reconciles under mode, because a lock file describes the whole manifest:
 	// an entry left disagreeing would write a file that is stale the moment it lands.

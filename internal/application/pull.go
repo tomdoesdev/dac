@@ -13,8 +13,8 @@ type PullOptions struct {
 	Concurrency int
 	MaxSize     int64
 	Offline     bool
-	// Refresh resolves the selected assets against their origins and rewrites the lock file
-	// around what they now serve. It is the only way a pull touches a lock file that exists.
+	// Refresh resolves the selected assets against their origins even when the lock
+	// already agrees. Plain pull still reconciles manifest changes before installing.
 	Refresh bool
 	// Assets narrows the pull to the coordinates these selections name.
 	// A project holds every asset every job built from it needs, and a job needs the ones it needs.
@@ -27,7 +27,7 @@ type PullResult struct {
 	// ProjectCount is how many assets the project has.
 	// It was added without an output version bump, for the reason the file name field was: a new field breaks no consumer that does not read it.
 	ProjectCount int `json:"projectCount"`
-	// Locked names the assets this pull had to reach an origin for to settle the lock file, in manifest order.
+	// Locked names the assets this pull resolved from an origin or a pinned cache object to settle the lock file, in manifest order.
 	Locked []string `json:"locked"`
 	// Changed reports whether the lock file on disk moved.
 	Changed bool `json:"changed"`
@@ -36,10 +36,9 @@ type PullResult struct {
 
 // Pull installs the locked assets, or the ones a selection names.
 //
-// A project with no lock file yet gets one: the first pull of a checkout resolves the
-// manifest and writes what it found. A lock file that already exists is left exactly as it
-// is, so a pull in a job reports a lock file that drifted from the manifest instead of
-// quietly rewriting it. Refresh is the deliberate exception.
+// A project with a missing or stale lock gets reconciled before installation. An
+// already-current lock is left byte-for-byte alone unless Refresh explicitly asks
+// to observe origins again. This makes pull the only command that changes lock state.
 //
 // Narrowing a pull narrows what it installs, and which origins a refresh reaches.
 func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResult, error) {
@@ -61,14 +60,15 @@ func (service *Service) Pull(ctx context.Context, options PullOptions) (PullResu
 		return PullResult{}, err
 	}
 	written := relocked{locked: []string{}}
+	current := false
+	if present {
+		current = project.CheckLock(manifest, lock) == nil
+	}
 	switch {
-	case present && !options.Refresh:
-		if err := project.CheckLock(manifest, lock); err != nil {
-			return PullResult{}, fault.Wrap("lock_stale",
-				"The lock file does not agree with the manifest. Run dac pull --refresh.", err)
-		}
-	case options.Offline:
-		// Refresh is already refused above, so the only way here is a project with no lock file at all.
+	case current && !options.Refresh:
+		// The common install path consumes the committed lock without rewriting it.
+	case !present && options.Offline:
+		// Refresh is already refused above, so this is a project with no lock file at all.
 		return PullResult{}, fault.New("lock_missing",
 			"The lock file does not exist, and offline mode resolves nothing to write one from. Run dac pull.")
 	default:
@@ -119,8 +119,7 @@ type relocked struct {
 //
 // The named assets resolve against their origins when this is a refresh. Every other entry
 // still reconciles, because a lock file describes the whole manifest: leaving one behind
-// would write a file that CheckLock rejects on the next run. Add settles hand edits the
-// same way while it resolves the asset it was given.
+// would write a file that CheckLock rejects on the next run.
 func (service *Service) relock(ctx context.Context, manifest project.Manifest, old project.Lock, names []coord.Coordinate, options PullOptions) (relocked, error) {
 	refresh := map[coord.Coordinate]struct{}{}
 	if options.Refresh {
@@ -132,6 +131,7 @@ func (service *Service) relock(ctx context.Context, manifest project.Manifest, o
 		concurrency: options.Concurrency,
 		maxSize:     options.MaxSize,
 		mode:        resolveChanged,
+		offline:     options.Offline,
 		refresh:     refresh,
 	})
 	if err != nil {

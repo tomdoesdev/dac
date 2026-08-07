@@ -120,7 +120,7 @@ func TestADownloadFromAnUntrustedHostIsRefused(t *testing.T) {
 	base := appendArgs(paths.base, trusted...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin"))
 	assertError(t, result, "host_not_trusted")
 	errorValue := result.value["error"].(map[string]any)
 	if !strings.Contains(errorValue["message"].(string), "dac trust add 127.0.0.1") {
@@ -134,7 +134,7 @@ func TestADownloadFromAnUntrustedHostIsRefused(t *testing.T) {
 		t.Fatalf("the origin saw %d requests, want 0", requests())
 	}
 
-	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL))
+	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin"))
 	if human.status != ExitFailure || !strings.Contains(human.stderr, "Error: DAC will not download from 127.0.0.1.") {
 		t.Fatalf("unexpected human refusal: %#v", human)
 	}
@@ -150,7 +150,7 @@ func TestAddWithTrustRecordsTheHostAndDownloads(t *testing.T) {
 	base := appendArgs(paths.base, trusted...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--trust")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--trust", "--pin")), "add")
 	if requests() != 1 {
 		t.Fatalf("the origin saw %d requests, want 1", requests())
 	}
@@ -173,7 +173,7 @@ func TestTrustAllDownloadsWithoutTrustingAnything(t *testing.T) {
 	base := appendArgs(paths.base, trusted...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--insecure-trust-all")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--insecure-trust-all", "--pin")), "add")
 	if requests() != 1 {
 		t.Fatalf("the origin saw %d requests, want 1", requests())
 	}
@@ -201,7 +201,7 @@ func TestARedirectToAnUntrustedHostIsRefused(t *testing.T) {
 	base := appendArgs(paths.base, trusted...)
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", source))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", source, "--pin"))
 	assertError(t, result, "host_not_trusted")
 	details := result.value["error"].(map[string]any)["details"].(map[string]any)
 	if details["host"] != "127.0.0.1" {

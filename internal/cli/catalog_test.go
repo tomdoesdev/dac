@@ -49,11 +49,12 @@ func serveProject(t *testing.T, content []byte) servedProject {
 	return served
 }
 
-// add creates the project and resolves its one asset.
+// add creates the project and lets pull resolve its one asset.
 func (served servedProject) add(t *testing.T) {
 	t.Helper()
 	assertSuccess(t, runJSON(t, appendArgs(served.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(served.base, "add", "app/geo@2026.08", served.url, "--no-progress")), "add")
+	settleCLIProject(t, served.base)
 }
 
 func loadCatalog(t *testing.T, path string) catalog.Catalog {

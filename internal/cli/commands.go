@@ -30,7 +30,7 @@ func (runner *runner) initCommand() *urfave.Command {
 func (runner *runner) removeCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:      "remove",
-		Usage:     "Remove one asset version and update the lock file.",
+		Usage:     "Remove one asset version from the manifest without changing the lock file.",
 		ArgsUsage: "<namespace>/<name>@<version>",
 		Action: runner.run("remove", func(_ context.Context, current *urfave.Command) (any, string, error) {
 			name, err := coordinate(current)
@@ -46,17 +46,14 @@ func (runner *runner) removeCommand() *urfave.Command {
 	}
 }
 
-// removeText reports the versions that remain after one asset version is removed.
+// removeText reports the versions that remain and the pull needed to reconcile lock state.
 func removeText(palette style.Palette, name coord.Coordinate, result application.RemoveResult) string {
 	text := fmt.Sprintf("Removed %s.", palette.Name(name.String()))
 	if len(result.Remaining) > 0 {
 		text += fmt.Sprintf(" %s still has %s.",
 			palette.Name(name.Group().String()), palette.Name(strings.Join(result.Remaining, ", ")))
 	}
-	if len(result.Unlocked) > 0 {
-		text += fmt.Sprintf(" The lock file does not describe %s. %s",
-			palette.Name(strings.Join(result.Unlocked, ", ")), palette.Warn("Run dac pull --refresh."))
-	}
+	text += " " + palette.Warn("The lock file is unchanged. Run dac pull.")
 	return text
 }
 

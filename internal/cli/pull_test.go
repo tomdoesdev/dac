@@ -117,15 +117,14 @@ func TestPullRefusesAnAssetTheProjectDoesNotHave(t *testing.T) {
 	assertError(t, runJSON(t, appendArgs(paths.base, "pull", "not-a-coordinate")), "invalid_arguments")
 }
 
-// TestPullNarrowedStillRefusesAStaleLock is the check a narrowed pull does not
-// get to skip. Fetching less of a project is not permission to stop asking
-// whether the project is the one that was committed.
-func TestPullNarrowedStillRefusesAStaleLock(t *testing.T) {
+// TestPullNarrowedStillReconcilesTheWholeLock checks that selecting installs
+// does not permit pull to write an incomplete lock.
+func TestPullNarrowedStillReconcilesTheWholeLock(t *testing.T) {
 	paths, _ := newPullProject(t)
 	// A manifest edit that nothing has locked, which is what a hand edit leaves.
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "extra/thing@1", "https://example.com/x.bin", "--offline")), "add")
 
-	assertError(t, runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0")), "lock_stale")
+	assertError(t, runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0")), "host_not_trusted")
 }
 
 // TestNarrowedRefreshReachesOnlyTheNamedOrigins covers what naming assets buys a
@@ -150,8 +149,8 @@ func TestNarrowedRefreshReachesOnlyTheNamedOrigins(t *testing.T) {
 // newPullProject builds a locked three-asset project with an empty cache, and
 // returns the log of what the origin is asked for from that point on.
 //
-// The cache is emptied because adding an asset resolves it, which stores the
-// bytes. A pull with nothing left to fetch would make every assertion here
+// The cache is emptied after the setup pull resolves the assets. A pull with
+// nothing left to fetch would make every assertion here
 // pass without a request being skipped or made.
 func newPullProject(t *testing.T) (projectFlags, *requestLog) {
 	t.Helper()
@@ -167,6 +166,7 @@ func newPullProject(t *testing.T) (projectFlags, *requestLog) {
 	for _, asset := range pullAssets {
 		assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", asset.coordinate, server.URL+asset.path)), "add")
 	}
+	settleCLIProject(t, paths.base)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "cache", "clear")), "cache.clear")
 	log.reset()
 	return paths, log

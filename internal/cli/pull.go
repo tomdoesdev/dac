@@ -18,8 +18,8 @@ func (runner *runner) pullCommand() *urfave.Command {
 	)
 	return &urfave.Command{
 		Name: "pull",
-		// A pull installs what the lock file already says, and writes the lock file when the project has none yet.
-		Usage: "Install the locked assets, or the ones named, writing the lock file if there is none.",
+		// Pull is the reconciliation boundary as well as the cache installation command.
+		Usage: "Reconcile lock state and install the locked assets, or the ones named.",
 		// Naming assets narrows what is fetched, for the job that needs one of them.
 		ArgsUsage: "[<namespace>/<name>[@<version>]...]",
 		Flags:     flags,

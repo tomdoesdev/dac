@@ -39,28 +39,35 @@ An asset coordinate has this form:
 DAC permits multiple versions of an asset. It does not order versions or select
 a latest version. Multiple coordinates can use the same cached bytes.
 
-`add` resolves one asset and updates both project files. Use `add --offline` to
-change only the manifest. Then, run `dac pull --refresh` to resolve the change.
+`add` changes only the manifest and makes no request by default. `add --pin` is
+the exception: it downloads that asset to save its digest as manifest integrity,
+but still leaves the lock file unchanged. The `--offline` flag can be used to
+explicitly forbid the request required by `--pin`.
 
 `pull` installs missing locked objects. It does not download valid cached
-objects. It writes the lock file when the project has none, and otherwise leaves
-it alone: a lock file that no longer agrees with the manifest reports
-`lock_stale` instead of being rewritten.
+objects. It creates a missing lock file and reconciles a stale one, resolving
+only the entries changed in the manifest. A current lock file is left
+byte-for-byte unchanged.
 
 `pull --refresh` resolves assets and accepts the current origin bytes, then
 rewrites the lock file. Naming assets narrows which origins it reaches; the lock
 file it writes still describes the whole project. `verify --refresh` checks for
 the same changes without modifying the lock file.
 
+`remove` also changes only the manifest. It neither reads nor writes the lock
+file, so it works when that file is missing, stale, or invalid. Run `dac pull`
+after add or remove to reconcile the project. Apart from `init` creating the
+initial empty project files, pull is the only command that writes lock state.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `dac init [--force]` | Create empty project files. |
-| `dac add <coordinate> <url> [options]` | Add one asset version. |
-| `dac remove <coordinate>` | Remove one asset version. |
+| `dac add <coordinate> <url> [options]` | Add one asset version to the manifest; download only with `--pin`. |
+| `dac remove <coordinate>` | Remove one asset version from the manifest. |
 | `dac info [<asset>[@<version>]]` | Show project and cache state. |
-| `dac pull [<asset>[@<version>]...] [--refresh] [options]` | Install locked objects, and write the lock file if there is none. |
+| `dac pull [<asset>[@<version>]...] [--refresh] [options]` | Reconcile lock state and install locked objects. |
 | `dac path <asset>[@<version>]` | Print one verified object path. |
 | `dac verify [--refresh] [--concurrency <n>]` | Check project files and optional origin drift. |
 | `dac unpack [<asset>[@<version>]...] [options]` | Write cached assets to a directory. |
@@ -149,9 +156,10 @@ By default, the file is `dac/trusted-hosts.json` in the XDG data directory. Use
 `dac trust path` to print the active path. The `--trust-file`, `DAC_TRUST_FILE`,
 and `trust.file` settings can select a different file.
 
-Use `dac add --trust` to trust the source host before the download. This option
-does not trust redirect hosts. Use `--insecure-trust-all` to skip checks for one
-run without changing the trust file.
+Use `dac add --trust` to trust the source host while recording it in the
+manifest. Pair it with `--pin` to download in the same run. This option does not
+trust redirect hosts. Use `--insecure-trust-all` to skip checks for one run
+without changing the trust file.
 
 `dac trust gc` removes hosts that exceed `trust.max-age`. The default limit is
 180 days. It does not remove hosts that have no usage timestamps.

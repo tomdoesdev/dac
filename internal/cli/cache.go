@@ -262,7 +262,8 @@ func scrubText(palette style.Palette, result application.VerifyCacheResult) stri
 		_, _ = fmt.Fprintf(&text, " Removed %s.", plural(result.Repaired, "corrupt object"))
 	}
 	if result.CorruptCount == 0 && result.MissingCount == 0 {
-		text.WriteString(" " + palette.Good("No damage found."))
+		text.WriteString(" ")
+		text.WriteString(palette.Good("No damage found."))
 	}
 	return text.String()
 }

@@ -45,6 +45,10 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	if conditional && oldValid {
 		hint = old.ETag
 	}
+	if options.offline {
+		return project.LockAsset{}, "", fault.New("offline_cache_miss",
+			"Offline mode cannot resolve a changed asset that has no reusable digest.")
+	}
 	response, err := service.fetch(ctx, source, hint)
 	if err != nil {
 		return project.LockAsset{}, "", err

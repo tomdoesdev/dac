@@ -41,6 +41,16 @@ import (
 // flag, and the only place a server that invents its own content belongs.
 const defaultAddr = "127.0.0.1:8080"
 
+const (
+	// syntheticModifiedEpoch is 2000-01-01T00:00:00Z. Keeping generated
+	// modification times in a fixed historical window makes them useful for
+	// conditional requests without ever presenting a future timestamp.
+	syntheticModifiedEpoch int64 = 946684800
+	// Twenty ordinary years keep every generated timestamp before 2020 while
+	// providing second-level variation between different synthetic assets.
+	syntheticModifiedWindow uint64 = 20 * 365 * 24 * 60 * 60
+)
+
 func main() {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	if err := run(logger); err != nil {
@@ -198,12 +208,13 @@ func checkName(name string) error {
 
 // origin serves one synthetic asset.
 type origin struct {
-	name   string
-	size   int64
-	rate   int64
-	etag   string
-	key    [32]byte
-	logger *log.Logger
+	name         string
+	size         int64
+	rate         int64
+	etag         string
+	lastModified time.Time
+	key          [32]byte
+	logger       *log.Logger
 }
 
 // newOrigin builds one asset. The configuration it comes from is already
@@ -224,6 +235,11 @@ func newOrigin(name string, config assetConfig, defaultRate byteCount, logger *l
 	// stable across restarts, and changes whenever the content does.
 	sum := sha256.Sum256(fmt.Appendf(nil, "dacserve/etag\x00%s\x00%d\x00%d", name, config.Seed, created.size))
 	created.etag = `"` + hex.EncodeToString(sum[:16]) + `"`
+	// The remaining digest bytes place Last-Modified at a stable whole second
+	// between 2000 and 2020. It therefore follows the same content identity as
+	// the ETag without depending on wall-clock time or configuration metadata.
+	offset := binary.BigEndian.Uint64(sum[16:24]) % syntheticModifiedWindow
+	created.lastModified = time.Unix(syntheticModifiedEpoch+int64(offset), 0).UTC()
 	return created
 }
 
@@ -236,9 +252,10 @@ func (origin *origin) serve(writer http.ResponseWriter, request *http.Request) {
 
 	started := time.Now()
 	paced := &pacedWriter{ResponseWriter: writer, ctx: request.Context(), rate: origin.rate, status: http.StatusOK, started: started}
-	// ServeContent handles HEAD, If-None-Match, ranges, and Content-Length, so
-	// this server only has to produce bytes at an offset.
-	http.ServeContent(paced, request, "", time.Time{}, &blob{key: origin.key, size: origin.size})
+	// ServeContent handles HEAD, ETag and modification-time conditionals,
+	// ranges, and Content-Length, so this server only has to produce bytes at
+	// an offset.
+	http.ServeContent(paced, request, "", origin.lastModified, &blob{key: origin.key, size: origin.size})
 	origin.logger.Printf("%s /%s %d %d bytes in %s", request.Method, origin.name, paced.status, paced.written, time.Since(started).Round(time.Millisecond))
 }
 

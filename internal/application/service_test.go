@@ -223,12 +223,13 @@ func (reporter *fakeReporter) add(value string) {
 	reporter.events = append(reporter.events, value)
 }
 
-func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
+func TestAddAndRemoveChangeOnlyTheManifest(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	store := newFakeStore()
 	fetcher := staticFetcher([]byte("one"))
 	reporter := &fakeReporter{}
 	service := application.New(manifestPath, lockPath, store, fetcher, reporter)
+	lockBefore := projecttest.MustRead(t, lockPath)
 
 	added, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
@@ -237,11 +238,13 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 		t.Fatal(err)
 	}
 	if added.Coordinate != "test/geo@1" || added.Namespace != "test" || added.Name != "geo" ||
-		added.Version != "1" || !added.Cached {
+		added.Version != "1" || added.Cached || added.Status != "unlocked" {
 		t.Fatalf("unexpected add result: %#v", added)
 	}
-	projecttest.Check(t, manifestPath, lockPath)
-	if fetcher.count() != 1 {
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("add changed the lock file")
+	}
+	if fetcher.count() != 0 {
 		t.Fatalf("add made %d requests", fetcher.count())
 	}
 
@@ -260,11 +263,17 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 	if _, err := service.Remove(at("geo@1")); err != nil {
 		t.Fatal(err)
 	}
-	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if len(manifest.Assets) != 0 || len(lock.Assets) != 0 {
-		t.Fatalf("remove left assets: %#v %#v", manifest.Assets, lock.Assets)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if fetcher.count() != 1 {
+	if len(manifest.Assets) != 0 {
+		t.Fatalf("remove left assets: %#v", manifest.Assets)
+	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("remove changed the lock file")
+	}
+	if fetcher.count() != 0 {
 		t.Fatal("remove made a network request")
 	}
 	if len(reporter.events) == 0 || reporter.events[len(reporter.events)-1] != "wait" {
@@ -275,6 +284,7 @@ func TestAddAndRemoveKeepProjectFilesMatched(t *testing.T) {
 // A version is part of an asset's identity, so a second version is a second entry.
 func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
+	lockBefore := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
 	if _, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
@@ -290,19 +300,26 @@ func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	if len(result.Siblings) != 1 || result.Siblings[0] != "1" {
 		t.Fatalf("add did not report the version already there: %#v", result.Siblings)
 	}
-	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if len(manifest.Assets) != 2 || len(lock.Assets) != 2 {
-		t.Fatalf("the project does not hold both versions: %#v %#v", manifest.Assets, lock.Assets)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Assets) != 2 {
+		t.Fatalf("the manifest does not hold both versions: %#v", manifest.Assets)
 	}
 	if manifest.Assets[at("geo@1")].URL != "https://example.com/one" ||
 		manifest.Assets[at("geo@2")].URL != "https://example.com/two" {
 		t.Fatalf("the versions do not have their own sources: %#v", manifest.Assets)
+	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("adds changed the lock file")
 	}
 }
 
 // Force is now only about one coordinate: it replaces the source of a version the manifest already has, and leaves every other version alone.
 func TestAddForceReplacesOneVersionSource(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
+	lockBefore := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
 	for _, options := range []application.AddOptions{
 		{Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100},
@@ -318,7 +335,10 @@ func TestAddForceReplacesOneVersionSource(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(manifest.Assets) != 2 {
 		t.Fatalf("force changed the number of versions: %#v", manifest.Assets)
 	}
@@ -326,9 +346,12 @@ func TestAddForceReplacesOneVersionSource(t *testing.T) {
 		manifest.Assets[at("geo@2")].URL != "https://mirror.example.com/two" {
 		t.Fatalf("force replaced the wrong version: %#v", manifest.Assets)
 	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("force changed the lock file")
+	}
 }
 
-func TestAddResolvesOnlyTheChangedAsset(t *testing.T) {
+func TestAddResolvesNothingWithoutPin(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	fetcher := staticFetcher([]byte("content"))
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
@@ -337,27 +360,18 @@ func TestAddResolvesOnlyTheChangedAsset(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	firstLock, err := project.ReadLock(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	firstLock := projecttest.MustRead(t, lockPath)
 	if _, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("beta@1"), URL: "https://example.com/beta", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	secondLock, err := project.ReadLock(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fetcher.count() != 2 {
+	secondLock := projecttest.MustRead(t, lockPath)
+	if fetcher.count() != 0 {
 		t.Fatalf("two adds made %d requests", fetcher.count())
 	}
-	if firstLock.Assets[at("alpha@1")] != secondLock.Assets[at("alpha@1")] {
-		t.Fatal("adding beta changed alpha's lock entry")
-	}
-	if fetcher.requests[1].URL != "https://example.com/beta" {
-		t.Fatalf("second add fetched %#v", fetcher.requests[1])
+	if !bytes.Equal(firstLock, secondLock) {
+		t.Fatal("adding beta changed the lock file")
 	}
 }
 
@@ -371,7 +385,7 @@ func TestFailedAddDoesNotChangeProjectFiles(t *testing.T) {
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
+		Coordinate: at("geo@1"), URL: "https://example.com/one", Pin: true, MaxSize: 100,
 	}); err == nil {
 		t.Fatal("expected add to fail")
 	}
@@ -652,7 +666,7 @@ func TestTransferFailureMidBodyKeepsItsNetworkCode(t *testing.T) {
 			}}
 			service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 			_, err := service.Add(context.Background(), application.AddOptions{
-				Coordinate: at("asset@1"), URL: "https://example.com/asset",
+				Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true,
 			})
 			if value := fault.As(err); value.Code != testCase.code {
 				t.Fatalf("code = %q, want %q (%v)", value.Code, testCase.code, err)
@@ -668,7 +682,7 @@ func TestNetworkTimeoutHasStableCode(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	if _, err := service.Add(context.Background(), application.AddOptions{
-		Coordinate: at("asset@1"), URL: "https://example.com/asset",
+		Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true,
 	}); fault.As(err).Code != "timeout" {
 		t.Fatalf("expected timeout, got %v", err)
 	}
@@ -946,7 +960,10 @@ func TestAddNormalizesAnSRIIntegrityValue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := manifest.Assets[at("asset@1")].Integrity; got != digest.Bytes(content) {
 		t.Fatalf("manifest kept %q, want the canonical form %q", got, digest.Bytes(content))
 	}
@@ -1221,8 +1238,8 @@ func TestOfflineRefreshIsRefused(t *testing.T) {
 	}
 }
 
-// A pull reproduces the project as committed rather than settling a manifest that has moved on.
-func TestPullRefusesAStaleLock(t *testing.T) {
+// Pull owns reconciliation, so a manifest edit is settled by an ordinary online pull.
+func TestPullReconcilesAStaleLock(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -1231,15 +1248,20 @@ func TestPullRefusesAStaleLock(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/moved"},
 		},
 	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1}); fault.As(err).Code != "lock_stale" {
-		t.Fatalf("expected lock_stale, got %v", err)
+	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 100})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if !result.Changed || len(result.Locked) != 1 {
+		t.Fatalf("pull did not reconcile the stale lock: %#v", result)
+	}
+	projecttest.Check(t, manifestPath, lockPath)
 }
 
-// Adding an asset to a project that has never been locked writes both files, which is what removed the lock command from the path a new project takes.
-func TestAddCreatesAMissingLockFile(t *testing.T) {
+// Add never creates a missing lock file; the next pull owns that transition.
+func TestAddLeavesAMissingLockFileMissing(t *testing.T) {
 	content := []byte("asset bytes")
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
@@ -1256,11 +1278,13 @@ func TestAddCreatesAMissingLockFile(t *testing.T) {
 	if len(result.Locked) != 0 {
 		t.Fatalf("add reported locking assets it did not touch: %#v", result.Locked)
 	}
-	projecttest.Check(t, manifestPath, lockPath)
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("add created the lock file: %v", err)
+	}
 }
 
-// An add onto a hand-edited manifest settles the whole project rather than writing a lock file that every later command rejects.
-func TestAddSettlesAHandEditedManifest(t *testing.T) {
+// Add is independent of lock health and leaves an already-stale lock byte-for-byte alone.
+func TestAddLeavesAHandEditedLockUntouched(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -1269,6 +1293,7 @@ func TestAddSettlesAHandEditedManifest(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/moved"},
 		},
 	})
+	lockBefore := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
 	result, err := service.Add(context.Background(), application.AddOptions{
@@ -1277,18 +1302,16 @@ func TestAddSettlesAHandEditedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Locked) != 1 || result.Locked[0] != "test/asset@1" {
-		t.Fatalf("add did not report the asset it settled: %#v", result.Locked)
+	if len(result.Locked) != 0 {
+		t.Fatalf("add reported locking assets: %#v", result.Locked)
 	}
-	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if manifest.Assets[at("asset@1")].URL != "https://example.com/moved" ||
-		lock.Assets[at("asset@1")].URL != "https://example.com/moved" {
-		t.Fatalf("add did not settle the edited asset: %#v %#v", manifest.Assets[at("asset@1")], lock.Assets[at("asset@1")])
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("add changed the stale lock")
 	}
 }
 
-// Removal makes no request, so it settles only what it can offline and names what it could not rather than implying the project now agrees.
-func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
+// Removal neither validates nor rewrites stale lock state.
+func TestRemoveLeavesAStaleLockUntouched(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -1299,14 +1322,15 @@ func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
 			at("gone@1"):  {URL: "https://example.com/gone"},
 		},
 	})
+	lockBefore := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
 	result, err := service.Remove(at("gone@1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Unlocked) != 1 || result.Unlocked[0] != "test/other@1" {
-		t.Fatalf("remove did not name the unlocked asset: %#v", result.Unlocked)
+	if len(result.Unlocked) != 0 {
+		t.Fatalf("remove reported lock work: %#v", result.Unlocked)
 	}
 	manifest, err := project.ReadManifest(manifestPath)
 	if err != nil {
@@ -1314,6 +1338,26 @@ func TestRemoveReportsWhatItCouldNotLock(t *testing.T) {
 	}
 	if _, exists := manifest.Assets[at("gone@1")]; exists {
 		t.Fatal("remove left the asset in the manifest")
+	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("remove changed the stale lock")
+	}
+}
+
+// Remove does not need lock state at all, so a damaged lock cannot block a local manifest edit.
+func TestRemoveIgnoresAnInvalidLock(t *testing.T) {
+	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
+	invalid := []byte("not JSON\n")
+	if err := os.WriteFile(lockPath, invalid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := application.New(manifestPath, lockPath, nil, nil, nil)
+
+	if _, err := service.Remove(at("asset@1")); err != nil {
+		t.Fatalf("invalid lock blocked remove: %v", err)
+	}
+	if !bytes.Equal(invalid, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("remove rewrote the invalid lock")
 	}
 }
 
@@ -1326,6 +1370,7 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 	if _, err := service.Init(false); err != nil {
 		t.Fatal(err)
 	}
+	lockBefore := projecttest.MustRead(t, lockPath)
 
 	result, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true, MaxSize: 1 << 20,
@@ -1337,13 +1382,15 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 	if result.Integrity != value {
 		t.Fatalf("add did not pin the asset: %#v", result)
 	}
-	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if manifest.Assets[at("asset@1")].Integrity != value {
 		t.Fatalf("the manifest was not pinned: %#v", manifest.Assets[at("asset@1")])
 	}
-	// A pinned asset never sends a conditional request, so it must not carry an ETag that the next lock would only have to strip back out.
-	if lock.Assets[at("asset@1")].ETag != "" {
-		t.Fatalf("a pinned lock entry kept an ETag: %#v", lock.Assets[at("asset@1")])
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("add --pin changed the lock file")
 	}
 }
 
@@ -1364,6 +1411,7 @@ func TestAddAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	lockBefore := projecttest.MustRead(t, lockPath)
 
 	_, err := service.Add(context.Background(), application.AddOptions{
 		Coordinate: at("asset@2"), URL: "https://example.com/asset", MaxSize: 1 << 20,
@@ -1371,12 +1419,15 @@ func TestAddAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
-	if len(manifest.Assets) != 2 || len(lock.Assets) != 2 {
-		t.Fatalf("project does not contain both versions: %#v %#v", manifest.Assets, lock.Assets)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if lock.Assets[at("asset@1")].Digest != lock.Assets[at("asset@2")].Digest {
-		t.Fatalf("identical versions have different digests: %#v", lock.Assets)
+	if len(manifest.Assets) != 2 {
+		t.Fatalf("manifest does not contain both versions: %#v", manifest.Assets)
+	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("add changed the lock file")
 	}
 }
 
@@ -1472,6 +1523,14 @@ func lockedFilename(t *testing.T, lockPath string) string {
 	return lock.Assets[at("asset@1")].Filename
 }
 
+// settleProject moves manifest-only setup through the sole lock-writing operation.
+func settleProject(t *testing.T, service *application.Service) {
+	t.Helper()
+	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The name an origin supplies is the whole point of the field: a URL ending in an opaque endpoint spells nothing useful, and the header is the only place the real name appears.
 func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
 	content := []byte("asset bytes")
@@ -1484,6 +1543,7 @@ func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "database.bin" {
 		t.Fatalf("lock recorded %q, want the supplied name", name)
 	}
@@ -1500,6 +1560,7 @@ func TestResolveFallsBackToTheNameTheURLSpells(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "database.bin" {
 		t.Fatalf("lock recorded %q, want the name the URL spells", name)
 	}
@@ -1517,6 +1578,7 @@ func TestResolveRefusesASuppliedNameThatEscapesItsDirectory(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "database.bin" {
 		t.Fatalf("lock recorded %q, want the URL name instead of the escaping one", name)
 	}
@@ -1553,6 +1615,7 @@ func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "first.bin" {
 		t.Fatalf("lock recorded %q", name)
 	}
@@ -1669,6 +1732,7 @@ func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
 	if result.Filename != "geo.db" {
 		t.Fatalf("add reported the name %q", result.Filename)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "geo.db" {
 		t.Fatalf("lock recorded %q, want the declared name", name)
 	}
@@ -1691,6 +1755,7 @@ func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "database.bin" {
 		t.Fatalf("lock recorded %q, want the supplied name", name)
 	}
@@ -1804,6 +1869,7 @@ func TestADeclaredNameReachesACachedResolution(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "geo.db" {
 		t.Fatalf("a cached resolution recorded %q", name)
 	}

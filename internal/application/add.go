@@ -19,14 +19,12 @@ type AddOptions struct {
 	AllowInsecureHTTP bool
 	// Filename is the project name that overrides origin names during later resolutions.
 	Filename string
-	// Concurrency bounds the assets one add resolves at a time. An add resolves the
-	// asset it was given and every entry a hand edit left the lock file no longer
-	// describing, and that second set is the same work lock does.
-	Concurrency int
-	Force       bool
+	Force    bool
 	// Pin records the digest the asset resolves to as its integrity value, so that every later command holds the publisher to the bytes this add saw.
-	Pin     bool
+	Pin bool
+	// MaxSize bounds the one download performed by Pin.
 	MaxSize int64
+	// Offline explicitly refuses Pin's required request. Non-pin additions are always local.
 	Offline bool
 }
 
@@ -37,11 +35,13 @@ type AddResult struct {
 	Siblings []string `json:"siblings"`
 	// SharedSources names the sibling versions served from the same URL as this one.
 	SharedSources []string `json:"sharedSources"`
-	// Locked names the other assets this add had to resolve, which is every asset a hand edit left the lock file no longer describing.
+	// Locked remains for result compatibility. Add never locks assets; pull owns all lock-file changes.
 	Locked []string `json:"locked"`
 }
 
-// Add writes one asset to the manifest and resolves it unless offline mode is active.
+// Add writes one asset to the manifest without changing the lock file.
+// Pin is the sole networked form: it downloads the new asset to record its digest
+// as manifest intent, while still leaving lock-file reconciliation to pull.
 func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult, error) {
 	defer service.Reporter.Wait()
 	if options.Pin && options.Integrity != "" {
@@ -53,14 +53,6 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	manifest, err := service.readManifest()
 	if err != nil {
 		return AddResult{}, err
-	}
-	// Add settles stale manifest entries while it resolves the new asset.
-	var lock project.Lock
-	if !options.Offline {
-		lock, _, err = service.readLockIfPresent()
-		if err != nil {
-			return AddResult{}, err
-		}
 	}
 	// A coordinate is the whole identity of an asset, so this asks only about the exact version.
 	if _, exists := manifest.Assets[options.Coordinate]; exists && !options.Force {
@@ -93,7 +85,7 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	// Both lists describe the project as it stands after this addition, so they are read from the updated manifest with the new coordinate itself dropped.
 	siblings := coord.Versions(others(coord.InGroup(updated.Assets, options.Coordinate.Group()), options.Coordinate))
 	shared := sharedSources(updated, options.Coordinate, options.URL)
-	if options.Offline {
+	if !options.Pin {
 		if err := project.Write(service.ManifestPath, updated); err != nil {
 			return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the manifest file.", err)
 		}
@@ -111,40 +103,34 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 		return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: []string{}}, nil
 	}
 
-	// Reconciling the updated manifest resolves the new asset, which no lock file can describe yet, and any asset a hand edit left behind, in one pass.
-	reconciled, err := service.reconcile(ctx, updated, lock, reconcileOptions{
-		concurrency: options.Concurrency,
-		maxSize:     options.MaxSize,
-		mode:        resolveChanged,
+	// Pin resolves only the new coordinate. Reconciliation is deliberately not used:
+	// it represents a complete lock-file view and could resolve unrelated stale entries.
+	service.Reporter.Plan([]string{options.Coordinate.String()})
+	resolved, status, err := service.resolve(ctx, options.Coordinate, asset, project.LockAsset{}, reconcileOptions{
+		maxSize: options.MaxSize,
+		mode:    resolveChanged,
 	})
 	if err != nil {
+		if ctx.Err() == nil {
+			service.Reporter.Fail(options.Coordinate.String(), err)
+		}
 		return AddResult{}, err
 	}
-	resolved := reconciled.assets[options.Coordinate]
-	if options.Pin {
-		// Pin records the digest from the bytes that this command received.
-		asset.Integrity = resolved.Digest
-		updated.Assets[options.Coordinate] = asset
-		// A pinned asset neither sends nor records an ETag, so drop the one this resolution collected.
-		resolved.ETag = ""
-		reconciled.assets[options.Coordinate] = resolved
+	// Pin records the digest from the bytes that this command received. The resolved
+	// metadata stays in the cache/catalog until pull chooses what belongs in the lock.
+	asset.Integrity = resolved.Digest
+	updated.Assets[options.Coordinate] = asset
+	if err := project.Write(service.ManifestPath, updated); err != nil {
+		return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the manifest file.", err)
 	}
-	updatedLock, err := newLock(updated, reconciled.assets)
+	view, err := service.assetView(options.Coordinate, asset, resolved, status)
 	if err != nil {
 		return AddResult{}, err
 	}
-	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, updatedLock); err != nil {
-		return AddResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
-	}
-	view, err := service.assetView(options.Coordinate, asset, resolved, reconciled.resolved[options.Coordinate])
-	if err != nil {
-		return AddResult{}, err
-	}
-	locked := reconciled.names(others(updated.Coordinates(), options.Coordinate))
-	return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: locked}, nil
+	return AddResult{Asset: view, Siblings: siblings, SharedSources: shared, Locked: []string{}}, nil
 }
 
-// others drops one coordinate from a list, leaving the assets a command settled or already held on the way to the one it was asked about.
+// others drops one coordinate from a list while preserving the original order.
 func others(names []coord.Coordinate, name coord.Coordinate) []coord.Coordinate {
 	rest := make([]coord.Coordinate, 0, len(names))
 	for _, value := range names {

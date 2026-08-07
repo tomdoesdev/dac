@@ -48,46 +48,24 @@ type RemoveResult struct {
 	AssetCount int    `json:"assetCount"`
 	// Remaining names the versions of this asset the project still has.
 	Remaining []string `json:"remaining"`
-	// Unlocked names the assets the lock file no longer describes once this removal has written it.
+	// Unlocked remains for result compatibility. Remove leaves the complete lock file untouched.
 	Unlocked []string `json:"unlocked"`
 }
 
-// Remove deletes one exact coordinate without a network request.
-// Remove rebuilds a partial lock because asset deletion needs no origin request.
+// Remove deletes one exact coordinate from the manifest without reading or writing the lock file.
+// This keeps the command usable offline even when the lock is missing, stale, or invalid.
 func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 	manifest, err := service.readManifest()
 	if err != nil {
 		return RemoveResult{}, err
 	}
-	lock, _, err := service.readLockIfPresent()
-	if err != nil {
-		return RemoveResult{}, err
-	}
-	// This is the last moment a project describes the asset about to go, so the catalog is told
-	// before the manifest stops naming it. The object itself stays in the cache.
-	service.note(lock.Assets)
 	if _, exists := manifest.Assets[name]; !exists {
 		return RemoveResult{}, unknownCoordinate(name, manifest.Assets)
 	}
 	updated := manifest.Clone()
 	delete(updated.Assets, name)
-	// Building from the manifest rather than deleting from the lock also drops entries for assets the manifest no longer names at all.
-	assets := make(map[coord.Coordinate]project.LockAsset, len(updated.Assets))
-	unlocked := make([]string, 0, len(updated.Assets))
-	for _, other := range updated.Coordinates() {
-		locked, found := lock.Assets[other]
-		if !project.Agrees(updated.Assets[other], locked, found) {
-			unlocked = append(unlocked, other.String())
-			continue
-		}
-		assets[other] = locked
-	}
-	updatedLock, err := newLock(updated, assets)
-	if err != nil {
-		return RemoveResult{}, err
-	}
-	if err := project.WritePair(service.ManifestPath, service.LockPath, updated, updatedLock); err != nil {
-		return RemoveResult{}, fault.Wrap("project_write_failed", "DAC could not write the project files.", err)
+	if err := project.Write(service.ManifestPath, updated); err != nil {
+		return RemoveResult{}, fault.Wrap("project_write_failed", "DAC could not write the manifest file.", err)
 	}
 	return RemoveResult{
 		Coordinate: name.String(),
@@ -96,7 +74,7 @@ func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 		Version:    name.Version,
 		AssetCount: len(updated.Assets),
 		Remaining:  coord.Versions(coord.InGroup(updated.Assets, name.Group())),
-		Unlocked:   unlocked,
+		Unlocked:   []string{},
 	}, nil
 }
 

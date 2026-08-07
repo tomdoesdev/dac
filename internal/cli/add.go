@@ -21,11 +21,11 @@ func (runner *runner) addCommand() *urfave.Command {
 		&urfave.BoolFlag{Name: "allow-insecure-http", Usage: "Permit a non-local HTTP URL."},
 		&urfave.BoolFlag{Name: "trust", Usage: "Add the source URL's host to the trusted-hosts file."},
 		&urfave.BoolFlag{Name: "force", Usage: "Replace the source of an asset version the manifest already has."},
-		&urfave.BoolFlag{Name: "offline", Usage: "Write only the manifest without network access."},
+		&urfave.BoolFlag{Name: "offline", Usage: "Refuse network access, including the request required by --pin."},
 	)
 	return &urfave.Command{
 		Name:      "add",
-		Usage:     "Add one asset and update the project files.",
+		Usage:     "Add one asset to the manifest without changing the lock file.",
 		ArgsUsage: "<namespace>/<name>@<version> <url>",
 		Flags:     flags,
 		Action: runner.run("add", func(ctx context.Context, current *urfave.Command) (any, string, error) {
@@ -40,8 +40,7 @@ func (runner *runner) addCommand() *urfave.Command {
 			}
 			service := runner.projectService(current)
 			var maxSize int64
-			var concurrency int
-			if !current.Bool("offline") {
+			if current.Bool("pin") && !current.Bool("offline") {
 				var client *httpclient.Client
 				service, client, err = runner.networkService(ctx, current, false)
 				if err != nil {
@@ -52,13 +51,6 @@ func (runner *runner) addCommand() *urfave.Command {
 				if err != nil {
 					return nil, "", err
 				}
-				// Add carries no --concurrency flag: the asset it was asked for is one
-				// request, and the parallelism is for the entries it settles on the way
-				// past, which nobody invoked it to think about.
-				concurrency, err = runner.concurrency(current)
-				if err != nil {
-					return nil, "", err
-				}
 			}
 			result, err := service.Add(ctx, application.AddOptions{
 				Coordinate:        name,
@@ -66,7 +58,6 @@ func (runner *runner) addCommand() *urfave.Command {
 				Integrity:         current.String("integrity"),
 				Filename:          current.String("name"),
 				AllowInsecureHTTP: current.Bool("allow-insecure-http"),
-				Concurrency:       concurrency,
 				Force:             current.Bool("force"),
 				Pin:               current.Bool("pin"),
 				MaxSize:           maxSize,
@@ -80,9 +71,7 @@ func (runner *runner) addCommand() *urfave.Command {
 	}
 }
 
-// addText summarizes one addition.
-// addText reports the digest, sibling versions, shared sources, and settled entries.
-// It also names the assets the addition locked on the way past.
+// addText summarizes one manifest addition and the digest observed by --pin.
 func addText(palette style.Palette, name coord.Coordinate, result application.AddResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Added %s", palette.Name(name.String()))
@@ -102,9 +91,6 @@ func addText(palette style.Palette, name coord.Coordinate, result application.Ad
 		_, _ = fmt.Fprintf(&text, " %s",
 			palette.Warn(fmt.Sprintf("Warning: %s shares this source URL, and one URL serves one set of bytes.",
 				strings.Join(result.SharedSources, ", "))))
-	}
-	if len(result.Locked) > 0 {
-		_, _ = fmt.Fprintf(&text, " Locked %s.", palette.Name(strings.Join(result.Locked, ", ")))
 	}
 	return text.String()
 }

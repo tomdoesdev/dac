@@ -95,10 +95,12 @@ func TestCommandLifecycle(t *testing.T) {
 	if result.stderr != "" {
 		t.Fatalf("JSON add wrote stderr: %q", result.stderr)
 	}
+	// Add changes only source intent; pull performs the first resolution and lock write.
+	settleCLIProject(t, base)
 	manifest, lock := projecttest.Check(t, manifestPath, lockPath)
 	if _, exists := manifest.Assets[coord.MustParse("app/geo@2026.08")]; !exists ||
 		lock.Assets[coord.MustParse("app/geo@2026.08")].Digest == "" {
-		t.Fatalf("add did not update both files: %#v %#v", manifest, lock)
+		t.Fatalf("add and pull did not settle both files: %#v %#v", manifest, lock)
 	}
 	if name := lock.Assets[coord.MustParse("app/geo@2026.08")].Filename; name != "geo.bin" {
 		t.Fatalf("the lock recorded the file name %q", name)
@@ -195,13 +197,20 @@ func TestCommandLifecycle(t *testing.T) {
 		t.Fatalf("path result is %#v", data)
 	}
 
+	lockBeforeRemove := projecttest.MustRead(t, lockPath)
 	result = runJSON(t, appendArgs(base, "remove", "app/geo@2026.08"))
 	assertSuccess(t, result, "remove")
-	manifest, lock = projecttest.Check(t, manifestPath, lockPath)
-	if len(manifest.Assets) != 0 || len(lock.Assets) != 0 {
-		t.Fatalf("remove left assets: %#v %#v", manifest.Assets, lock.Assets)
+	manifest, err = project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// One request for the add, none for the pull that follows it because the add already locked and cached the asset, and one for each pull that had to replace the object this test deleted.
+	if len(manifest.Assets) != 0 {
+		t.Fatalf("remove left assets: %#v", manifest.Assets)
+	}
+	if !bytes.Equal(lockBeforeRemove, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("remove changed the lock file")
+	}
+	// One request for the initial pull and one for each pull that had to replace the object this test deleted.
 	if requests.Load() != 4 {
 		t.Fatalf("expected the add and three pull requests, got %d", requests.Load())
 	}
@@ -328,7 +337,7 @@ func TestInitForceReplacesExistingProject(t *testing.T) {
 	}
 }
 
-func TestOfflineAddWritesOnlyManifest(t *testing.T) {
+func TestAddDefaultsToManifestOnly(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -343,20 +352,20 @@ func TestOfflineAddWritesOnlyManifest(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	result := runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL, "--offline"))
+	result := runJSON(t, appendArgs(base, "add", "app/asset@1", server.URL))
 	assertSuccess(t, result, "add")
 	manifest, err := project.ReadManifest(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := manifest.Assets[coord.MustParse("app/asset@1")]; !exists {
-		t.Fatalf("offline add did not update the manifest: %#v", manifest)
+		t.Fatalf("add did not update the manifest: %#v", manifest)
 	}
 	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("offline add changed the lock file")
+		t.Fatal("add changed the lock file")
 	}
 	if requests.Load() != 0 {
-		t.Fatalf("offline add made %d requests", requests.Load())
+		t.Fatalf("add made %d requests", requests.Load())
 	}
 }
 
@@ -579,6 +588,12 @@ func newProject(t *testing.T) projectFlags {
 	return flags
 }
 
+// settleCLIProject runs the sole command allowed to reconcile manifest changes into the lock.
+func settleCLIProject(t *testing.T, base []string) {
+	t.Helper()
+	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
+}
+
 // TestPathAcceptsAnAssetWithoutItsVersion covers the shorter form and the one case it must refuse.
 func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -590,6 +605,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@11",
 		server.URL+"/jdk11.tar.gz", "--no-progress")), "add")
+	settleCLIProject(t, paths.base)
 
 	objectPath := objectPathFor(t, paths, coord.MustParse("java/sdk@11"))
 	bare := run(t, appendArgs(paths.base, "path", "java/sdk"))
@@ -609,6 +625,7 @@ func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
 
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@17",
 		server.URL+"/jdk17.tar.gz", "--no-progress")), "add")
+	settleCLIProject(t, paths.base)
 
 	ambiguous := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
 	assertError(t, ambiguous, "asset_ambiguous")
@@ -640,6 +657,7 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, base)
 
 	// A dry run at zero age reports the object without removing it.
 	result := runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "0d", "--dry-run"))
@@ -695,6 +713,7 @@ func TestColourAddsNothingButColour(t *testing.T) {
 		base := newProject(t).base
 		assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 		assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+		settleCLIProject(t, base)
 		return base
 	}
 	// The two runs take a project from the same source, which for a command that only reads is the same project twice: a cache listing reports a last use, and two caches filled a moment apart do not agree about it.
@@ -793,7 +812,7 @@ func TestRemovedRequestSettingsAreInvalid(t *testing.T) {
 	}
 }
 
-func TestAddReportsTheResolvedDigest(t *testing.T) {
+func TestAddPinReportsTheResolvedDigest(t *testing.T) {
 	content := []byte("asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(content)
@@ -802,7 +821,7 @@ func TestAddReportsTheResolvedDigest(t *testing.T) {
 
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
+	human := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--no-progress"))
 	if human.status != ExitOK {
 		t.Fatalf("unexpected status %d: %q", human.status, human.stderr)
 	}
@@ -827,6 +846,7 @@ func TestPullMismatchReportsTheDigestItReceived(t *testing.T) {
 	paths := newProject(t)
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, paths.base)
 
 	if err := os.Remove(objectPathFor(t, paths, coord.MustParse("app/geo@1"))); err != nil {
 		t.Fatal(err)
@@ -907,6 +927,7 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, base)
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	// path used to return this object, and every script downstream would have read the wrong bytes without ever being told.
@@ -947,6 +968,7 @@ func TestCacheVerifyRepairRemovesTheDamage(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, base)
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
 	repaired := runJSON(t, appendArgs(base, "cache", "scrub", "--repair"))
@@ -991,7 +1013,7 @@ func TestJSONErrorsCarryTheirCause(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 
-	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
+	result := runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--no-progress"))
 	assertError(t, result, "network_error")
 	errorValue := result.value["error"].(map[string]any)
 	cause, _ := errorValue["cause"].(string)
@@ -1019,7 +1041,7 @@ func TestHumanErrorsIncludeTheirCause(t *testing.T) {
 	if status := run(t, appendArgs(base, "init")).status; status != ExitOK {
 		t.Fatalf("init failed with status %d", status)
 	}
-	result := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress"))
+	result := run(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--no-progress"))
 	if result.status != ExitFailure || !strings.Contains(result.stderr, "404") {
 		t.Fatalf("the human error hid its cause: status=%d stderr=%q", result.status, result.stderr)
 	}
@@ -1080,9 +1102,8 @@ func TestPullWritesAMissingLockFile(t *testing.T) {
 	}
 }
 
-// A lock file that no longer describes the manifest is a disagreement to report rather than
-// one to settle, so the run that would settle it has to be asked for by name.
-func TestPullRefusesAStaleLockAndNamesTheFix(t *testing.T) {
+// A plain pull reconciles a stale lock because pull owns all lock-file changes.
+func TestPullSettlesAStaleLock(t *testing.T) {
 	content := []byte("asset bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(content)
@@ -1094,18 +1115,17 @@ func TestPullRefusesAStaleLockAndNamesTheFix(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	// An offline add writes the manifest alone, which is the cheapest way to leave the two files disagreeing.
+	// Add writes the manifest alone, leaving pull to reconcile the two files.
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--offline")), "add")
 
 	before := projecttest.MustRead(t, lockPath)
-	stale := run(t, appendArgs(base, "pull", "--no-progress"))
-	if stale.status != ExitFailure || !strings.Contains(stale.stderr, "Run dac pull --refresh") {
-		t.Fatalf("a stale lock file did not name the run that settles it: %#v", stale)
+	settled := run(t, appendArgs(base, "pull", "--no-progress"))
+	if settled.status != ExitOK || settled.stdout != "Locked app/geo@1. Pulled 1 asset.\n" {
+		t.Fatalf("a plain pull did not settle the stale lock: %#v", settled)
 	}
-	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("a refused pull rewrote the lock file")
+	if bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("pull left the stale lock unchanged")
 	}
-	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress")), "pull")
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
@@ -1152,6 +1172,7 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, base)
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
 
 	body.Store([]byte("moved bytes"))
@@ -1189,8 +1210,8 @@ func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	unbounded := append(configFlags(t, "[transfer]\nmax-size = \"none\"\n"), project...)
 
 	assertSuccess(t, runJSON(t, appendArgs(project, "init")), "init")
-	assertError(t, runJSON(t, appendArgs(bounded, "add", "app/geo@1", server.URL, "--no-progress")), "asset_too_large")
-	assertSuccess(t, runJSON(t, appendArgs(unbounded, "add", "app/geo@1", server.URL, "--no-progress")), "add")
+	assertError(t, runJSON(t, appendArgs(bounded, "add", "app/geo@1", server.URL, "--pin", "--no-progress")), "asset_too_large")
+	assertSuccess(t, runJSON(t, appendArgs(unbounded, "add", "app/geo@1", server.URL, "--pin", "--no-progress")), "add")
 }
 
 // TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check was least able to report on.
@@ -1212,6 +1233,7 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
 		server.URL, "--pin", "--no-progress")), "add")
+	settleCLIProject(t, base)
 	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
 
 	body.Store([]byte("moved bytes"))
@@ -1243,11 +1265,18 @@ func TestAddPinWritesTheIntegrityValue(t *testing.T) {
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath, "--cache-dir", filepath.Join(directory, "cache")}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	lockBefore := projecttest.MustRead(t, lockPath)
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--pin", "--no-progress")), "add")
 
-	manifest, _ := projecttest.Check(t, manifestPath, lockPath)
+	manifest, err := project.ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if manifest.Assets[coord.MustParse("app/geo@1")].Integrity != digest.Bytes(content) {
 		t.Fatalf("add --pin did not write the integrity value: %#v", manifest.Assets[coord.MustParse("app/geo@1")])
+	}
+	if !bytes.Equal(lockBefore, projecttest.MustRead(t, lockPath)) {
+		t.Fatal("add --pin changed the lock file")
 	}
 }
 
@@ -1297,6 +1326,7 @@ func TestCacheListReportsWhatTheCacheHolds(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL+"/a", "--no-progress")), "add")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/two@1", server.URL+"/b", "--no-progress")), "add")
+	settleCLIProject(t, base)
 
 	result := runJSON(t, appendArgs(base, "cache", "list"))
 	assertSuccess(t, result, "cache.list")
@@ -1359,6 +1389,7 @@ func TestCacheClearEmptiesTheCache(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/one@1", server.URL, "--no-progress")), "add")
+	settleCLIProject(t, base)
 
 	// A dry run reports the same objects and removes none of them.
 	dry := runJSON(t, appendArgs(base, "cache", "clear", "--dry-run"))
@@ -1394,6 +1425,7 @@ func TestCacheRemoveRefusesToUncacheAnUnnamedAsset(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/alone@1", server.URL+"/b", "--no-progress")), "add")
 	// Two coordinates, one source, so one object between them.
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/two@1", server.URL+"/a", "--no-progress")), "add")
+	settleCLIProject(t, base)
 
 	refused := runJSON(t, appendArgs(base, "cache", "remove", "app/one@1"))
 	assertError(t, refused, "cache_object_shared")
@@ -1515,6 +1547,7 @@ func TestAddNameCarriesThroughToTheUnpackedFile(t *testing.T) {
 	if declared := manifest.Assets[coord.MustParse("app/geo@1")].Filename; declared != "geo.db" {
 		t.Fatalf("the manifest declares %q", declared)
 	}
+	settleCLIProject(t, paths.base)
 
 	destination := t.TempDir()
 	result = runJSON(t, appendArgs(paths.base, "unpack", "--dest", destination))
@@ -1536,6 +1569,7 @@ func TestAddWithoutNameKeepsTheOriginNaming(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "app/geo@1", server.URL+"/download?id=1234",
 		"--no-progress")), "add")
+	settleCLIProject(t, paths.base)
 
 	manifest, err := project.ReadManifest(paths.manifestPath)
 	if err != nil {
