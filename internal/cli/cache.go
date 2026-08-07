@@ -280,15 +280,3 @@ func gcText(palette style.Palette, result dac.GCResult) string {
 	text.WriteByte('.')
 	return text.String()
 }
-
-// maximumCacheSize reads the collection size bound, preferring the flag over the config.
-func (runner *runner) maximumCacheSize(current *urfave.Command) (int64, error) {
-	return flagOrConfig(runner, current, "max-size", "The maximum size is invalid.", config.ParseSize,
-		func(settings *config.Config) int64 { return settings.CacheMaxSize })
-}
-
-// maximumAge reads the collection age, preferring the flag over the config.
-func (runner *runner) maximumAge(current *urfave.Command) (time.Duration, error) {
-	return flagOrConfig(runner, current, "max-age", "The maximum age is invalid.", config.ParseDuration,
-		func(settings *config.Config) time.Duration { return settings.MaxAge })
-}
