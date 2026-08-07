@@ -7,7 +7,7 @@ import (
 	"io"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
 // Version identifies the JSON output contract.

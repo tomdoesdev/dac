@@ -13,7 +13,7 @@ import (
 
 	"github.com/vbauerster/mpb/v8"
 
-	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
 func TestLineReporterWritesStableLifecycle(t *testing.T) {

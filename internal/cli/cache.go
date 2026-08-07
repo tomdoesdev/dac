@@ -11,7 +11,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/dac/internal/output/style"
 	"github.com/tomdoesdev/kit/bytesize"
 )
 

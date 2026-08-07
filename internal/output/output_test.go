@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
 func TestWriterWritesHumanOutput(t *testing.T) {
