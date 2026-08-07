@@ -9,16 +9,8 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/catalog"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/digest"
 )
-
-// catalogHome points this test at a catalog of its own and returns the file it will write.
-// Without it every test in this package would record into one shared file.
-func catalogHome(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", home)
-	return filepath.Join(home, catalog.DirName, catalog.FileName)
-}
 
 // servedProject sets up one asset served over loopback and the project that names it.
 type servedProject struct {
@@ -26,6 +18,13 @@ type servedProject struct {
 	url          string
 	manifestPath string
 	lockPath     string
+	cacheDir     string
+}
+
+// catalogPath returns the record this project's cache keeps. Every test here already gets a cache
+// of its own, and the record sits in it, so no test has to isolate itself from the others.
+func (served servedProject) catalogPath() string {
+	return catalog.Path(served.cacheDir)
 }
 
 func serveProject(t *testing.T, content []byte) servedProject {
@@ -40,11 +39,12 @@ func serveProject(t *testing.T, content []byte) servedProject {
 		url:          server.URL,
 		manifestPath: filepath.Join(directory, "dac.json"),
 		lockPath:     filepath.Join(directory, "dac-lock.json"),
+		cacheDir:     filepath.Join(directory, "cache"),
 	}
 	served.base = []string{
 		"--manifest", served.manifestPath,
 		"--lock", served.lockPath,
-		"--cache-dir", filepath.Join(directory, "cache"),
+		"--cache-dir", served.cacheDir,
 	}
 	return served
 }
@@ -70,7 +70,6 @@ func loadCatalog(t *testing.T, path string) catalog.Catalog {
 // the project files used to take with them the only record of what the cache was holding, and
 // the listing that would have said so refused to run at all without a manifest to read.
 func TestCacheListNamesObjectsAfterTheProjectIsDeleted(t *testing.T) {
-	catalogHome(t)
 	served := serveProject(t, []byte("mini dac asset"))
 	served.add(t)
 
@@ -104,7 +103,6 @@ func TestCacheListNamesObjectsAfterTheProjectIsDeleted(t *testing.T) {
 // TestCacheListNeedsAProjectToListOnlyItsOwn keeps the change above to the question it answers.
 // Listing this project's objects still has to know what this project is.
 func TestCacheListNeedsAProjectToListOnlyItsOwn(t *testing.T) {
-	catalogHome(t)
 	served := serveProject(t, []byte("mini dac asset"))
 	assertError(t, runJSON(t, appendArgs(served.base, "cache", "list")), "manifest_missing")
 }
@@ -112,9 +110,9 @@ func TestCacheListNeedsAProjectToListOnlyItsOwn(t *testing.T) {
 // TestReadingAProjectRecordsWhatItsObjectsAre covers the commands that download nothing. They
 // are the ones that keep a record fresh between pulls.
 func TestReadingAProjectRecordsWhatItsObjectsAre(t *testing.T) {
-	catalogPath := catalogHome(t)
 	served := serveProject(t, []byte("mini dac asset"))
 	served.add(t)
+	catalogPath := served.catalogPath()
 
 	before := loadCatalog(t, catalogPath)
 	if len(before.Objects) != 1 {
@@ -141,9 +139,9 @@ func TestReadingAProjectRecordsWhatItsObjectsAre(t *testing.T) {
 // TestCollectionForgetsTheObjectsItRemoved is what bounds the file: a record describes what the
 // cache holds, so it goes when the object does.
 func TestCollectionForgetsTheObjectsItRemoved(t *testing.T) {
-	catalogPath := catalogHome(t)
 	served := serveProject(t, []byte("mini dac asset"))
 	served.add(t)
+	catalogPath := served.catalogPath()
 	if len(loadCatalog(t, catalogPath).Objects) != 1 {
 		t.Fatal("the added object was not recorded")
 	}
@@ -157,5 +155,38 @@ func TestCollectionForgetsTheObjectsItRemoved(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(served.base, "cache", "clear")), "cache.clear")
 	if remaining := loadCatalog(t, catalogPath).Objects; len(remaining) != 0 {
 		t.Fatalf("catalog = %#v, want an emptied cache to leave an empty catalog", remaining)
+	}
+	// The record lives in the cache it describes, so the command that empties that cache is the
+	// one that could take it away. It forgets the objects it removed and leaves the file.
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Fatalf("Stat catalog: %v, want clearing the cache to leave its record behind", err)
+	}
+}
+
+// TestEachCacheKeepsItsOwnCatalog is what keeping the record at the cache root settles: a
+// record describes the cache it sits in, so two caches no longer write one shared file in which
+// most records describe objects the cache being asked does not hold.
+func TestEachCacheKeepsItsOwnCatalog(t *testing.T) {
+	mini, other := []byte("mini dac asset"), []byte("another dac asset")
+	first := serveProject(t, mini)
+	first.add(t)
+	second := serveProject(t, other)
+	second.add(t)
+
+	for _, each := range []struct {
+		name          string
+		path          string
+		held, foreign string
+	}{
+		{"first", first.catalogPath(), digest.Bytes(mini), digest.Bytes(other)},
+		{"second", second.catalogPath(), digest.Bytes(other), digest.Bytes(mini)},
+	} {
+		objects := loadCatalog(t, each.path).Objects
+		if _, recorded := objects[each.held]; !recorded {
+			t.Fatalf("%s catalog = %#v, want the object its own cache holds", each.name, objects)
+		}
+		if _, recorded := objects[each.foreign]; recorded {
+			t.Fatalf("%s catalog = %#v, want nothing about the other cache", each.name, objects)
+		}
 	}
 }

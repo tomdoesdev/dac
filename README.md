@@ -186,8 +186,11 @@ damaged objects.
 
 An object is named on disk by its digest and nothing else, so a project that is
 edited or deleted takes with it the only record of what its objects were. DAC
-keeps that record separately, in `dac/catalog.json` under the XDG data
-directory.
+keeps that record apart from the project, in `catalog.json` at the root of the
+cache it describes: `~/.cache/dac/catalog.json` by default, and beside the
+objects of whichever cache `--cache-dir`, `DAC_CACHE_DIR`, or `cache.dir`
+selects. Collection walks the object directories and never the root, so
+emptying a cache does not take its catalog with it.
 
 Each record holds the size of an object, when DAC first stored it, and every
 coordinate it has been seen under, each with its own URL, file name, and time

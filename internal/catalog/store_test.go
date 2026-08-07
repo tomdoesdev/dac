@@ -26,15 +26,16 @@ func note(t *testing.T, store *Store, value, name string) {
 	}
 }
 
-func TestResolvePathPutsTheCatalogInTheDataHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", home)
-	path, err := ResolvePath("")
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
+// TestPathPutsTheCatalogAtTheCacheRoot fixes where a cache's record is found. It is at the root
+// and not under the object directories, which is what keeps collection from walking over it.
+func TestPathPutsTheCatalogAtTheCacheRoot(t *testing.T) {
+	root := t.TempDir()
+	path := Path(root)
+	if path != filepath.Join(root, FileName) {
+		t.Fatalf("path = %q, want it at the root of the cache it describes", path)
 	}
-	if path != filepath.Join(home, DirName, FileName) {
-		t.Fatalf("path = %q, want it beside the other data DAC keeps", path)
+	if directory := filepath.Dir(path); directory != root {
+		t.Fatalf("path is in %q, want it directly in %q", directory, root)
 	}
 }
 

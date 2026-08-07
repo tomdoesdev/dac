@@ -108,17 +108,21 @@ func (runner *runner) config(current *urfave.Command) (*config.Config, error) {
 }
 
 // catalogRecorder opens the object catalog for this run, once.
+// The catalog lives at the root of the cache it describes, so it follows every setting that
+// moves the cache: this run records into the record for the cache it is actually using.
 //
 // A catalog that cannot be reached does not fail the command. It only describes
 // what the cache holds, and a command that could not write its bookkeeping has
-// still done what it was asked.
+// still done what it was asked. That covers a cache root this run cannot resolve, which the
+// commands that need one report for themselves.
 func (runner *runner) catalogRecorder(current *urfave.Command) *catalog.Recorder {
 	runner.catalogOnce.Do(func() {
-		path, err := catalog.ResolvePath("")
+		root, err := runner.cacheRoot(current)
 		if err != nil {
 			runner.trace(current).Debug("object catalog not opened", "error", err)
 			return
 		}
+		path := catalog.Path(root)
 		store := catalog.New(path)
 		loaded, err := store.Load()
 		if err != nil {
