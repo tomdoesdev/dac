@@ -90,6 +90,15 @@ func TestWriteFileReplacesTheContentsAndTheMode(t *testing.T) {
 	assertOnly(t, filepath.Dir(path), "object")
 }
 
+func TestWriteFileLockedRemovesItsSidecar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "object")
+	if err := atomic.WriteFileLocked(path, []byte("contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, "contents", 0o600)
+	assertOnly(t, filepath.Dir(path), "object")
+}
+
 func TestCommitPutsTheFileInPlace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "object")
 	file, err := atomic.Create(path, 0o600)

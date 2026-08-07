@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/flock"
+	"github.com/tomdoesdev/kit/strictjson"
 )
 
 // ResolvePath returns the absolute trusted-hosts file path.
@@ -47,7 +47,7 @@ func New(path string) *Store { return &Store{Path: path} }
 // nothing yet is the state a first run is in, not a failure to report.
 func (store *Store) Load() (List, error) {
 	var list List
-	if err := jsonfile.ReadStrict(store.Path, &list); err != nil {
+	if err := strictjson.ReadFile(store.Path, &list); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Empty(), nil
 		}

@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/flock"
+	"github.com/tomdoesdev/kit/strictjson"
 )
 
 // ResolvePath returns the absolute catalog file path.
@@ -57,7 +57,7 @@ func New(path string) *Store { return &Store{Path: path} }
 // unlike the object metadata in the cache, nothing regenerates those.
 func (store *Store) Load() (Catalog, error) {
 	var catalog Catalog
-	if err := jsonfile.ReadStrict(store.Path, &catalog); err != nil {
+	if err := strictjson.ReadFile(store.Path, &catalog); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Empty(), nil
 		}

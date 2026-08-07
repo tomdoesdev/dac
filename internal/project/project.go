@@ -13,9 +13,10 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
 	"github.com/tomdoesdev/dac/internal/urlpolicy"
+	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/util/filename"
+	"github.com/tomdoesdev/kit/strictjson"
 )
 
 const (
@@ -69,7 +70,7 @@ func Empty() (Manifest, Lock) {
 // ReadManifest reads, normalizes, and validates a manifest.
 func ReadManifest(path string) (Manifest, error) {
 	var manifest Manifest
-	if err := jsonfile.ReadStrict(path, &manifest); err != nil {
+	if err := strictjson.ReadFile(path, &manifest); err != nil {
 		return Manifest{}, err
 	}
 	if err := manifest.Normalize(); err != nil {
@@ -98,7 +99,7 @@ func (manifest Manifest) Normalize() error {
 // ReadLock reads and validates a lock file.
 func ReadLock(path string) (Lock, error) {
 	var lock Lock
-	if err := jsonfile.ReadStrict(path, &lock); err != nil {
+	if err := strictjson.ReadFile(path, &lock); err != nil {
 		return Lock{}, err
 	}
 	return lock, lock.Validate()
@@ -294,7 +295,7 @@ func Write[T File](path string, value T) error {
 
 // WriteBytes atomically writes project file bytes that a caller has already marshalled, so lock does not have to encode the same document twice.
 func WriteBytes(path string, data []byte) error {
-	return jsonfile.WriteAtomic(path, data, fileMode)
+	return atomic.WriteFileLocked(path, data, fileMode)
 }
 
 // WritePair writes matching project files and restores the manifest if the second write fails.

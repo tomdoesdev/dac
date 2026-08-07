@@ -25,7 +25,8 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/jsonfile"
+	"github.com/tomdoesdev/kit/fs/atomic"
+	"github.com/tomdoesdev/kit/strictjson"
 )
 
 const (
@@ -59,7 +60,7 @@ func metaPath(objectPath string) string { return objectPath + metaSuffix }
 // readMeta reads one sidecar.
 func readMeta(path string) (meta, bool, error) {
 	var value meta
-	err := jsonfile.ReadStrict(path, &value)
+	err := strictjson.ReadFile(path, &value)
 	if errors.Is(err, os.ErrNotExist) {
 		return meta{}, false, nil
 	}
@@ -76,7 +77,7 @@ func writeMeta(path string, value meta) error {
 	if err != nil {
 		return err
 	}
-	return jsonfile.WriteAtomic(path, data, metaFileMode)
+	return atomic.WriteFileLocked(path, data, metaFileMode)
 }
 
 // cancelReader stops a hash when the command that asked for it ends.

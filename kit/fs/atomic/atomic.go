@@ -36,6 +36,7 @@
 package atomic
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -43,6 +44,7 @@ import (
 	"path/filepath"
 
 	"github.com/tomdoesdev/kit/fs/atomic/internal/sys"
+	"github.com/tomdoesdev/kit/fs/flock"
 )
 
 // errNoDestination reports a Commit that has no path to commit to.
@@ -87,6 +89,15 @@ func WriteFile(path string, data []byte, perm fs.FileMode, options ...Option) er
 		return err
 	}
 	return file.Commit()
+}
+
+// WriteFileLocked replaces path while holding its hidden sidecar lock. The
+// lock covers one write only; callers that read, change, and write must hold a
+// lock around their entire operation instead.
+func WriteFileLocked(path string, data []byte, perm fs.FileMode, options ...Option) error {
+	return flock.Hold(context.Background(), flock.HiddenPath(path), func(context.Context) error {
+		return WriteFile(path, data, perm, options...)
+	}, flock.RemoveOnRelease())
 }
 
 // Create opens a temporary file beside path that Commit renames onto path.
