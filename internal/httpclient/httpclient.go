@@ -26,6 +26,7 @@ import (
 const maxRedirects = 10
 
 var _ application.RequestDetail = (*RequestError)(nil)
+var _ application.UpstreamProber = (*Client)(nil)
 
 // Options configures one HTTP client.
 type Options struct {
@@ -88,20 +89,55 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 		return nil, &RequestError{URL: request.URL, Err: err}
 	}
 	var options []getit.RequestOption
-	if request.ETag != "" {
-		options = append(options, getit.WithValidator(getit.Validator{ETag: request.ETag}))
+	validator := getit.Validator{ETag: request.ETag}
+	if request.LastModified != "" {
+		modified, parseErr := http.ParseTime(request.LastModified)
+		if parseErr != nil {
+			return nil, &RequestError{URL: request.URL, Err: getit.Permanent(parseErr)}
+		}
+		validator.LastModified = modified
+	}
+	if !validator.Empty() {
+		options = append(options, getit.WithValidator(validator))
 	}
 	response, err := client.getter.Get(withInsecure(ctx, request.AllowInsecureHTTP), parsed.String(), options...)
 	if err != nil {
 		return nil, requestError(parsed.String(), err)
 	}
 	return &application.FetchResponse{
-		NotModified: response.NotModified,
-		ETag:        response.Validator.ETag,
-		Filename:    responseFilename(response),
-		Length:      response.Length,
-		Body:        &assetBody{inner: response.Body},
+		NotModified:  response.NotModified,
+		ETag:         response.Validator.ETag,
+		LastModified: lastModifiedText(response.Validator),
+		Filename:     responseFilename(response),
+		Length:       response.Length,
+		Body:         &assetBody{inner: response.Body},
 	}, nil
+}
+
+// Probe sends an unconditional HEAD through the same policies as an asset GET.
+func (client *Client) Probe(ctx context.Context, request application.ProbeRequest) (*application.ProbeResponse, error) {
+	parsed, err := urlpolicy.ParseAndCheck(request.URL, request.AllowInsecureHTTP)
+	if err != nil {
+		return nil, &RequestError{URL: request.URL, Err: err}
+	}
+	response, err := client.getter.Head(withInsecure(ctx, request.AllowInsecureHTTP), parsed.String())
+	if err != nil {
+		return nil, requestError(parsed.String(), err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	return &application.ProbeResponse{
+		ETag:         response.Validator.ETag,
+		LastModified: lastModifiedText(response.Validator),
+		Length:       response.Length,
+	}, nil
+}
+
+// lastModifiedText converts an HTTP validator to the canonical lock-file form.
+func lastModifiedText(validator getit.Validator) string {
+	if validator.LastModified.IsZero() {
+		return ""
+	}
+	return validator.LastModified.UTC().Format(http.TimeFormat)
 }
 
 // insecureKey carries one asset's permission to be fetched over plain HTTP.

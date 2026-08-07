@@ -146,6 +146,18 @@ func (getter *Getter) Close() {
 // The body must be closed, whatever the caller does with it. A failure is a
 // *RequestError naming the URL, and the status when the request got one.
 func (getter *Getter) Get(ctx context.Context, rawURL string, options ...RequestOption) (*Response, error) {
+	return getter.request(ctx, http.MethodGet, rawURL, options...)
+}
+
+// Head inspects one file without transferring its body.
+// It applies the same URL policy, redirects, retries, validators, decorators,
+// and response checks as Get. The caller must close the empty response body.
+func (getter *Getter) Head(ctx context.Context, rawURL string, options ...RequestOption) (*Response, error) {
+	return getter.request(ctx, http.MethodHead, rawURL, options...)
+}
+
+// request performs one whole-file GET or HEAD through the shared request policy.
+func (getter *Getter) request(ctx context.Context, method, rawURL string, options ...RequestOption) (*Response, error) {
 	current := newRequestSettings(getter.settings.request, options)
 	target, err := url.Parse(rawURL)
 	if err != nil {
@@ -156,22 +168,26 @@ func (getter *Getter) Get(ctx context.Context, rawURL string, options ...Request
 	}
 	identifier := getter.counter.Add(1)
 	trace := getter.settings.logger
-	trace.Debug("fetching", "url", target, "conditional", !current.validator.Empty())
+	message := "fetching"
+	if method == http.MethodHead {
+		message = "probing"
+	}
+	trace.Debug(message, "method", method, "url", target, "conditional", !current.validator.Empty())
 	result, err := retry(ctx, current.retries, getter.settings.retryPolicy,
 		func(attempt int) (attemptResult, error) {
-			return getter.attempt(ctx, target, current, identifier, attempt)
+			return getter.attempt(ctx, method, target, current, identifier, attempt)
 		},
 		func(attempt int, err error, wait time.Duration) {
-			current.hooks.retry(wholeRequest(identifier, target, attempt), err, wait)
-			trace.Debug("retrying", "url", target, "attempt", attempt,
+			current.hooks.retry(wholeRequest(identifier, method, target, attempt), err, wait)
+			trace.Debug("retrying", "method", method, "url", target, "attempt", attempt,
 				"after", wait, "status", statusOf(err), "error", err)
 		})
 	if err != nil {
-		trace.Debug("giving up", "url", target, "status", statusOf(err),
+		trace.Debug("giving up", "method", method, "url", target, "status", statusOf(err),
 			"retryable", getter.settings.retryPolicy(err), "error", err)
 		return nil, &RequestError{URL: target.String(), Status: statusOf(err), Err: err}
 	}
-	trace.Debug("response", "url", target, "status", result.response.Status,
+	trace.Debug("response", "method", method, "url", target, "status", result.response.Status,
 		"notModified", result.response.NotModified, "length", result.response.Length,
 		"parts", result.transfer.Parts)
 	current.hooks.start(result.transfer)
@@ -186,14 +202,14 @@ type attemptResult struct {
 	transfer Transfer
 }
 
-func (getter *Getter) attempt(ctx context.Context, target *url.URL, current requestSettings, identifier uint64, attempt int) (attemptResult, error) {
-	info := wholeRequest(identifier, target, attempt)
+func (getter *Getter) attempt(ctx context.Context, method string, target *url.URL, current requestSettings, identifier uint64, attempt int) (attemptResult, error) {
+	info := wholeRequest(identifier, method, target, attempt)
 	downloadCtx, cancelDownload := context.WithCancel(ctx)
 	// A child context lets a split download close the first response once its
 	// chunk runs out, without stopping the ranges beside it.
 	headCtx, cancelHead := context.WithCancel(downloadCtx)
 	cancel := func() { cancelHead(); cancelDownload() }
-	request, err := http.NewRequestWithContext(headCtx, http.MethodGet, target.String(), nil)
+	request, err := http.NewRequestWithContext(headCtx, method, target.String(), nil)
 	if err != nil {
 		cancel()
 		return attemptResult{}, err
@@ -243,6 +259,20 @@ func (getter *Getter) attempt(ctx context.Context, target *url.URL, current requ
 			transfer: transfer,
 		}, nil
 	}
+	if method == http.MethodHead {
+		transfer := Transfer{ID: identifier, URL: target, Length: 0, Parts: 0}
+		return attemptResult{
+			response: &Response{
+				Status:    response.StatusCode,
+				Validator: validator,
+				Length:    response.ContentLength,
+				URL:       final,
+				Header:    response.Header,
+				Body:      newTransferBody(&plainBody{body: response.Body, cancel: cancel}, transfer, current.hooks),
+			},
+			transfer: transfer,
+		}, nil
+	}
 
 	// ContentLength is already -1 when the origin declared no length, which is
 	// what Unknown is.
@@ -270,12 +300,12 @@ func (getter *Getter) attempt(ctx context.Context, target *url.URL, current requ
 }
 
 // wholeRequest describes a request for the whole body, for the reports about it.
-func wholeRequest(identifier uint64, target *url.URL, attempt int) Request {
+func wholeRequest(identifier uint64, method string, target *url.URL, attempt int) Request {
 	return Request{
 		Transfer: identifier,
 		Part:     0,
 		Attempt:  attempt,
-		Method:   http.MethodGet,
+		Method:   method,
 		URL:      target,
 		Start:    Unknown,
 		End:      Unknown,

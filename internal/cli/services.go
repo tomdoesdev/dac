@@ -44,7 +44,7 @@ func (runner *runner) projectService(current *urfave.Command) *application.Servi
 // pass and every call would land on a nil receiver.
 //
 // The catalog is attached to every service, including the ones holding no object store. Reading
-// a project is what advances a record, and remove and verify do that without ever opening the
+// a project is what advances a record, and remove does that without ever opening the
 // cache.
 func (runner *runner) attachCatalog(current *urfave.Command, service *application.Service) {
 	if recorder := runner.catalogRecorder(current); recorder != nil {
@@ -121,6 +121,7 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 		Logger:              trace,
 	})
 	service.Fetcher = client
+	service.Prober = client
 	// A trace and a progress bar share standard error, and mpb redraws in place.
 	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug")
 	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled, runner.stderrPalette)

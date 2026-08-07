@@ -120,8 +120,12 @@ func TestCommandLifecycle(t *testing.T) {
 		infoAsset["digest"] != lock.Assets[coord.MustParse("app/geo@2026.08")].Digest || infoAsset["size"] != float64(len(content)) || infoAsset["path"] == "" {
 		t.Fatalf("unexpected info asset: %#v", infoAsset)
 	}
-	result = runJSON(t, appendArgs(base, "verify"))
-	assertSuccess(t, result, "verify")
+	result = runJSON(t, appendArgs(base, "check"))
+	assertSuccess(t, result, "check")
+	checkData := result.value["data"].(map[string]any)
+	if checkData["upstream"] != false || checkData["downloaded"] != float64(0) || checkData["assetCount"] != float64(1) {
+		t.Fatalf("unexpected check data: %#v", checkData)
+	}
 	result = runJSON(t, appendArgs(base, "pull", "--no-progress", "--concurrency", "1"))
 	assertSuccess(t, result, "pull")
 
@@ -235,8 +239,8 @@ func TestHumanOutputIsDefaultAndShortJSONAliasWorks(t *testing.T) {
 		t.Fatalf("unexpected human failure: %#v", result)
 	}
 
-	jsonResult := runJSONArgs(t, appendArgs(base, "verify", "-j"))
-	assertSuccess(t, jsonResult, "verify")
+	jsonResult := runJSONArgs(t, appendArgs(base, "check", "-j"))
+	assertSuccess(t, jsonResult, "check")
 	if jsonResult.stderr != "" {
 		t.Fatalf("-j wrote stderr: %q", jsonResult.stderr)
 	}
@@ -268,6 +272,10 @@ func TestInvalidArgumentsUseExitTwoAndOneErrorDocument(t *testing.T) {
 		// Every lock operation lives on pull now, so the command that used to spell them is gone.
 		appendArgs(base, "lock"),
 		appendArgs(base, "lock", "--refresh"),
+		// Project verification was renamed without an alias, and upstream checking
+		// has one explicit spelling.
+		appendArgs(base, "verify"),
+		appendArgs(base, "check", "--refresh"),
 		// The transfer tuning options moved into the config file, so the command line no longer answers to them at all.
 		appendArgs(base, "pull", "--max-size", "1GiB"),
 		appendArgs(base, "pull", "--timeout", "1m"),
@@ -369,16 +377,22 @@ func TestAddDefaultsToManifestOnly(t *testing.T) {
 	}
 }
 
-func TestVerifyNeedsNoCacheEnvironment(t *testing.T) {
+func TestCheckNeedsNoCacheConfigOrTrustEnvironment(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	base := []string{"--manifest", manifestPath, "--lock", lockPath}
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
+	badTrust := filepath.Join(directory, "bad-trust.json")
+	if err := os.WriteFile(badTrust, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("DAC_CACHE_DIR", "")
 	t.Setenv("XDG_CACHE_HOME", "relative")
-	result := runJSON(t, appendArgs(base, "verify"))
-	assertSuccess(t, result, "verify")
+	t.Setenv("DAC_CONFIG", filepath.Join(directory, "missing-config.toml"))
+	t.Setenv("DAC_TRUST_FILE", badTrust)
+	result := runJSON(t, appendArgs(base, "check"))
+	assertSuccess(t, result, "check")
 }
 
 func TestNetworkFlagsReadEnvironmentSources(t *testing.T) {
@@ -438,6 +452,17 @@ func TestPullHelpOmitsRemovedRequestFlags(t *testing.T) {
 		if strings.Contains(result.stderr, flag) {
 			t.Fatalf("pull help contains removed flag %s", flag)
 		}
+	}
+}
+
+func TestCheckHelpUsesOnlyTheNewCommandAndFlagNames(t *testing.T) {
+	root := run(t, []string{"--help"})
+	if root.status != ExitOK || !strings.Contains(root.stderr, "check") || strings.Contains(root.stderr, "verify") {
+		t.Fatalf("unexpected root help: %#v", root)
+	}
+	check := run(t, []string{"check", "--help"})
+	if check.status != ExitOK || !strings.Contains(check.stderr, "--upstream") || strings.Contains(check.stderr, "--refresh") {
+		t.Fatalf("unexpected check help: %#v", check)
 	}
 }
 
@@ -735,7 +760,7 @@ func TestColourAddsNothingButColour(t *testing.T) {
 	shared := newAssetProject()
 	reused := func() []string { return shared }
 	compare(reused, "info")
-	compare(reused, "verify")
+	compare(reused, "check")
 	compare(reused, "cache", "list")
 	compare(reused, "cache", "scrub")
 	compare(reused, "pull", "--no-progress")
@@ -747,11 +772,11 @@ func TestColourAddsNothingButColour(t *testing.T) {
 func TestColourStaysOffWhereNothingWillRenderIt(t *testing.T) {
 	base := newProject(t).base
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
-	if human := run(t, appendArgs(base, "verify")); strings.Contains(human.stdout, "\x1b") {
+	if human := run(t, appendArgs(base, "check")); strings.Contains(human.stdout, "\x1b") {
 		t.Fatalf("auto coloured a buffer: %q", human.stdout)
 	}
 	// Forcing it is the whole reason the option exists: a pager or a CI log viewer renders sequences that the pipe in front of it cannot admit to.
-	if human := run(t, appendArgs(base, "--colour=always", "verify")); !strings.Contains(human.stdout, "\x1b[") {
+	if human := run(t, appendArgs(base, "--colour=always", "check")); !strings.Contains(human.stdout, "\x1b[") {
 		t.Fatalf("--colour=always wrote no colour: %q", human.stdout)
 	}
 }
@@ -1155,7 +1180,7 @@ func TestOfflinePullCannotSettleAProjectWithNoLockFile(t *testing.T) {
 	assertError(t, runJSON(t, appendArgs(base, "pull", "--offline", "--refresh", "--no-progress")), "invalid_arguments")
 }
 
-func TestVerifyRefreshFailsOnDrift(t *testing.T) {
+func TestCheckUpstreamFailsOnDrift(t *testing.T) {
 	var body atomic.Value
 	body.Store([]byte("first bytes"))
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -1173,14 +1198,19 @@ func TestVerifyRefreshFailsOnDrift(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "init")), "init")
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1", server.URL, "--no-progress")), "add")
 	settleCLIProject(t, base)
-	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
+	checked := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
+	assertSuccess(t, checked, "check")
+	checkData := checked.value["data"].(map[string]any)
+	if checkData["upstream"] != true || checkData["downloaded"] != float64(1) {
+		t.Fatalf("unexpected upstream check data: %#v", checkData)
+	}
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress"))
+	result := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
 	assertError(t, result, "lock_drift")
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--refresh rewrote the lock file")
+		t.Fatal("--upstream rewrote the lock file")
 	}
 	refreshed := runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress"))
 	assertSuccess(t, refreshed, "pull")
@@ -1214,8 +1244,8 @@ func TestMaxSizeBoundsADownloadAndOnlyNoneRemovesTheBound(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(unbounded, "add", "app/geo@1", server.URL, "--pin", "--no-progress")), "add")
 }
 
-// TestVerifyRefreshReportsDriftForAPinnedAsset covers the asset the drift check was least able to report on.
-func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
+// TestCheckUpstreamReportsDriftForAPinnedAsset covers the asset the drift check was least able to report on.
+func TestCheckUpstreamReportsDriftForAPinnedAsset(t *testing.T) {
 	var body atomic.Value
 	body.Store([]byte("first bytes"))
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -1234,17 +1264,17 @@ func TestVerifyRefreshReportsDriftForAPinnedAsset(t *testing.T) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "add", "app/geo@1",
 		server.URL, "--pin", "--no-progress")), "add")
 	settleCLIProject(t, base)
-	assertSuccess(t, runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress")), "verify")
+	assertSuccess(t, runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress")), "check")
 
 	body.Store([]byte("moved bytes"))
 	before := projecttest.MustRead(t, lockPath)
-	result := runJSON(t, appendArgs(base, "verify", "--refresh", "--no-progress"))
+	result := runJSON(t, appendArgs(base, "check", "--upstream", "--no-progress"))
 	assertError(t, result, "lock_drift")
 	if !bytes.Contains([]byte(result.stdout), []byte(`"app/geo@1"`)) {
 		t.Fatalf("lock_drift did not name the drifted asset: %s", result.stdout)
 	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--refresh rewrote the lock file")
+		t.Fatal("--upstream rewrote the lock file")
 	}
 	// The same origin against the same pin, from the command that writes: a pin is a rule there, and bytes that fail it must not reach the lock file.
 	assertError(t, runJSON(t, appendArgs(base, "pull", "--refresh", "--no-progress")), "content_mismatch")
@@ -1296,7 +1326,7 @@ func TestLockFileFollowsTheManifest(t *testing.T) {
 		t.Fatal("the lock file was written beside the working directory rather than the manifest")
 	}
 	// Every later command finds the same pair without being told where it is.
-	assertSuccess(t, runJSON(t, appendArgs(base, "verify")), "verify")
+	assertSuccess(t, runJSON(t, appendArgs(base, "check")), "check")
 }
 
 // Naming the lock file explicitly still puts it exactly where it was asked for, which is what lets a caller keep the two apart on purpose.

@@ -143,7 +143,7 @@ func TestNarrowedRefreshReachesOnlyTheNamedOrigins(t *testing.T) {
 		t.Fatalf("refresh requested %v, want only /geo-1.bin", made)
 	}
 	// The two files still agree, which is the only kind of lock file a later run accepts.
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "verify")), "verify")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "check")), "check")
 }
 
 // newPullProject builds a locked three-asset project with an empty cache, and

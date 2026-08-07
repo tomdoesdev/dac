@@ -34,7 +34,6 @@ type resolveMode uint8
 const (
 	resolveChanged resolveMode = iota
 	resolveRefresh
-	resolveObserve
 )
 
 // reconcileOptions holds the internal choices for one reconciliation.
@@ -77,10 +76,6 @@ func (service *Service) reconcile(ctx context.Context, manifest project.Manifest
 			current.mode = resolveRefresh
 		}
 		if current.mode == resolveChanged && project.Agrees(source, locked, exists) {
-			// A pinned asset neither sends nor records an ETag.
-			if source.Integrity != "" {
-				locked.ETag = ""
-			}
 			// DAC settles names without downloads because names do not affect object bytes.
 			// A declared name is applied whenever the manifest carries one, so renaming an asset is a manifest edit and a lock, with no request.
 			if declared := filename.Clean(source.Filename); declared != "" {

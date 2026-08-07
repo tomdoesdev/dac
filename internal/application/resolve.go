@@ -41,9 +41,9 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 			return project.LockAsset{}, "", err
 		}
 	}
-	hint := ""
+	hint := project.LockAsset{}
 	if conditional && oldValid {
-		hint = old.ETag
+		hint = old
 	}
 	if options.offline {
 		return project.LockAsset{}, "", fault.New("offline_cache_miss",
@@ -60,6 +60,9 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 		if response.ETag != "" {
 			old.ETag = response.ETag
 		}
+		if response.LastModified != "" {
+			old.LastModified = response.LastModified
+		}
 		// A name the manifest declares is applied here too, because it is the project's own answer and a 304 says nothing about it either way.
 		if declared := filename.Clean(source.Filename); declared != "" {
 			old.Filename = declared
@@ -70,40 +73,24 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 	}
 	service.Reporter.Start(name, response.Length)
 	reader := &transferReader{name: name, reader: response.Body, reporter: service.Reporter}
-	// A pinned asset is normally installed against its publisher digest, so bytes that fail it never reach the cache.
-	// Observing drops that check, because reporting what an origin now serves means
-	// receiving it: bytes that fail a pin are what verify --refresh exists to find,
-	// and it cannot compare what it refused to accept. Those bytes do land in the
-	// cache, under the digest they actually have rather than the one the lock file
-	// names, so nothing can resolve to them and collection takes them as it takes
-	// anything else nothing referenced. The cost is that a check can leave up to one
-	// asset's worth of unreferenced bytes behind per drifted asset.
-	expect := source.Integrity
-	if options.mode == resolveObserve {
-		expect = ""
-	}
-	object, err := service.Store.Put(ctx, reader, PutAny(expect, options.maxSize))
+	// A publisher pin remains the acceptance rule even during a pull refresh, so
+	// bytes that violate it never enter the cache or lock.
+	object, err := service.Store.Put(ctx, reader, PutAny(source.Integrity, options.maxSize))
 	if err != nil {
 		return project.LockAsset{}, "", contentError(err)
 	}
 	service.Reporter.Done(name, "resolved")
-	etag := ""
-	if conditional {
-		etag = response.ETag
-	}
 	value := project.LockAsset{
-		URL:      source.URL,
-		Digest:   object.Digest,
-		Size:     object.Size,
-		ETag:     etag,
-		Filename: resolvedFilename(response.Filename, source, old),
+		URL:          source.URL,
+		Digest:       object.Digest,
+		Size:         object.Size,
+		ETag:         response.ETag,
+		LastModified: response.LastModified,
+		Filename:     resolvedFilename(response.Filename, source, old),
 	}
 	// These bytes are in the cache now, so this is where they are recorded, rather than only
 	// once the operation around them settles. An operation that is cancelled, or that gives up
 	// because a different asset failed, still leaves behind everything it had already installed.
-	// Observing above is the sharper case: it deliberately stores bytes under the digest they
-	// turned out to have, which no lock file will ever name, so this is the only account of them
-	// there will be.
 	service.noteAsset(coordinate, value)
 	return value, "resolved", nil
 }
@@ -125,11 +112,14 @@ func resolvedFilename(supplied string, source project.Asset, old project.LockAss
 	return filename.FromURL(source.URL)
 }
 
-func (service *Service) fetch(ctx context.Context, source project.Asset, etag string) (*FetchResponse, error) {
+func (service *Service) fetch(ctx context.Context, source project.Asset, validator project.LockAsset) (*FetchResponse, error) {
 	if service.Fetcher == nil {
 		return nil, fault.New("network_error", "No asset fetcher is configured.")
 	}
-	response, err := service.Fetcher.Fetch(ctx, FetchRequest{URL: source.URL, ETag: etag, AllowInsecureHTTP: source.AllowInsecureHTTP})
+	response, err := service.Fetcher.Fetch(ctx, FetchRequest{
+		URL: source.URL, ETag: validator.ETag, LastModified: validator.LastModified,
+		AllowInsecureHTTP: source.AllowInsecureHTTP,
+	})
 	if err != nil {
 		return nil, networkError(err)
 	}

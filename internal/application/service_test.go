@@ -591,6 +591,7 @@ func TestRefreshUsesStoredETagForRevalidation(t *testing.T) {
 	}
 	asset := lock.Assets[at("asset@1")]
 	asset.ETag = "\"old\""
+	asset.LastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
 	lock.Assets[at("asset@1")] = asset
 	if err := project.Write(lockPath, lock); err != nil {
 		t.Fatal(err)
@@ -598,8 +599,8 @@ func TestRefreshUsesStoredETagForRevalidation(t *testing.T) {
 	store := newFakeStore()
 	store.objects[digest.Bytes(content)] = bytes.Clone(content)
 	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
-		if request.ETag != "\"old\"" {
-			return nil, fmt.Errorf("ETag is %q", request.ETag)
+		if request.ETag != "\"old\"" || request.LastModified != "Wed, 21 Oct 2015 07:28:00 GMT" {
+			return nil, fmt.Errorf("validators are ETag %q, Last-Modified %q", request.ETag, request.LastModified)
 		}
 		return &application.FetchResponse{
 			NotModified: true,
@@ -623,6 +624,9 @@ func TestRefreshUsesStoredETagForRevalidation(t *testing.T) {
 	}
 	if updated.Assets[at("asset@1")].ETag != "\"new\"" {
 		t.Fatalf("updated ETag is %q", updated.Assets[at("asset@1")].ETag)
+	}
+	if updated.Assets[at("asset@1")].LastModified != "Wed, 21 Oct 2015 07:28:00 GMT" {
+		t.Fatalf("304 dropped Last-Modified: %#v", updated.Assets[at("asset@1")])
 	}
 }
 
@@ -727,14 +731,14 @@ func TestPullLockingHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestVerifyNeedsNoCacheOrFetcher(t *testing.T) {
+func TestCheckNeedsNoCacheOrFetcher(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	result, err := application.New(manifestPath, lockPath, nil, nil, nil).Verify(context.Background(), application.VerifyOptions{})
+	result, err := application.New(manifestPath, lockPath, nil, nil, nil).Check(context.Background(), application.CheckOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.AssetCount != 0 || result.ManifestDigest == "" {
-		t.Fatalf("unexpected verify result: %#v", result)
+		t.Fatalf("unexpected check result: %#v", result)
 	}
 }
 
@@ -918,8 +922,9 @@ func TestRefreshSendsNoConditionalRequest(t *testing.T) {
 	}
 }
 
-// A pinned asset is settled by its publisher digest, so it never revalidates.
-func TestPullRecordsNoETagForAPinnedAsset(t *testing.T) {
+// A pinned GET records the same origin hints as an unpinned GET. The pin still
+// decides whether the bytes are acceptable; the validators only make checks cheaper.
+func TestPullRecordsValidatorsForAPinnedAsset(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := unlockedProject(t, project.Manifest{
 		SchemaVersion: project.ManifestVersion,
@@ -930,6 +935,7 @@ func TestPullRecordsNoETagForAPinnedAsset(t *testing.T) {
 	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
 		served := response(content)
 		served.ETag = "\"served\""
+		served.LastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
 		return served, nil
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
@@ -941,8 +947,9 @@ func TestPullRecordsNoETagForAPinnedAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Assets[at("asset@1")].ETag != "" {
-		t.Fatalf("pinned asset recorded ETag %q", locked.Assets[at("asset@1")].ETag)
+	asset := locked.Assets[at("asset@1")]
+	if asset.ETag != "\"served\"" || asset.LastModified != "Wed, 21 Oct 2015 07:28:00 GMT" {
+		t.Fatalf("pinned asset validators are %#v", asset)
 	}
 }
 
@@ -1088,13 +1095,13 @@ func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
 	}
 }
 
-func TestVerifyRefreshReportsDriftWithoutWriting(t *testing.T) {
+func TestCheckUpstreamReportsDriftWithoutWriting(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	before := projecttest.MustRead(t, lockPath)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
 
-	_, err := service.Verify(context.Background(), application.VerifyOptions{Concurrency: 1, Refresh: true})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
@@ -1103,26 +1110,26 @@ func TestVerifyRefreshReportsDriftWithoutWriting(t *testing.T) {
 		t.Fatalf("drift did not name the asset: %#v", value.Details)
 	}
 	if !bytes.Equal(before, projecttest.MustRead(t, lockPath)) {
-		t.Fatal("--refresh wrote the lock file")
+		t.Fatal("--upstream wrote the lock file")
 	}
 }
 
-func TestVerifyRefreshSucceedsWhenTheOriginsAgree(t *testing.T) {
+func TestCheckUpstreamSucceedsWhenTheOriginsAgree(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Verify(context.Background(), application.VerifyOptions{Concurrency: 1, Refresh: true})
+	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Refreshed || result.AssetCount != 1 {
-		t.Fatalf("unexpected refresh result: %#v", result)
+	if !result.Upstream || result.AssetCount != 1 || result.Downloaded != 1 {
+		t.Fatalf("unexpected upstream result: %#v", result)
 	}
 }
 
 // An ETag is a cache hint a server may rotate over identical bytes.
-func TestVerifyRefreshIgnoresARotatedETag(t *testing.T) {
+func TestCheckUpstreamIgnoresARotatedETagWhenBytesAgree(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
@@ -1132,13 +1139,13 @@ func TestVerifyRefreshIgnoresARotatedETag(t *testing.T) {
 	}}
 	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Verify(context.Background(), application.VerifyOptions{Concurrency: 1, Refresh: true}); err != nil {
+	if _, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // A manifest edited without locking it is a different failure from an origin that moved, and it has a different fix.
-func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
+func TestCheckUpstreamReportsAStaleLockRatherThanDrift(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	writeManifest(t, manifestPath, project.Manifest{
@@ -1149,7 +1156,7 @@ func TestVerifyRefreshReportsAStaleLockRatherThanDrift(t *testing.T) {
 	})
 	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	_, err := service.Verify(context.Background(), application.VerifyOptions{Concurrency: 1, Refresh: true})
+	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Upstream: true})
 	if fault.As(err).Code != "lock_stale" {
 		t.Fatalf("expected lock_stale, got %v", err)
 	}
@@ -1872,5 +1879,13 @@ func TestADeclaredNameReachesACachedResolution(t *testing.T) {
 	settleProject(t, service)
 	if name := lockedFilename(t, lockPath); name != "geo.db" {
 		t.Fatalf("a cached resolution recorded %q", name)
+	}
+	lock, err := project.ReadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := lock.Assets[at("asset@1")]
+	if asset.ETag != "" || asset.LastModified != "" {
+		t.Fatalf("a cache-only resolution invented validators: %#v", asset)
 	}
 }

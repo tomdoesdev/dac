@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +56,113 @@ func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
 	defer func() { _ = response.Body.Close() }()
 	if !response.NotModified || response.ETag != "\"new\"" {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestFetchPropagatesLastModifiedConditionally(t *testing.T) {
+	const modified = "Wed, 21 Oct 2015 07:28:00 GMT"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if value := request.Header.Get("If-Modified-Since"); value != modified {
+			t.Errorf("If-Modified-Since is %q", value)
+		}
+		writer.Header().Set("Last-Modified", modified)
+		writer.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+	client := New(Options{Timeout: time.Second})
+	defer client.Close()
+
+	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL, LastModified: modified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if !response.NotModified || response.LastModified != modified {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestProbeUsesHEADAndReturnsCanonicalValidators(t *testing.T) {
+	const modified = "Wed, 21 Oct 2015 07:28:00 GMT"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodHead {
+			t.Errorf("method is %s", request.Method)
+		}
+		writer.Header().Set("ETag", "W/\"asset\"")
+		writer.Header().Set("Last-Modified", modified)
+		writer.Header().Set("Content-Length", "12")
+	}))
+	defer server.Close()
+	client := New(Options{Timeout: time.Second})
+	defer client.Close()
+
+	response, err := client.Probe(context.Background(), application.ProbeRequest{URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ETag != "W/\"asset\"" || response.LastModified != modified || response.Length != 12 {
+		t.Fatalf("unexpected probe response: %#v", response)
+	}
+}
+
+func TestProbeAppliesRedirectsRetriesAndTransportDecorators(t *testing.T) {
+	var responses atomic.Int32
+	var methods sync.Map
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		methods.Store(request.Method, true)
+		if request.URL.Path == "/source" {
+			http.Redirect(writer, request, server.URL+"/asset", http.StatusFound)
+			return
+		}
+		if responses.Add(1) == 1 {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writer.Header().Set("ETag", "\"settled\"")
+	}))
+	defer server.Close()
+	var requests atomic.Int32
+	client := New(Options{
+		Timeout:             time.Second,
+		Retries:             1,
+		TransportDecorators: []TransportDecorator{countRequests(&requests)},
+	})
+	defer client.Close()
+
+	response, err := client.Probe(context.Background(), application.ProbeRequest{
+		URL:               server.URL + "/source",
+		AllowInsecureHTTP: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ETag != "\"settled\"" || requests.Load() != 4 || responses.Load() != 2 {
+		t.Fatalf("unexpected retried probe: %#v requests=%d responses=%d", response, requests.Load(), responses.Load())
+	}
+	if _, sawGET := methods.Load(http.MethodGet); sawGET {
+		t.Fatal("a HEAD redirect or retry became GET")
+	}
+}
+
+func TestProbeHonorsATrustRefusalWithoutRetry(t *testing.T) {
+	var requests atomic.Int32
+	refuse := func(http.RoundTripper) http.RoundTripper {
+		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests.Add(1)
+			return nil, &application.HostError{Host: request.URL.Hostname()}
+		})
+	}
+	client := New(Options{
+		Timeout:             time.Second,
+		Retries:             3,
+		TransportDecorators: []TransportDecorator{refuse},
+	})
+	defer client.Close()
+
+	_, err := client.Probe(context.Background(), application.ProbeRequest{URL: "https://example.com/asset"})
+	if !errors.Is(err, application.ErrHostNotTrusted) || requests.Load() != 1 {
+		t.Fatalf("probe refusal=%v requests=%d", err, requests.Load())
 	}
 }
 

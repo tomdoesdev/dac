@@ -91,13 +91,15 @@ func (service *Service) objectPath(digest string) (string, error) {
 type FetchRequest struct {
 	URL               string
 	ETag              string
+	LastModified      string
 	AllowInsecureHTTP bool
 }
 
 // FetchResponse contains the response fields used by DAC.
 type FetchResponse struct {
-	NotModified bool
-	ETag        string
+	NotModified  bool
+	ETag         string
+	LastModified string
 	// Filename is the name the origin gives this asset, already reduced to a safe single path element, or empty when the origin names none.
 	Filename string
 	Length   int64
@@ -107,6 +109,26 @@ type FetchResponse struct {
 // Fetcher is the remote source boundary used by the service.
 type Fetcher interface {
 	Fetch(ctx context.Context, request FetchRequest) (*FetchResponse, error)
+}
+
+// ProbeRequest describes an unconditional metadata request for one remote asset.
+type ProbeRequest struct {
+	URL               string
+	AllowInsecureHTTP bool
+}
+
+// ProbeResponse contains the origin metadata that can cheaply signal changed bytes.
+type ProbeResponse struct {
+	ETag         string
+	LastModified string
+	Length       int64
+}
+
+// UpstreamProber is the metadata-only remote source boundary used by Check.
+// It is separate from Fetcher so ordinary download adapters do not have to
+// pretend they can issue HEAD requests.
+type UpstreamProber interface {
+	Probe(ctx context.Context, request ProbeRequest) (*ProbeResponse, error)
 }
 
 // HostTrust reports whether DAC is willing to download from a host.
@@ -138,6 +160,7 @@ type Service struct {
 	LockPath     string
 	Store        ObjectStore
 	Fetcher      Fetcher
+	Prober       UpstreamProber
 	Reporter     Reporter
 	// Trust reports which hosts a download would be allowed to reach. A nil value
 	// reports nothing rather than reporting that nothing is trusted.
@@ -155,7 +178,11 @@ func New(manifestPath, lockPath string, store ObjectStore, fetcher Fetcher, repo
 	if reporter == nil {
 		reporter = NopReporter{}
 	}
-	return &Service{ManifestPath: manifestPath, LockPath: lockPath, Store: store, Fetcher: fetcher, Reporter: reporter}
+	service := &Service{ManifestPath: manifestPath, LockPath: lockPath, Store: store, Fetcher: fetcher, Reporter: reporter}
+	// The production HTTP adapter implements both seams. Keeping the explicit
+	// field still lets tests and alternate adapters supply HEAD independently.
+	service.Prober, _ = fetcher.(UpstreamProber)
+	return service
 }
 
 func (service *Service) readManifest() (project.Manifest, error) {
@@ -170,6 +197,20 @@ func (service *Service) readManifest() (project.Manifest, error) {
 }
 
 func (service *Service) readProject() (project.Manifest, project.Lock, error) {
+	manifest, lock, err := service.readProjectFiles()
+	if err != nil {
+		return project.Manifest{}, project.Lock{}, err
+	}
+	// Reading a project for an operation that uses its objects is the moment DAC
+	// learns what those objects are called. Offline checks deliberately call the
+	// file-only helper instead, so they do not touch the catalog.
+	service.note(lock.Assets)
+	return manifest, lock, nil
+}
+
+// readProjectFiles strictly validates the manifest and complete lock without
+// consulting or updating any other project-adjacent state.
+func (service *Service) readProjectFiles() (project.Manifest, project.Lock, error) {
 	manifest, err := service.readManifest()
 	if err != nil {
 		return project.Manifest{}, project.Lock{}, err
@@ -184,9 +225,6 @@ func (service *Service) readProject() (project.Manifest, project.Lock, error) {
 	if err := project.CheckLock(manifest, lock); err != nil {
 		return project.Manifest{}, project.Lock{}, fault.Wrap("lock_stale", "The lock file does not agree with the manifest. Run dac pull.", err)
 	}
-	// Reading a project is the moment DAC learns what its objects are called, so it is where the
-	// catalog is told. Every command that works from a settled project reaches here.
-	service.note(lock.Assets)
 	return manifest, lock, nil
 }
 

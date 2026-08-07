@@ -25,7 +25,13 @@ func TestWritePairRoundTrip(t *testing.T) {
 		},
 	}
 	lock, err := NewLock(manifest, map[coord.Coordinate]LockAsset{
-		coord.MustParse("app/geo@2026.08"): {URL: "https://example.com/geo.bin", Digest: digest.Bytes([]byte("geo")), Size: 3},
+		coord.MustParse("app/geo@2026.08"): {
+			URL:          "https://example.com/geo.bin",
+			Digest:       digest.Bytes([]byte("geo")),
+			Size:         3,
+			ETag:         "\"geo\"",
+			LastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +57,10 @@ func TestWritePairRoundTrip(t *testing.T) {
 	}
 	if err := CheckLock(readManifest, readLock); err != nil {
 		t.Fatal(err)
+	}
+	validators := readLock.Assets[coord.MustParse("app/geo@2026.08")]
+	if validators.ETag != "\"geo\"" || validators.LastModified != "Wed, 21 Oct 2015 07:28:00 GMT" {
+		t.Fatalf("lock validators did not survive the round trip: %#v", validators)
 	}
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -261,6 +271,12 @@ func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 		{"a negative size", func(lock *Lock) {
 			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: -1}
 		}, "negative size"},
+		{"an invalid Last-Modified date", func(lock *Lock) {
+			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, LastModified: "yesterday"}
+		}, "invalid Last-Modified"},
+		{"a non-canonical Last-Modified date", func(lock *Lock) {
+			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, LastModified: "Wednesday, 21-Oct-15 07:28:00 GMT"}
+		}, "invalid Last-Modified"},
 		// A hand edit is the only way any of these reaches a lock file, and a name is the one field here a script is invited to use as a path.
 		{"a filename that escapes its directory", func(lock *Lock) {
 			lock.Assets[name] = LockAsset{URL: "https://example.com/a", Digest: value, Size: 3, Filename: "../../etc/passwd"}
@@ -281,6 +297,23 @@ func TestLockValidateRejectsEachBrokenField(t *testing.T) {
 		if !strings.Contains(err.Error(), testCase.want) {
 			t.Fatalf("%s reported %q, which does not mention %q", testCase.reason, err, testCase.want)
 		}
+	}
+}
+
+func TestLegacyLockEncodingDoesNotInventValidators(t *testing.T) {
+	manifest, lock := locked(t,
+		Asset{URL: "https://example.com/geo.bin"},
+		LockAsset{URL: "https://example.com/geo.bin", Digest: digest.Bytes([]byte("geo")), Size: 3},
+	)
+	if err := CheckLock(manifest, lock); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("lastModified")) || bytes.Contains(encoded, []byte("etag")) {
+		t.Fatalf("legacy lock gained validators:\n%s", encoded)
 	}
 }
 

@@ -228,6 +228,29 @@ func TestGetReadsTheWholeFile(t *testing.T) {
 	}
 }
 
+func TestHeadReturnsValidatorsAndLengthWithoutBody(t *testing.T) {
+	server := newFileServer(testChunk)
+	server.lastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
+	getter := New()
+	defer getter.Close()
+
+	response, err := getter.Head(t.Context(), server.start(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != http.StatusOK || response.Length != int64(len(server.data)) || len(body) != 0 {
+		t.Fatalf("unexpected HEAD response: status=%d length=%d body=%d", response.Status, response.Length, len(body))
+	}
+	if response.Validator.ETag != server.etag || response.Validator.LastModified.UTC().Format(http.TimeFormat) != server.lastModified {
+		t.Fatalf("unexpected HEAD validators: %#v", response.Validator)
+	}
+}
+
 func TestGetSendsIdentityEncoding(t *testing.T) {
 	server := newFileServer(testChunk)
 	getter := New()

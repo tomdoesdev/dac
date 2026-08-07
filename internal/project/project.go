@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"net/url"
 	"os"
 
@@ -49,11 +50,12 @@ type Lock struct {
 // Filename records the project or origin name that a digest path cannot preserve.
 // It is advisory.
 type LockAsset struct {
-	URL      string `json:"url"`
-	Digest   string `json:"digest"`
-	Size     int64  `json:"size"`
-	ETag     string `json:"etag,omitempty"`
-	Filename string `json:"filename,omitempty"`
+	URL          string `json:"url"`
+	Digest       string `json:"digest"`
+	Size         int64  `json:"size"`
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"lastModified,omitempty"`
+	Filename     string `json:"filename,omitempty"`
 }
 
 // Empty returns matching empty project files.
@@ -171,6 +173,12 @@ func (lock Lock) Validate() error {
 		}
 		if asset.Size < 0 {
 			return fmt.Errorf("lock asset %q has a negative size", name)
+		}
+		if asset.LastModified != "" {
+			modified, err := http.ParseTime(asset.LastModified)
+			if err != nil || modified.UTC().Format(http.TimeFormat) != asset.LastModified {
+				return fmt.Errorf("lock asset %q has an invalid Last-Modified value", name)
+			}
 		}
 		// A name is the one field here that a caller is invited to use as a path element, and a lock file is a text file somebody can edit.
 		if asset.Filename != "" && filename.Clean(asset.Filename) != asset.Filename {

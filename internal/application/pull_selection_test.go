@@ -168,10 +168,9 @@ func TestNarrowedRefreshReachesOnlyTheNamedOrigins(t *testing.T) {
 	projecttest.Check(t, manifestPath, lockPath)
 }
 
-// An ETag written for an asset that is now pinned is dropped rather than carried
-// forward, so the entry does not keep getting rewritten. A pin is a manifest edit,
-// and the relock behind a refresh settles it without asking that origin anything.
-func TestNarrowedRefreshDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
+// A validator already learned for an asset remains a useful upstream-check hint
+// after that asset is pinned, even when a narrowed refresh carries it through.
+func TestNarrowedRefreshKeepsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	manifestPath, lockPath, contents := multiAssetProject(t)
 	pin(t, manifestPath, at("geo@1"), digest.Bytes(contents["https://example.com/geo-1"]))
 
@@ -191,8 +190,8 @@ func TestNarrowedRefreshDropsAStoredETagOnceAnAssetIsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tag := updated.Assets[at("geo@1")].ETag; tag != "" {
-		t.Fatalf("the carried-through pin kept ETag %q", tag)
+	if tag := updated.Assets[at("geo@1")].ETag; tag != "\"stale\"" {
+		t.Fatalf("the carried-through pin changed ETag to %q", tag)
 	}
 }
 
