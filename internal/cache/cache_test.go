@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/kit/fs/atomic"
 )
@@ -19,7 +19,7 @@ func TestPutAndLookupObject(t *testing.T) {
 	store := New(t.TempDir())
 	content := []byte("asset bytes")
 	expected := digest.Bytes(content)
-	object, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny(expected, 0))
+	object, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny(expected, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,19 +46,19 @@ func TestPutAndLookupObject(t *testing.T) {
 func TestPutRejectsDigestAndSizeMismatch(t *testing.T) {
 	store := New(t.TempDir())
 	content := []byte("asset bytes")
-	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny(digest.Bytes([]byte("other")), 0)); err == nil {
+	if _, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny(digest.Bytes([]byte("other")), 0)); err == nil {
 		t.Fatal("expected a digest mismatch")
 	}
-	short := application.Object{Digest: digest.Bytes(content), Size: int64(len(content) - 1)}
-	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutExact(short)); err == nil {
+	short := dac.Object{Digest: digest.Bytes(content), Size: int64(len(content) - 1)}
+	if _, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutExact(short)); err == nil {
 		t.Fatal("expected a size mismatch")
 	}
 }
 
 func TestPutEnforcesUnknownSizeLimit(t *testing.T) {
 	store := New(t.TempDir())
-	_, err := store.Put(context.Background(), bytes.NewReader([]byte("too large")), application.PutAny("", 3))
-	if !errors.Is(err, application.ErrTooLarge) {
+	_, err := store.Put(context.Background(), bytes.NewReader([]byte("too large")), dac.PutAny("", 3))
+	if !errors.Is(err, dac.ErrTooLarge) {
 		t.Fatalf("expected ErrTooLarge, got %v", err)
 	}
 }
@@ -67,7 +67,7 @@ func TestPutHonorsCancellation(t *testing.T) {
 	store := New(t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := store.Put(ctx, bytes.NewReader([]byte("asset")), application.PutAny("", 0)); !errors.Is(err, context.Canceled) {
+	if _, err := store.Put(ctx, bytes.NewReader([]byte("asset")), dac.PutAny("", 0)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestStatRejectsAnObjectThatDoesNotMatchItsDigest(t *testing.T) {
 	place(t, store, expected, []byte("different"))
 
 	_, _, err := store.Stat(expected)
-	var corrupt *application.CorruptError
+	var corrupt *dac.CorruptError
 	if !errors.As(err, &corrupt) {
 		t.Fatalf("expected a CorruptError, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStatRejectsAnObjectThatDoesNotMatchItsDigest(t *testing.T) {
 func TestStatDetectsCorruptionThatPreservesTheSize(t *testing.T) {
 	store := New(t.TempDir())
 	content := []byte("asset bytes")
-	object, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestStatDetectsCorruptionThatPreservesTheSize(t *testing.T) {
 	if err := os.WriteFile(path, []byte("ASSET BYTES"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Stat(object.Digest); !errors.As(err, new(*application.CorruptError)) {
+	if _, _, err := store.Stat(object.Digest); !errors.As(err, new(*dac.CorruptError)) {
 		t.Fatalf("same-size corruption went undetected: %v", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestPutRepairsACorruptObject(t *testing.T) {
 	value := digest.Bytes(content)
 	place(t, store, value, []byte("ASSET BYTES"))
 
-	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny(value, 0)); err != nil {
+	if _, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny(value, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Stat(value); err != nil {
@@ -166,7 +166,7 @@ func TestPutRepairsACorruptObject(t *testing.T) {
 func TestVerifyIgnoresTheSidecar(t *testing.T) {
 	store := New(t.TempDir())
 	content := []byte("asset bytes")
-	object, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,14 +192,14 @@ func TestVerifyIgnoresTheSidecar(t *testing.T) {
 	if _, _, err := fresh.Stat(object.Digest); err != nil {
 		t.Fatalf("the cheap check was expected to miss this, got %v", err)
 	}
-	if _, found, err := fresh.Verify(context.Background(), object.Digest); !found || !errors.As(err, new(*application.CorruptError)) {
+	if _, found, err := fresh.Verify(context.Background(), object.Digest); !found || !errors.As(err, new(*dac.CorruptError)) {
 		t.Fatalf("Verify missed the damage: found=%v err=%v", found, err)
 	}
 }
 
 func TestRemoveDeletesTheObjectAndItsSidecar(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +219,11 @@ func TestRemoveDeletesTheObjectAndItsSidecar(t *testing.T) {
 
 func TestListReturnsObjectsWithoutSidecars(t *testing.T) {
 	store := New(t.TempDir())
-	first, err := store.Put(context.Background(), bytes.NewReader([]byte("one")), application.PutAny("", 0))
+	first, err := store.Put(context.Background(), bytes.NewReader([]byte("one")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.Put(context.Background(), bytes.NewReader([]byte("two")), application.PutAny("", 0))
+	second, err := store.Put(context.Background(), bytes.NewReader([]byte("two")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func ageUse(t *testing.T, store *Store, value string, when time.Time) {
 
 func TestStatRefreshesTheSidecarAndNotTheObject(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,17 +297,17 @@ func TestStatRefreshesTheSidecarAndNotTheObject(t *testing.T) {
 
 func TestGCRemovesOnlyObjectsOlderThanMaxAge(t *testing.T) {
 	store := New(t.TempDir())
-	stale, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), application.PutAny("", 0))
+	stale, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := store.Put(context.Background(), bytes.NewReader([]byte("fresh bytes")), application.PutAny("", 0))
+	fresh, err := store.Put(context.Background(), bytes.NewReader([]byte("fresh bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ageUse(t, store, stale.Digest, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,12 +328,12 @@ func TestGCRemovesOnlyObjectsOlderThanMaxAge(t *testing.T) {
 func TestGCDryRunKeepsEverything(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
-	orphan, err := store.Put(context.Background(), bytes.NewReader([]byte("orphaned metadata")), application.PutAny("", 0))
+	orphan, err := store.Put(context.Background(), bytes.NewReader([]byte("orphaned metadata")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestGCDryRunKeepsEverything(t *testing.T) {
 	}
 	age(t, temporary, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour, DryRun: true})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: time.Hour, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestGCDryRunKeepsEverything(t *testing.T) {
 // caching is big enough that somebody may want to stop waiting for it.
 func TestVerifyStopsWhenTheCommandDoes(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestClearingLeavesATemporaryFileInFlight(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
 	// An object gives the sidecar sweep a directory to walk, which is where the other kind of temporary file lands.
-	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0)); err != nil {
+	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0)); err != nil {
 		t.Fatal(err)
 	}
 	downloads := filepath.Join(root, "tmp")
@@ -416,7 +416,7 @@ func TestClearingLeavesATemporaryFileInFlight(t *testing.T) {
 
 	// All makes the temporary-file policy depend only on its safety grace,
 	// regardless of an otherwise conflicting age setting.
-	_, err := store.GC(context.Background(), application.GCOptions{All: true, MaxAge: 30 * 24 * time.Hour})
+	_, err := store.GC(context.Background(), dac.GCOptions{All: true, MaxAge: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestGCRemovesAbandonedTemporaryFiles(t *testing.T) {
 	age(t, stale, time.Now().Add(-48*time.Hour))
 	age(t, other, time.Now().Add(-48*time.Hour))
 
-	_, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestGCRemovesAbandonedTemporaryFiles(t *testing.T) {
 func TestGCKeepsDigestLockFiles(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestGCKeepsDigestLockFiles(t *testing.T) {
 	if len(before) == 0 {
 		t.Fatal("the test did not create a lock file")
 	}
-	if _, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour}); err != nil {
+	if _, err := store.GC(context.Background(), dac.GCOptions{MaxAge: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadDir(locks)
@@ -491,7 +491,7 @@ func TestGCKeepsDigestLockFiles(t *testing.T) {
 }
 
 func TestGCOnAnEmptyCacheSucceeds(t *testing.T) {
-	result, err := New(t.TempDir()).GC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	result, err := New(t.TempDir()).GC(context.Background(), dac.GCOptions{MaxAge: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,14 +501,14 @@ func TestGCOnAnEmptyCacheSucceeds(t *testing.T) {
 }
 
 func TestGCRejectsANegativeMaxAge(t *testing.T) {
-	if _, err := New(t.TempDir()).GC(context.Background(), application.GCOptions{MaxAge: -time.Hour}); err == nil {
+	if _, err := New(t.TempDir()).GC(context.Background(), dac.GCOptions{MaxAge: -time.Hour}); err == nil {
 		t.Fatal("a negative age was accepted")
 	}
 }
 
 // stored reports whether the cache holds exactly the expected object, which is
 // what every caller of Stat actually wants to know.
-func stored(store *Store, object application.Object) (application.Object, bool, error) {
+func stored(store *Store, object dac.Object) (dac.Object, bool, error) {
 	found, exists, err := store.Stat(object.Digest)
 	return found, exists && found.Size == object.Size, err
 }
@@ -516,7 +516,7 @@ func stored(store *Store, object application.Object) (application.Object, bool, 
 func TestGCRemovesOrphanedSidecars(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestGCRemovesOrphanedSidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 	age(t, metaPath(path), time.Now().Add(-48*time.Hour))
-	_, err = store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err = store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestGCRemovesOrphanedSidecars(t *testing.T) {
 // nothing had been in doubt about.
 func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
 	age(t, metaPath(path), time.Now().Add(-48*time.Hour))
 
 	type outcome struct {
-		result application.GCResult
+		result dac.GCResult
 		err    error
 	}
 	done := make(chan outcome, 1)
@@ -569,7 +569,7 @@ func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
 	finishedEarly := false
 	err = store.WithLock(context.Background(), object.Digest, func() error {
 		go func() {
-			result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+			result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 			done <- outcome{result: result, err: err}
 		}()
 		// Nothing else in this collection needs the lock, so a sweep that
@@ -607,7 +607,7 @@ func TestGCWaitsForTheDigestLockBeforeTakingASidecar(t *testing.T) {
 // branch beside it checks the same thing.
 func TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ func TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err = store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,11 +629,11 @@ func TestGCKeepsAnOrphanedSidecarYoungerThanTheCutoff(t *testing.T) {
 
 func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,13 +649,13 @@ func TestGCKeepsSidecarsThatStillHaveObjects(t *testing.T) {
 // invariant that an object and its integrity metadata are removed together.
 func TestGCRemovesAnObjectAndItsSidecar(t *testing.T) {
 	store := New(t.TempDir())
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte("stale bytes")), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ageUse(t, store, object.Digest, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestGCRemovesAnObjectAndItsSidecar(t *testing.T) {
 func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
-	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), application.PutAny("", 0)); err != nil {
+	if _, err := store.Put(context.Background(), bytes.NewReader([]byte("asset bytes")), dac.PutAny("", 0)); err != nil {
 		t.Fatal(err)
 	}
 	// A sidecar write that dies between its temporary file and the rename leaves
@@ -689,7 +689,7 @@ func TestGCRemovesAbandonedSidecarWrites(t *testing.T) {
 	}
 	age(t, stale, time.Now().Add(-48*time.Hour))
 
-	_, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	_, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

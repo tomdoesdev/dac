@@ -10,9 +10,9 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/cache"
 	"github.com/tomdoesdev/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/httpclient"
@@ -29,9 +29,9 @@ func projectPaths(current *urfave.Command) (string, string) {
 	return manifest, filepath.Join(filepath.Dir(manifest), DefaultLock)
 }
 
-func (runner *runner) projectService(current *urfave.Command) *application.Service {
+func (runner *runner) projectService(current *urfave.Command) *dac.Service {
 	manifest, lock := projectPaths(current)
-	service := application.New(manifest, lock, nil, nil, nil)
+	service := dac.New(manifest, lock, nil, nil, nil)
 	runner.attachCatalog(current, service)
 	return service
 }
@@ -45,13 +45,13 @@ func (runner *runner) projectService(current *urfave.Command) *application.Servi
 // The catalog is attached to every service, including the ones holding no object store. Reading
 // a project is what advances a record, and remove does that without ever opening the
 // cache.
-func (runner *runner) attachCatalog(current *urfave.Command, service *application.Service) {
+func (runner *runner) attachCatalog(current *urfave.Command, service *dac.Service) {
 	if recorder := runner.catalogRecorder(current); recorder != nil {
 		service.Catalog = recorder
 	}
 }
 
-func (runner *runner) storeService(current *urfave.Command) (*application.Service, error) {
+func (runner *runner) storeService(current *urfave.Command) (*dac.Service, error) {
 	root, err := runner.cacheRoot(current)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (runner *runner) storeService(current *urfave.Command) (*application.Servic
 	manifest, lock := projectPaths(current)
 	store := cache.New(root)
 	store.Logger = runner.trace(current)
-	service := application.New(manifest, lock, store, nil, nil)
+	service := dac.New(manifest, lock, store, nil, nil)
 	runner.attachCatalog(current, service)
 	return service, nil
 }
@@ -86,9 +86,9 @@ func (runner *runner) cacheRoot(current *urfave.Command) (string, error) {
 	return root, nil
 }
 
-// networkService builds one application service for a network command.
+// networkService builds one service for a network command.
 // The command context controls transfers and their progress reporter together.
-func (runner *runner) networkService(ctx context.Context, current *urfave.Command, suppressProgress bool) (*application.Service, *httpclient.Client, error) {
+func (runner *runner) networkService(ctx context.Context, current *urfave.Command, suppressProgress bool) (*dac.Service, *httpclient.Client, error) {
 	settings, err := runner.config(current)
 	if err != nil {
 		return nil, nil, err

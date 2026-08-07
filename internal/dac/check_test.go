@@ -1,4 +1,4 @@
-package application_test
+package dac_test
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -21,12 +21,12 @@ const checkLastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
 
 type fakeProber struct {
 	mutex    sync.Mutex
-	requests []application.ProbeRequest
-	probe    func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error)
+	requests []dac.ProbeRequest
+	probe    func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error)
 }
 
 // Probe records a HEAD-like request and delegates its answer to the test.
-func (prober *fakeProber) Probe(ctx context.Context, request application.ProbeRequest) (*application.ProbeResponse, error) {
+func (prober *fakeProber) Probe(ctx context.Context, request dac.ProbeRequest) (*dac.ProbeResponse, error) {
 	prober.mutex.Lock()
 	prober.requests = append(prober.requests, request)
 	prober.mutex.Unlock()
@@ -42,24 +42,24 @@ func (prober *fakeProber) count() int {
 
 type forbiddenCatalog struct{ t *testing.T }
 
-func (catalog forbiddenCatalog) Note([]application.CatalogEntry) {
+func (catalog forbiddenCatalog) Note([]dac.CatalogEntry) {
 	catalog.t.Fatal("offline check updated the catalog")
 }
 func (catalog forbiddenCatalog) Forget([]string) {
 	catalog.t.Fatal("offline check updated the catalog")
 }
-func (catalog forbiddenCatalog) Describe(string) (application.CatalogRecord, bool) {
+func (catalog forbiddenCatalog) Describe(string) (dac.CatalogRecord, bool) {
 	catalog.t.Fatal("offline check read the catalog")
-	return application.CatalogRecord{}, false
+	return dac.CatalogRecord{}, false
 }
 
 func TestCheckOfflineReadsOnlyStrictProjectFiles(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	service := application.New(manifestPath, lockPath, nil, nil, nil)
+	service := dac.New(manifestPath, lockPath, nil, nil, nil)
 	service.Catalog = forbiddenCatalog{t: t}
 
-	result, err := service.Check(context.Background(), application.CheckOptions{})
+	result, err := service.Check(context.Background(), dac.CheckOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestCheckOfflineRetainsProjectFailureClassifications(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 			testCase.prepare(t, manifestPath, lockPath)
-			_, err := application.New(manifestPath, lockPath, nil, nil, nil).Check(context.Background(), application.CheckOptions{})
+			_, err := dac.New(manifestPath, lockPath, nil, nil, nil).Check(context.Background(), dac.CheckOptions{})
 			if code := fault.As(err).Code; code != testCase.code {
 				t.Fatalf("code=%q, want %q (%v)", code, testCase.code, err)
 			}
@@ -117,20 +117,20 @@ func TestCheckMetadataUsesMatchingStoredValidatorsWithoutGET(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	setCheckValidators(t, lockPath, "W/\"known\"", checkLastModified)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("GET should not have been sent")
 	}}
-	prober := &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-		return &application.ProbeResponse{
+	prober := &fakeProber{probe: func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error) {
+		return &dac.ProbeResponse{
 			ETag:         "W/\"known\"",
 			LastModified: checkLastModified,
 			Length:       int64(len(content)),
 		}, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	service.Prober = prober
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
+	result, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckMetadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,19 +143,19 @@ func TestCheckMetadataIgnoresANewValidatorWhenNoHintWasLocked(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	setCheckValidators(t, lockPath, "\"known\"", "")
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("GET should not have been sent")
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-	service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-		return &application.ProbeResponse{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service.Prober = &fakeProber{probe: func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error) {
+		return &dac.ProbeResponse{
 			ETag:         "\"known\"",
 			LastModified: checkLastModified,
 			Length:       int64(len(content)),
 		}, nil
 	}}
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
+	result, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckMetadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,15 +168,15 @@ func TestCheckMetadataAggregatesChangedHintsWithoutGET(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	setCheckValidators(t, lockPath, "\"known\"", checkLastModified)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("GET should not have been sent")
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-	service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-		return &application.ProbeResponse{ETag: "\"new\"", Length: int64(len(content) + 1)}, nil
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service.Prober = &fakeProber{probe: func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error) {
+		return &dac.ProbeResponse{ETag: "\"new\"", Length: int64(len(content) + 1)}, nil
 	}}
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckMetadata})
+	_, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckMetadata})
 	value := fault.As(err)
 	if value.Code != "metadata_mismatch" || fetcher.count() != 0 {
 		t.Fatalf("unexpected metadata error: %v, GET=%d", err, fetcher.count())
@@ -189,18 +189,18 @@ func TestCheckMetadataAggregatesChangedHintsWithoutGET(t *testing.T) {
 
 func TestCheckMetadataSelectsExactCoordinatesOnce(t *testing.T) {
 	manifestPath, lockPath, _ := multiAssetProject(t)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("GET should not have been sent")
 	}}
-	prober := &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
-		return &application.ProbeResponse{Length: application.Unknown}, nil
+	prober := &fakeProber{probe: func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error) {
+		return &dac.ProbeResponse{Length: dac.Unknown}, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	service.Prober = prober
 
-	result, err := service.Check(context.Background(), application.CheckOptions{
+	result, err := service.Check(context.Background(), dac.CheckOptions{
 		Concurrency: 1,
-		Mode:        application.CheckMetadata,
+		Mode:        dac.CheckMetadata,
 		Assets: []coord.Coordinate{
 			at("geo@1"), at("geo@1"),
 		},
@@ -212,8 +212,8 @@ func TestCheckMetadataSelectsExactCoordinatesOnce(t *testing.T) {
 		t.Fatalf("unexpected selected metadata result: %#v, HEAD=%d GET=%d", result, prober.count(), fetcher.count())
 	}
 
-	_, err = service.Check(context.Background(), application.CheckOptions{
-		Mode:   application.CheckMetadata,
+	_, err = service.Check(context.Background(), dac.CheckOptions{
+		Mode:   dac.CheckMetadata,
 		Assets: []coord.Coordinate{at("geo@9")},
 	})
 	if fault.As(err).Code != "asset_unknown" || prober.count() != 1 {
@@ -247,18 +247,18 @@ func TestCheckBytesDownloadsPinnedAssetsWithoutProbingOrCaching(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newFakeStore()
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		if request.ETag != "" || request.LastModified != "" {
 			return nil, fmt.Errorf("byte verification sent validators: %#v", request)
 		}
 		return response(content), nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	service.Prober = &fakeProber{probe: func(context.Context, application.ProbeRequest) (*application.ProbeResponse, error) {
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
+	service.Prober = &fakeProber{probe: func(context.Context, dac.ProbeRequest) (*dac.ProbeResponse, error) {
 		return nil, errors.New("HEAD should not have been sent")
 	}}
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 2, Mode: application.CheckBytes})
+	result, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 2, Mode: dac.CheckBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,9 +270,9 @@ func TestCheckBytesDownloadsPinnedAssetsWithoutProbingOrCaching(t *testing.T) {
 func TestCheckBytesAggregatesChangedBytesAsLockDrift(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("changed bytes")), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("changed bytes")), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
+	_, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckBytes})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %v", err)

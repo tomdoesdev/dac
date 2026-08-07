@@ -1,4 +1,4 @@
-package application_test
+package dac_test
 
 import (
 	"context"
@@ -9,17 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/httpclient"
 )
 
 type countingFetcher struct {
-	next  application.Fetcher
+	next  dac.Fetcher
 	calls *atomic.Int32
 }
 
 // Fetch records one source-stage call and delegates the transfer.
-func (fetcher countingFetcher) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+func (fetcher countingFetcher) Fetch(ctx context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 	fetcher.calls.Add(1)
 	return fetcher.next.Fetch(ctx, request)
 }
@@ -39,7 +39,7 @@ func TestFetcherDecoratorRunsOnceForARedirectedAsset(t *testing.T) {
 	defer client.Close()
 	var calls atomic.Int32
 	decorated := countingFetcher{next: client, calls: &calls}
-	response, err := decorated.Fetch(context.Background(), application.FetchRequest{
+	response, err := decorated.Fetch(context.Background(), dac.FetchRequest{
 		URL: server.URL + "/source",
 	})
 	if err != nil {

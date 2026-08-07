@@ -2,7 +2,7 @@
 //
 // The transfer itself -- retries, stall detection, split range downloads,
 // redirect limits -- belongs to kit/http/getit. This package is the
-// adapter between that engine and the application.Fetcher boundary, and it
+// adapter between that engine and the dac.Fetcher boundary, and it
 // holds only DAC-specific response adaptation: asset naming and error details.
 package httpclient
 
@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/kit/fs/util/filename"
 	"github.com/tomdoesdev/kit/http/getit"
@@ -23,8 +23,8 @@ import (
 
 const maxRedirects = 10
 
-var _ application.RequestDetail = (*RequestError)(nil)
-var _ application.UpstreamProber = (*Client)(nil)
+var _ dac.RequestDetail = (*RequestError)(nil)
+var _ dac.UpstreamProber = (*Client)(nil)
 
 // Options configures one HTTP client.
 type Options struct {
@@ -65,7 +65,7 @@ func New(options Options) *Client {
 func (client *Client) Close() { client.getter.Close() }
 
 // Fetch sends an unconditional or conditional asset request.
-func (client *Client) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+func (client *Client) Fetch(ctx context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 	var options []getit.RequestOption
 	validator := getit.Validator{ETag: request.ETag}
 	if request.LastModified != "" {
@@ -82,7 +82,7 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 	if err != nil {
 		return nil, requestError(request.URL, err)
 	}
-	return &application.FetchResponse{
+	return &dac.FetchResponse{
 		NotModified:  response.NotModified,
 		ETag:         response.Validator.ETag,
 		LastModified: lastModifiedText(response.Validator),
@@ -93,13 +93,13 @@ func (client *Client) Fetch(ctx context.Context, request application.FetchReques
 }
 
 // Probe sends an unconditional HEAD through the same policies as an asset GET.
-func (client *Client) Probe(ctx context.Context, request application.ProbeRequest) (*application.ProbeResponse, error) {
+func (client *Client) Probe(ctx context.Context, request dac.ProbeRequest) (*dac.ProbeResponse, error) {
 	response, err := client.getter.Head(ctx, request.URL)
 	if err != nil {
 		return nil, requestError(request.URL, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	return &application.ProbeResponse{
+	return &dac.ProbeResponse{
 		ETag:         response.Validator.ETag,
 		LastModified: lastModifiedText(response.Validator),
 		Length:       response.Length,
@@ -114,7 +114,7 @@ func lastModifiedText(validator getit.Validator) string {
 	return validator.LastModified.UTC().Format(http.TimeFormat)
 }
 
-// assetBody restates a stalled transfer as the failure the application classifies on.
+// assetBody restates a stalled transfer as the failure DAC classifies on.
 // The stall arrives through Read, part way through the store hashing the bytes, so it is the
 // body rather than the request that has to say so.
 type assetBody struct{ inner io.ReadCloser }
@@ -123,7 +123,7 @@ func (body *assetBody) Read(buffer []byte) (int, error) {
 	count, err := body.inner.Read(buffer)
 	// io.EOF is passed back exactly as it arrived, because io.Copy compares it rather than unwrapping it.
 	if err != nil && errors.Is(err, getit.ErrStalled) {
-		return count, fmt.Errorf("%w: %w", application.ErrStalled, err)
+		return count, fmt.Errorf("%w: %w", dac.ErrStalled, err)
 	}
 	return count, err
 }
@@ -156,12 +156,12 @@ func (value *RequestError) Error() string { return fmt.Sprintf("%s: %v", value.U
 
 func (value *RequestError) Unwrap() error { return value.Err }
 
-// RequestURL and StatusCode satisfy application.RequestDetail.
+// RequestURL and StatusCode satisfy dac.RequestDetail.
 func (value *RequestError) RequestURL() string { return value.URL }
 
 func (value *RequestError) StatusCode() int { return value.Status }
 
-// requestError restates the engine's failure as the one the application reports on.
+// requestError restates the engine's failure as the one DAC reports on.
 // The cause is carried through unchanged so callers can inspect the HTTP failure.
 func requestError(url string, err error) error {
 	var request *getit.RequestError

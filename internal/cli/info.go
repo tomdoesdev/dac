@@ -7,7 +7,7 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/output/style"
 	"github.com/tomdoesdev/kit/bytesize"
 )
@@ -27,7 +27,7 @@ func (runner *runner) infoCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Info(application.InfoOptions{Selection: filter})
+			result, err := service.Info(dac.InfoOptions{Selection: filter})
 			return result, infoText(runner.stdoutPalette, result), err
 		}),
 	}
@@ -35,7 +35,7 @@ func (runner *runner) infoCommand() *urfave.Command {
 
 // infoText formats each asset as one detailed information block.
 // The keys recede and the values do not.
-func infoText(palette style.Palette, result application.InfoResult) string {
+func infoText(palette style.Palette, result dac.InfoResult) string {
 	if len(result.Assets) == 0 {
 		return "No assets."
 	}
@@ -73,11 +73,11 @@ func infoText(palette style.Palette, result application.InfoResult) string {
 // statusText adds color without changing the state value in the output.
 func statusText(palette style.Palette, status string) string {
 	switch status {
-	case application.CacheCached, application.LockCurrent:
+	case dac.CacheCached, dac.LockCurrent:
 		return palette.Good(status)
-	case application.CacheMissing, application.LockStale, application.CacheUnavailable:
+	case dac.CacheMissing, dac.LockStale, dac.CacheUnavailable:
 		return palette.Warn(status)
-	case application.CacheCorrupt:
+	case dac.CacheCorrupt:
 		return palette.Bad(status)
 	}
 	return status

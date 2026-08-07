@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 )
 
@@ -17,8 +17,8 @@ func testRecorder(t *testing.T) *Recorder {
 	return NewRecorder(testStore(t), Empty())
 }
 
-func observation(value, name string) application.CatalogEntry {
-	return application.CatalogEntry{
+func observation(value, name string) dac.CatalogEntry {
+	return dac.CatalogEntry{
 		Digest:     value,
 		Size:       12,
 		Coordinate: coord.MustParse(name),
@@ -41,7 +41,7 @@ func TestFlushWritesNothingWhenTheRunSawNothing(t *testing.T) {
 
 func TestFlushRecordsEveryObjectTheRunSaw(t *testing.T) {
 	recorder := testRecorder(t)
-	recorder.Note([]application.CatalogEntry{
+	recorder.Note([]dac.CatalogEntry{
 		observation(first, "tools/rg@14.1.0"),
 		observation(second, "tools/jq@1.7"),
 	})
@@ -62,7 +62,7 @@ func TestFlushRecordsEveryObjectTheRunSaw(t *testing.T) {
 // other order would put every one of them straight back.
 func TestFlushAppliesRecordsBeforeRemovals(t *testing.T) {
 	recorder := testRecorder(t)
-	recorder.Note([]application.CatalogEntry{observation(first, "tools/rg@14.1.0")})
+	recorder.Note([]dac.CatalogEntry{observation(first, "tools/rg@14.1.0")})
 	recorder.Forget([]string{first})
 	if err := recorder.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
@@ -80,7 +80,7 @@ func TestFlushAppliesRecordsBeforeRemovals(t *testing.T) {
 // name it in the same listing, before anything has been written.
 func TestDescribeAnswersFromWhatThisRunHasSeen(t *testing.T) {
 	recorder := testRecorder(t)
-	recorder.Note([]application.CatalogEntry{observation(first, "tools/rg@14.1.0")})
+	recorder.Note([]dac.CatalogEntry{observation(first, "tools/rg@14.1.0")})
 	record, known := recorder.Describe(first)
 	if !known || record.Filename != "a.bin" || record.SourceURL != "https://example.test/a" {
 		t.Fatalf("record = %#v, want the observation this run made", record)
@@ -99,7 +99,7 @@ func TestTheRecorderHoldsUpUnderParallelRecording(t *testing.T) {
 	for index := range count {
 		group.Go(func() {
 			value := digest.Bytes([]byte("object " + strconv.Itoa(index)))
-			recorder.Note([]application.CatalogEntry{observation(value, "tools/rg@14.1."+strconv.Itoa(index))})
+			recorder.Note([]dac.CatalogEntry{observation(value, "tools/rg@14.1."+strconv.Itoa(index))})
 		})
 	}
 	group.Wait()

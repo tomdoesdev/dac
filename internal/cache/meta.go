@@ -23,7 +23,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/strictjson"
@@ -120,7 +120,7 @@ func (store *Store) verify(ctx context.Context, value, path string) error {
 		return err
 	}
 	if actual != value {
-		return &application.CorruptError{Digest: value, ActualDigest: actual, Path: path}
+		return &dac.CorruptError{Digest: value, ActualDigest: actual, Path: path}
 	}
 	// The object is what it claims to be, so record the stat that proves it.
 	_ = writeMeta(metaPath(path), newMeta(info))

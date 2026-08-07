@@ -1,5 +1,5 @@
-// Package application implements DAC operations.
-package application
+// Package dac implements the operations DAC performs on a project and its object cache.
+package dac
 
 import (
 	"context"

@@ -6,7 +6,7 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 // configCommand builds the configuration inspection commands.
@@ -34,7 +34,7 @@ func (runner *runner) configPathCommand() *urfave.Command {
 				return nil, "", err
 			}
 			// One path per line and nothing else, so a script can read it the way it reads dac cache dir.
-			return application.ConfigPathResult{Files: settings.Files}, strings.Join(settings.Files, "\n"), nil
+			return dac.ConfigPathResult{Files: settings.Files}, strings.Join(settings.Files, "\n"), nil
 		}),
 	}
 }
@@ -49,9 +49,9 @@ func (runner *runner) configShowCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result := application.ConfigShowResult{Files: settings.Files}
+			result := dac.ConfigShowResult{Files: settings.Files}
 			for _, setting := range settings.Settings() {
-				result.Settings = append(result.Settings, application.ConfigSetting{
+				result.Settings = append(result.Settings, dac.ConfigSetting{
 					Key:    setting.Key,
 					Value:  setting.Value,
 					Source: setting.Source,

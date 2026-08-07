@@ -1,4 +1,4 @@
-package application
+package dac
 
 import (
 	"github.com/tomdoesdev/dac/internal/coord"

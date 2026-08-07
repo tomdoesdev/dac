@@ -6,7 +6,7 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/output/style"
 	"github.com/tomdoesdev/kit/bytesize"
 )
@@ -34,7 +34,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Unpack(ctx, application.UnpackOptions{
+			result, err := service.Unpack(ctx, dac.UnpackOptions{
 				Directory: directory,
 				Assets:    assets,
 				Force:     current.Bool("force"),
@@ -48,7 +48,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 }
 
 // unpackText reports when a selection wrote part of the project.
-func unpackText(palette style.Palette, result application.UnpackResult) string {
+func unpackText(palette style.Palette, result dac.UnpackResult) string {
 	size := bytesize.Humanize(result.ByteCount)
 	if result.FileCount < result.ProjectCount {
 		return fmt.Sprintf("Unpacked %s of %d (%s) into %s.",

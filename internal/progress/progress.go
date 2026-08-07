@@ -15,7 +15,7 @@ import (
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/output/style"
 	"github.com/tomdoesdev/kit/bytesize"
 )
@@ -23,9 +23,9 @@ import (
 // New selects bars for a terminal and lines for other writers.
 // The context is the command's, and the bar container is built on it so that cancelling the command ends the display.
 // Only the bars are coloured.
-func New(ctx context.Context, writer io.Writer, terminal, enabled bool, palette style.Palette) application.Reporter {
+func New(ctx context.Context, writer io.Writer, terminal, enabled bool, palette style.Palette) dac.Reporter {
 	if !enabled {
-		return application.NopReporter{}
+		return dac.NopReporter{}
 	}
 	if terminal {
 		return newBars(ctx, writer, palette)

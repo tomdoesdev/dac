@@ -1,9 +1,9 @@
-package application_test
+package dac_test
 
 import (
 	"testing"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 )
@@ -13,8 +13,8 @@ func TestInfoCombinesProjectAndCacheState(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Info(application.InfoOptions{Selection: application.ExactSelection(at("asset@1"))})
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	result, err := service.Info(dac.InfoOptions{Selection: dac.ExactSelection(at("asset@1"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestInfoCombinesProjectAndCacheState(t *testing.T) {
 		asset.Digest != digest.Bytes(content) || asset.Size == nil || *asset.Size != int64(len(content)) || asset.Path == "" {
 		t.Fatalf("unexpected info asset: %#v", asset)
 	}
-	_, err = service.Info(application.InfoOptions{Selection: application.ExactSelection(at("asset@2"))})
+	_, err = service.Info(dac.InfoOptions{Selection: dac.ExactSelection(at("asset@2"))})
 	unknown := fault.As(err)
 	if unknown.Code != "asset_unknown" {
 		t.Fatalf("expected asset_unknown, got %v", unknown)
@@ -39,9 +39,9 @@ func TestInfoCombinesProjectAndCacheState(t *testing.T) {
 
 func TestInfoReportsACorruptObject(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Info(application.InfoOptions{})
+	result, err := service.Info(dac.InfoOptions{})
 	if err != nil {
 		t.Fatalf("info should describe damage: %v", err)
 	}
@@ -55,9 +55,9 @@ func TestInfoReportsTheLockedFilename(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Info(application.InfoOptions{})
+	result, err := service.Info(dac.InfoOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

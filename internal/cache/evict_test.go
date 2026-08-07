@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 // TestGCEvictsTheLeastRecentlyUsedUntilItFits covers the question age cannot
@@ -25,7 +25,7 @@ func TestGCEvictsTheLeastRecentlyUsedUntilItFits(t *testing.T) {
 	ageUse(t, store, newest.Digest, time.Now().Add(-time.Hour))
 
 	// Room for one object, so the two oldest go.
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestGCEvictsEqualAgeObjectsByDigest(t *testing.T) {
 	ageUse(t, store, first.Digest, used)
 	ageUse(t, store, second.Digest, used)
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestGCLeavesACacheInsideItsBoundAlone(t *testing.T) {
 	store := New(t.TempDir())
 	object := put(t, store, "a small asset")
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 1 << 20})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestGCWithoutASizeBoundEvictsNothing(t *testing.T) {
 	store := New(t.TempDir())
 	object := put(t, store, strings.Repeat("a", 4096))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestGCCollectsByAgeBeforeEvicting(t *testing.T) {
 
 	// The bound alone would have taken one object. Collection takes the stale
 	// one first, which brings the cache under without touching the live one.
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,14 +131,14 @@ func TestGCDryRunEvictsNothingAndCountsOnce(t *testing.T) {
 	live := put(t, store, strings.Repeat("b", 400))
 	ageUse(t, store, stale.Digest, time.Now().Add(-48*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500, DryRun: true})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.ObjectCount != 1 || len(result.Digests) != 1 {
 		t.Fatalf("a dry run counted the stale object twice: %#v", result)
 	}
-	for _, object := range []application.Object{stale, live} {
+	for _, object := range []dac.Object{stale, live} {
 		if _, valid, err := stored(store, object); err != nil || !valid {
 			t.Fatalf("a dry run removed an object, valid=%v err=%v", valid, err)
 		}
@@ -152,7 +152,7 @@ func TestGCClearIgnoresTheSizeBound(t *testing.T) {
 	put(t, store, strings.Repeat("a", 400))
 	put(t, store, strings.Repeat("b", 400))
 
-	result, err := store.GC(context.Background(), application.GCOptions{MaxSize: 500, All: true})
+	result, err := store.GC(context.Background(), dac.GCOptions{MaxSize: 500, All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestGCClearDoesNotDependOnTimestamps(t *testing.T) {
 	object := put(t, store, "future asset")
 	ageUse(t, store, object.Digest, time.Now().Add(200*365*24*time.Hour))
 
-	result, err := store.GC(context.Background(), application.GCOptions{All: true})
+	result, err := store.GC(context.Background(), dac.GCOptions{All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,13 +190,13 @@ func TestGCDoesNotEvictAnObjectUsedWhileItWaited(t *testing.T) {
 	ageUse(t, store, other.Digest, time.Now().Add(-2*time.Hour))
 
 	type outcome struct {
-		result application.GCResult
+		result dac.GCResult
 		err    error
 	}
 	done := make(chan outcome, 1)
 	err := store.WithLock(context.Background(), guarded.Digest, func() error {
 		go func() {
-			result, err := store.GC(context.Background(), application.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
+			result, err := store.GC(context.Background(), dac.GCOptions{MaxAge: 24 * time.Hour, MaxSize: 500})
 			done <- outcome{result: result, err: err}
 		}()
 		// The collection has read every timestamp by now and is blocked on the
@@ -231,9 +231,9 @@ func TestGCDoesNotEvictAnObjectUsedWhileItWaited(t *testing.T) {
 }
 
 // put stores bytes and returns the object, which every test here starts with.
-func put(t *testing.T, store *Store, content string) application.Object {
+func put(t *testing.T, store *Store, content string) dac.Object {
 	t.Helper()
-	object, err := store.Put(context.Background(), bytes.NewReader([]byte(content)), application.PutAny("", 0))
+	object, err := store.Put(context.Background(), bytes.NewReader([]byte(content)), dac.PutAny("", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

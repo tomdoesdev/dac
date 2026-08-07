@@ -8,8 +8,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output/style"
 	"github.com/tomdoesdev/kit/bytesize"
@@ -64,7 +64,7 @@ func (runner *runner) cacheGCCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.CacheGC(ctx, application.GCOptions{
+			result, err := service.CacheGC(ctx, dac.GCOptions{
 				MaxAge:  maxAge,
 				MaxSize: maxSize,
 				DryRun:  current.Bool("dry-run"),
@@ -87,8 +87,8 @@ func (runner *runner) cacheScrubCommand() *urfave.Command {
 			&urfave.BoolFlag{Name: "all", Usage: "Check every object in the cache instead of this project's."},
 			&urfave.BoolFlag{Name: "repair", Usage: "Remove the objects that fail."},
 		},
-		Action: runner.runStore("cache.scrub", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
-			result, err := service.VerifyCache(ctx, application.VerifyCacheOptions{
+		Action: runner.runStore("cache.scrub", func(ctx context.Context, current *urfave.Command, service *dac.Service) (any, string, error) {
+			result, err := service.VerifyCache(ctx, dac.VerifyCacheOptions{
 				All:    current.Bool("all"),
 				Repair: current.Bool("repair"),
 			})
@@ -118,7 +118,7 @@ func (runner *runner) cacheDirCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return application.CacheDirResult{Path: root}, root, nil
+			return dac.CacheDirResult{Path: root}, root, nil
 		}),
 	}
 }
@@ -130,8 +130,8 @@ func (runner *runner) cacheListCommand() *urfave.Command {
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "all", Usage: "List every object in the cache instead of this project's."},
 		},
-		Action: runner.runStore("cache.list", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
-			result, err := service.CacheList(ctx, application.CacheListOptions{All: current.Bool("all")})
+		Action: runner.runStore("cache.list", func(ctx context.Context, current *urfave.Command, service *dac.Service) (any, string, error) {
+			result, err := service.CacheList(ctx, dac.CacheListOptions{All: current.Bool("all")})
 			if err != nil {
 				return nil, "", err
 			}
@@ -147,7 +147,7 @@ func (runner *runner) cacheClearCommand() *urfave.Command {
 		Flags: []urfave.Flag{
 			&urfave.BoolFlag{Name: "dry-run", Usage: "Report what clearing would remove."},
 		},
-		Action: runner.runStore("cache.clear", func(ctx context.Context, current *urfave.Command, service *application.Service) (any, string, error) {
+		Action: runner.runStore("cache.clear", func(ctx context.Context, current *urfave.Command, service *dac.Service) (any, string, error) {
 			// Clear needs no prompt because dry-run is available and pull restores objects.
 			result, err := service.CacheClear(ctx, current.Bool("dry-run"))
 			if err != nil {
@@ -177,7 +177,7 @@ func (runner *runner) cacheRemoveCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.CacheRemove(ctx, application.CacheRemoveOptions{
+			result, err := service.CacheRemove(ctx, dac.CacheRemoveOptions{
 				Coordinates: names,
 				Force:       current.Bool("force"),
 			})
@@ -191,7 +191,7 @@ func (runner *runner) cacheRemoveCommand() *urfave.Command {
 
 // listText summarizes one cache listing.
 // Cache listing puts coordinates after object metadata so each row is easy to scan.
-func listText(palette style.Palette, result application.CacheListResult) string {
+func listText(palette style.Palette, result dac.CacheListResult) string {
 	if result.ObjectCount == 0 {
 		if result.MissingCount > 0 {
 			return fmt.Sprintf("No objects. %s. %s",
@@ -233,7 +233,7 @@ func listText(palette style.Palette, result application.CacheListResult) string 
 }
 
 // removeObjectsText summarizes one targeted removal.
-func removeObjectsText(palette style.Palette, result application.CacheRemoveResult) string {
+func removeObjectsText(palette style.Palette, result dac.CacheRemoveResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Removed %s (%s).",
 		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Humanize(result.ByteCount))
@@ -248,7 +248,7 @@ func removeObjectsText(palette style.Palette, result application.CacheRemoveResu
 
 // scrubText summarizes one explicit cache check.
 // Damage counts use warning styles because they also make scrub fail.
-func scrubText(palette style.Palette, result application.VerifyCacheResult) string {
+func scrubText(palette style.Palette, result dac.VerifyCacheResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Checked %s (%s).",
 		palette.Strong(plural(result.Checked, "object")), bytesize.Humanize(result.ByteCount))
@@ -269,7 +269,7 @@ func scrubText(palette style.Palette, result application.VerifyCacheResult) stri
 }
 
 // gcText summarizes one cache collection.
-func gcText(palette style.Palette, result application.GCResult) string {
+func gcText(palette style.Palette, result dac.GCResult) string {
 	verb := "Removed"
 	if result.DryRun {
 		verb = "Would remove"

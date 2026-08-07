@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 // assetSize is large enough to split: the first chunk arrives on the response
@@ -112,7 +112,7 @@ func parseRangeSpec(spec string, size int64) (int64, int64, error) {
 // comparison does not hold a second copy of the asset.
 func fetchAll(t *testing.T, client *Client, url string) [32]byte {
 	t.Helper()
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: url})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: url})
 	if err != nil {
 		t.Fatal(err)
 	}

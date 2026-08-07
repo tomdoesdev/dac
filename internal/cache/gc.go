@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/kit/fs/atomic"
 )
@@ -60,9 +60,9 @@ type collection struct {
 // GC removes expired objects, evicts least-recently-used survivors to satisfy a
 // size bound, and cleans abandoned cache files. Every destructive decision is
 // rechecked while holding the object's digest lock.
-func (store *Store) GC(ctx context.Context, options application.GCOptions) (application.GCResult, error) {
+func (store *Store) GC(ctx context.Context, options dac.GCOptions) (dac.GCResult, error) {
 	if options.MaxAge < 0 {
-		return application.GCResult{}, errors.New("the maximum age must not be negative")
+		return dac.GCResult{}, errors.New("the maximum age must not be negative")
 	}
 
 	now := time.Now()
@@ -71,11 +71,11 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	if !options.All {
 		temporaryCutoff = earlier(cutoff, temporaryCutoff)
 	}
-	result := application.GCResult{Digests: []string{}, DryRun: options.DryRun}
+	result := dac.GCResult{Digests: []string{}, DryRun: options.DryRun}
 
 	inventory, err := store.scanCache(ctx)
 	if err != nil {
-		return application.GCResult{}, err
+		return dac.GCResult{}, err
 	}
 	slices.SortFunc(inventory.objects, compareCacheObjects)
 
@@ -89,7 +89,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 		if _, err := store.take(ctx, object, &inventory, &result, options.DryRun, func(used time.Time) bool {
 			return options.All || used.Before(cutoff)
 		}); err != nil {
-			return application.GCResult{}, err
+			return dac.GCResult{}, err
 		}
 	}
 
@@ -108,7 +108,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 				return !used.After(observed)
 			})
 			if err != nil {
-				return application.GCResult{}, err
+				return dac.GCResult{}, err
 			}
 			if outcome.removed {
 				store.trace().Debug("evicted", "digest", object.digest, "size", outcome.size,
@@ -118,7 +118,7 @@ func (store *Store) GC(ctx context.Context, options application.GCOptions) (appl
 	}
 
 	if err := store.cleanCache(ctx, inventory, options, cutoff, temporaryCutoff); err != nil {
-		return application.GCResult{}, err
+		return dac.GCResult{}, err
 	}
 	slices.Sort(result.Digests)
 	return result, nil
@@ -239,7 +239,7 @@ func compareCacheObjects(left, right cacheObject) int {
 }
 
 // addCollection records an object selected by either expiration or eviction.
-func addCollection(result *application.GCResult, value string, size int64) {
+func addCollection(result *dac.GCResult, value string, size int64) {
 	result.Digests = append(result.Digests, value)
 	result.ObjectCount++
 	result.ByteCount += size
@@ -253,7 +253,7 @@ func addCollection(result *application.GCResult, value string, size int64) {
 // under the digest lock, where it closes the window between the inventory scan and the removal.
 // An object that has already gone stops counting against the size bound exactly as a collected one does.
 func (store *Store) take(ctx context.Context, object *cacheObject, inventory *cacheInventory,
-	result *application.GCResult, dryRun bool, eligible func(time.Time) bool,
+	result *dac.GCResult, dryRun bool, eligible func(time.Time) bool,
 ) (collection, error) {
 	outcome, err := store.collectObject(ctx, *object, dryRun, eligible)
 	if err != nil {
@@ -306,7 +306,7 @@ func (store *Store) collectObject(ctx context.Context, object cacheObject, dryRu
 
 // cleanCache removes housekeeping files without exposing them as collected
 // objects. Objects and sidecars remain independently safe under concurrent GC.
-func (store *Store) cleanCache(ctx context.Context, inventory cacheInventory, options application.GCOptions, cutoff, temporaryCutoff time.Time) error {
+func (store *Store) cleanCache(ctx context.Context, inventory cacheInventory, options dac.GCOptions, cutoff, temporaryCutoff time.Time) error {
 	for _, temporary := range inventory.temporaries {
 		if err := ctx.Err(); err != nil {
 			return err

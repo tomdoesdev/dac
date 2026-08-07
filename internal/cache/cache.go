@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/debug"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/kit/fs/atomic"
@@ -75,74 +75,74 @@ func (store *Store) Path(value string) (string, error) {
 
 // Stat returns the object stored for a digest and confirms that it still holds the bytes DAC installed.
 // It usually reads no object bytes at all: see check in meta.go.
-func (store *Store) Stat(value string) (application.Object, bool, error) {
+func (store *Store) Stat(value string) (dac.Object, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		store.trace().Debug("cache miss", "digest", value)
-		return application.Object{}, false, nil
+		return dac.Object{}, false, nil
 	}
 	if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	if err := store.check(value, path, info); err != nil {
 		store.trace().Debug("cache object failed its check", "digest", value, "error", err)
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	touch(metaPath(path))
 	store.trace().Debug("cache hit", "digest", value, "size", info.Size())
-	return application.Object{Digest: value, Size: info.Size()}, true, nil
+	return dac.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
 // Describe reports an object's size and when a project last used it.
 // It touches nothing.
-func (store *Store) Describe(value string) (application.ObjectDescription, bool, error) {
+func (store *Store) Describe(value string) (dac.ObjectDescription, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
-		return application.ObjectDescription{}, false, err
+		return dac.ObjectDescription{}, false, err
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return application.ObjectDescription{}, false, nil
+		return dac.ObjectDescription{}, false, nil
 	}
 	if err != nil {
-		return application.ObjectDescription{}, false, err
+		return dac.ObjectDescription{}, false, err
 	}
 	used, err := store.lastUsed(path)
 	if err != nil {
-		return application.ObjectDescription{}, false, err
+		return dac.ObjectDescription{}, false, err
 	}
-	return application.ObjectDescription{Digest: value, Size: info.Size(), LastUsed: used}, true, nil
+	return dac.ObjectDescription{Digest: value, Size: info.Size(), LastUsed: used}, true, nil
 }
 
 // Verify hashes one object and reports what it holds.
 // It deliberately ignores both the sidecar and the in-process record of what this run has already hashed.
-func (store *Store) Verify(ctx context.Context, value string) (application.Object, bool, error) {
+func (store *Store) Verify(ctx context.Context, value string) (dac.Object, bool, error) {
 	path, err := store.Path(value)
 	if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return application.Object{}, false, nil
+		return dac.Object{}, false, nil
 	} else if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	actual, info, err := hashFile(ctx, path)
 	if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	// The size comes back even when the digest does not match, because the check read those bytes and a summary that reports how much it read should count them.
 	if actual != value {
-		return application.Object{Digest: value, Size: info.Size()}, true,
-			&application.CorruptError{Digest: value, ActualDigest: actual, Path: path}
+		return dac.Object{Digest: value, Size: info.Size()}, true,
+			&dac.CorruptError{Digest: value, ActualDigest: actual, Path: path}
 	}
 	// A clean object has just paid for its own sidecar, so write it: an fsck over a cache DAC wrote before this format should leave it migrated.
 	_ = writeMeta(metaPath(path), newMeta(info))
 	store.remember(value, info)
-	return application.Object{Digest: value, Size: info.Size()}, true, nil
+	return dac.Object{Digest: value, Size: info.Size()}, true, nil
 }
 
 // List returns every digest the cache holds, in sorted order.
@@ -207,17 +207,17 @@ func (store *Store) WithLock(ctx context.Context, value string, operation func()
 }
 
 // Put installs bytes.
-func (store *Store) Put(ctx context.Context, reader io.Reader, options application.PutOptions) (application.Object, error) {
+func (store *Store) Put(ctx context.Context, reader io.Reader, options dac.PutOptions) (dac.Object, error) {
 	temporaryDirectory := filepath.Join(store.Root, temporaryDirectoryName)
 	temporary, err := atomic.CreateIn(temporaryDirectory, 0o444, atomic.WithTempPrefix(downloadTempPrefix))
 	if err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	defer func() { _ = temporary.Discard() }()
 
 	expect := options.Expect
 	limit := expect.Size
-	if limit == application.Unknown && options.MaxSize > 0 {
+	if limit == dac.Unknown && options.MaxSize > 0 {
 		limit = options.MaxSize
 	}
 	limited := reader
@@ -229,32 +229,32 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 	hashValue := sha256.New()
 	size, err := io.Copy(io.MultiWriter(temporary, hashValue), limited)
 	if err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	if limit >= 0 && size > limit {
 		// An expected size that the bytes overrun is a content failure.
-		if expect.Size != application.Unknown {
-			return application.Object{}, &application.ContentError{
+		if expect.Size != dac.Unknown {
+			return dac.Object{}, &dac.ContentError{
 				ExpectedDigest: expect.Digest,
 				ExpectedSize:   expect.Size,
-				ActualSize:     application.Unknown,
+				ActualSize:     dac.Unknown,
 			}
 		}
-		return application.Object{}, fmt.Errorf("%w: limit is %d bytes", application.ErrTooLarge, options.MaxSize)
+		return dac.Object{}, fmt.Errorf("%w: limit is %d bytes", dac.ErrTooLarge, options.MaxSize)
 	}
 	actualDigest := digest.Prefix + hex.EncodeToString(hashValue.Sum(nil))
-	if expect.Size != application.Unknown && size != expect.Size || expect.Digest != "" && actualDigest != expect.Digest {
-		return application.Object{}, &application.ContentError{
+	if expect.Size != dac.Unknown && size != expect.Size || expect.Digest != "" && actualDigest != expect.Digest {
+		return dac.Object{}, &dac.ContentError{
 			ExpectedDigest: expect.Digest,
 			ActualDigest:   actualDigest,
 			ExpectedSize:   expect.Size,
 			ActualSize:     size,
 		}
 	}
-	object := application.Object{Digest: actualDigest, Size: size}
+	object := dac.Object{Digest: actualDigest, Size: size}
 
 	// Install unconditionally rather than skipping an object that is already there.
 	install := func() error {
@@ -270,10 +270,10 @@ func (store *Store) Put(ctx context.Context, reader io.Reader, options applicati
 	}
 	if !options.Locked {
 		if err := store.WithLock(ctx, actualDigest, install); err != nil {
-			return application.Object{}, err
+			return dac.Object{}, err
 		}
 	} else if err := install(); err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	return object, nil
 }

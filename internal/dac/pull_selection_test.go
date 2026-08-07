@@ -1,4 +1,4 @@
-package application_test
+package dac_test
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -24,19 +24,19 @@ func TestPullTakesOnlyTheSelectedAssets(t *testing.T) {
 	manifestPath, lockPath, contents := multiAssetProject(t)
 	store := newFakeStore()
 	fetched := map[string]int{}
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		content, known := contents[request.URL]
 		if !known {
 			return nil, errors.New("unexpected url " + request.URL)
 		}
 		fetched[request.URL]++
-		return &application.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
+		return &dac.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 2,
-		Assets:      []application.Selection{application.ExactSelection(at("geo@1"))},
+		Assets:      []dac.Selection{dac.ExactSelection(at("geo@1"))},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,18 +55,18 @@ func TestPullTakesEveryVersionOfASelectedAsset(t *testing.T) {
 	manifestPath, lockPath, contents := multiAssetProject(t)
 	fetched := map[string]int{}
 	var fetchedMutex sync.Mutex
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		content := contents[request.URL]
 		fetchedMutex.Lock()
 		fetched[request.URL]++
 		fetchedMutex.Unlock()
-		return &application.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
+		return &dac.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 2,
-		Assets:      []application.Selection{application.GroupSelection(at("geo@1").Group())},
+		Assets:      []dac.Selection{dac.GroupSelection(at("geo@1").Group())},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -84,18 +84,18 @@ func TestPullTakesEveryVersionOfASelectedAsset(t *testing.T) {
 func TestPullFetchesAnOverlappingSelectionOnce(t *testing.T) {
 	manifestPath, lockPath, contents := multiAssetProject(t)
 	fetched := map[string]int{}
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		content := contents[request.URL]
 		fetched[request.URL]++
-		return &application.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
+		return &dac.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1,
-		Assets: []application.Selection{
-			application.GroupSelection(at("geo@1").Group()),
-			application.ExactSelection(at("geo@1")),
+		Assets: []dac.Selection{
+			dac.GroupSelection(at("geo@1").Group()),
+			dac.ExactSelection(at("geo@1")),
 		},
 	})
 	if err != nil {
@@ -115,11 +115,11 @@ func TestPullFetchesAnOverlappingSelectionOnce(t *testing.T) {
 // nothing and report success".
 func TestPullRefusesAnUnknownSelection(t *testing.T) {
 	manifestPath, lockPath, _ := multiAssetProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("x")), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("x")), nil)
 
-	_, err := service.Pull(context.Background(), application.PullOptions{
+	_, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1,
-		Assets:      []application.Selection{application.ExactSelection(at("geo@9"))},
+		Assets:      []dac.Selection{dac.ExactSelection(at("geo@9"))},
 	})
 	if code := fault.As(err).Code; code != "asset_unknown" {
 		t.Fatalf("expected asset_unknown, got %q (%v)", code, err)
@@ -135,15 +135,15 @@ func TestNarrowedRefreshReachesOnlyTheNamedOrigins(t *testing.T) {
 	moved := []byte("kit bytes, moved")
 
 	fetched := map[string]int{}
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		fetched[request.URL]++
-		return &application.FetchResponse{Length: int64(len(moved)), Body: readCloser(moved)}, nil
+		return &dac.FetchResponse{Length: int64(len(moved)), Body: readCloser(moved)}, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, MaxSize: 1 << 20, Refresh: true,
-		Assets: []application.Selection{application.ExactSelection(at("kit@1"))},
+		Assets: []dac.Selection{dac.ExactSelection(at("kit@1"))},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -249,17 +249,17 @@ func pin(t *testing.T, manifestPath string, name coord.Coordinate, integrity str
 // file is what a reconcile settled without asking anybody.
 func refreshOnlyKit(t *testing.T, manifestPath, lockPath string, contents map[string][]byte) {
 	t.Helper()
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		if request.URL != "https://example.com/kit" {
 			t.Errorf("the refresh reached %s, which it did not name", request.URL)
 		}
 		content := contents["https://example.com/kit"]
-		return &application.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
+		return &dac.FetchResponse{Length: int64(len(content)), Body: readCloser(content)}, nil
 	}}
-	if _, err := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil).
-		Pull(context.Background(), application.PullOptions{
+	if _, err := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil).
+		Pull(context.Background(), dac.PullOptions{
 			Concurrency: 1, MaxSize: 1 << 20, Refresh: true,
-			Assets: []application.Selection{application.ExactSelection(at("kit@1"))},
+			Assets: []dac.Selection{dac.ExactSelection(at("kit@1"))},
 		}); err != nil {
 		t.Fatal(err)
 	}

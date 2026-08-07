@@ -7,8 +7,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/httpclient"
 	"github.com/tomdoesdev/dac/internal/output/style"
 )
@@ -45,7 +45,7 @@ func (runner *runner) addCommand() *urfave.Command {
 					return nil, "", err
 				}
 			}
-			result, err := service.Add(ctx, application.AddOptions{
+			result, err := service.Add(ctx, dac.AddOptions{
 				Coordinate: name,
 				URL:        source,
 				Integrity:  current.String("integrity"),
@@ -64,7 +64,7 @@ func (runner *runner) addCommand() *urfave.Command {
 }
 
 // addText summarizes one manifest addition and the digest observed by --pin.
-func addText(palette style.Palette, name coord.Coordinate, result application.AddResult) string {
+func addText(palette style.Palette, name coord.Coordinate, result dac.AddResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Added %s", palette.Name(name.String()))
 	if result.Digest != "" {

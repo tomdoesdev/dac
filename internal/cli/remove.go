@@ -7,8 +7,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
@@ -33,7 +33,7 @@ func (runner *runner) removeCommand() *urfave.Command {
 }
 
 // removeText reports the versions that remain and the pull needed to reconcile lock state.
-func removeText(palette style.Palette, name coord.Coordinate, result application.RemoveResult) string {
+func removeText(palette style.Palette, name coord.Coordinate, result dac.RemoveResult) string {
 	text := fmt.Sprintf("Removed %s.", palette.Name(name.String()))
 	if len(result.Remaining) > 0 {
 		text += fmt.Sprintf(" %s still has %s.",

@@ -1,4 +1,4 @@
-package application_test
+package dac_test
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/digest"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -28,9 +28,9 @@ import (
 func at(text string) coord.Coordinate { return coord.MustParse("test/" + text) }
 
 var (
-	_ application.ObjectStore = (*fakeStore)(nil)
-	_ application.Fetcher     = (*fakeFetcher)(nil)
-	_ application.Reporter    = (*fakeReporter)(nil)
+	_ dac.ObjectStore = (*fakeStore)(nil)
+	_ dac.Fetcher     = (*fakeFetcher)(nil)
+	_ dac.Reporter    = (*fakeReporter)(nil)
 )
 
 type fakeStore struct {
@@ -64,41 +64,41 @@ func (store *fakeStore) damaged(value string) bool {
 }
 
 // inspect reports the object a digest names, and the corruption recorded for it.
-func (store *fakeStore) inspect(value string) (application.Object, bool, error) {
+func (store *fakeStore) inspect(value string) (dac.Object, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	content, exists := store.objects[value]
 	if !exists {
-		return application.Object{}, false, nil
+		return dac.Object{}, false, nil
 	}
 	if actual, damaged := store.corrupt[value]; damaged {
-		return application.Object{Digest: value, Size: int64(len(content))}, true,
-			&application.CorruptError{Digest: value, ActualDigest: actual, Path: "/cache/" + value}
+		return dac.Object{Digest: value, Size: int64(len(content))}, true,
+			&dac.CorruptError{Digest: value, ActualDigest: actual, Path: "/cache/" + value}
 	}
-	return application.Object{Digest: value, Size: int64(len(content))}, true, nil
+	return dac.Object{Digest: value, Size: int64(len(content))}, true, nil
 }
 
-func (store *fakeStore) Stat(value string) (application.Object, bool, error) {
+func (store *fakeStore) Stat(value string) (dac.Object, bool, error) {
 	object, exists, err := store.inspect(value)
 	if err != nil {
-		return application.Object{}, false, err
+		return dac.Object{}, false, err
 	}
 	return object, exists, nil
 }
 
-func (store *fakeStore) Verify(_ context.Context, value string) (application.Object, bool, error) {
+func (store *fakeStore) Verify(_ context.Context, value string) (dac.Object, bool, error) {
 	return store.inspect(value)
 }
 
 // Describe reports an object without touching its liveness timestamp.
-func (store *fakeStore) Describe(value string) (application.ObjectDescription, bool, error) {
+func (store *fakeStore) Describe(value string) (dac.ObjectDescription, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	content, exists := store.objects[value]
 	if !exists {
-		return application.ObjectDescription{}, false, nil
+		return dac.ObjectDescription{}, false, nil
 	}
-	return application.ObjectDescription{Digest: value, Size: int64(len(content))}, true, nil
+	return dac.ObjectDescription{Digest: value, Size: int64(len(content))}, true, nil
 }
 
 func (store *fakeStore) List(context.Context) ([]string, error) {
@@ -124,10 +124,10 @@ func (*fakeStore) WithLock(_ context.Context, _ string, operation func() error) 
 	return operation()
 }
 
-func (store *fakeStore) GC(_ context.Context, options application.GCOptions) (application.GCResult, error) {
+func (store *fakeStore) GC(_ context.Context, options dac.GCOptions) (dac.GCResult, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	result := application.GCResult{Digests: []string{}, DryRun: options.DryRun}
+	result := dac.GCResult{Digests: []string{}, DryRun: options.DryRun}
 	for value, content := range store.objects {
 		result.Digests = append(result.Digests, value)
 		result.ObjectCount++
@@ -140,21 +140,21 @@ func (store *fakeStore) GC(_ context.Context, options application.GCOptions) (ap
 	return result, nil
 }
 
-func (store *fakeStore) Put(ctx context.Context, reader io.Reader, options application.PutOptions) (application.Object, error) {
+func (store *fakeStore) Put(ctx context.Context, reader io.Reader, options dac.PutOptions) (dac.Object, error) {
 	content, err := io.ReadAll(reader)
 	if err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return application.Object{}, err
+		return dac.Object{}, err
 	}
 	expect := options.Expect
-	if expect.Size == application.Unknown && options.MaxSize > 0 && int64(len(content)) > options.MaxSize {
-		return application.Object{}, application.ErrTooLarge
+	if expect.Size == dac.Unknown && options.MaxSize > 0 && int64(len(content)) > options.MaxSize {
+		return dac.Object{}, dac.ErrTooLarge
 	}
 	value := digest.Bytes(content)
-	if expect.Size != application.Unknown && int64(len(content)) != expect.Size || expect.Digest != "" && expect.Digest != value {
-		return application.Object{}, &application.ContentError{
+	if expect.Size != dac.Unknown && int64(len(content)) != expect.Size || expect.Digest != "" && expect.Digest != value {
+		return dac.Object{}, &dac.ContentError{
 			ExpectedDigest: expect.Digest,
 			ActualDigest:   value,
 			ExpectedSize:   expect.Size,
@@ -166,16 +166,16 @@ func (store *fakeStore) Put(ctx context.Context, reader io.Reader, options appli
 	// An install writes known-good bytes, so it repairs whatever was there.
 	delete(store.corrupt, value)
 	store.mutex.Unlock()
-	return application.Object{Digest: value, Size: int64(len(content))}, nil
+	return dac.Object{Digest: value, Size: int64(len(content))}, nil
 }
 
 type fakeFetcher struct {
 	mutex    sync.Mutex
-	requests []application.FetchRequest
-	fetch    func(context.Context, application.FetchRequest) (*application.FetchResponse, error)
+	requests []dac.FetchRequest
+	fetch    func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error)
 }
 
-func (fetcher *fakeFetcher) Fetch(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+func (fetcher *fakeFetcher) Fetch(ctx context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 	fetcher.mutex.Lock()
 	fetcher.requests = append(fetcher.requests, request)
 	fetcher.mutex.Unlock()
@@ -228,10 +228,10 @@ func TestAddAndRemoveChangeOnlyTheManifest(t *testing.T) {
 	store := newFakeStore()
 	fetcher := staticFetcher([]byte("one"))
 	reporter := &fakeReporter{}
-	service := application.New(manifestPath, lockPath, store, fetcher, reporter)
+	service := dac.New(manifestPath, lockPath, store, fetcher, reporter)
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	added, err := service.Add(context.Background(), application.AddOptions{
+	added, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestAddAndRemoveChangeOnlyTheManifest(t *testing.T) {
 
 	beforeManifest := projecttest.MustRead(t, manifestPath)
 	beforeLock := projecttest.MustRead(t, lockPath)
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/two", MaxSize: 100,
 	}); fault.As(err).Code != "asset_exists" {
 		t.Fatalf("expected asset_exists, got %v", err)
@@ -285,13 +285,13 @@ func TestAddAndRemoveChangeOnlyTheManifest(t *testing.T) {
 func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	lockBefore := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@2"), URL: "https://example.com/two", MaxSize: 100,
 	})
 	if err != nil {
@@ -320,8 +320,8 @@ func TestAddKeepsBothVersionsOfAnAsset(t *testing.T) {
 func TestAddForceReplacesOneVersionSource(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	lockBefore := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
-	for _, options := range []application.AddOptions{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
+	for _, options := range []dac.AddOptions{
 		{Coordinate: at("geo@1"), URL: "https://example.com/one", MaxSize: 100},
 		{Coordinate: at("geo@2"), URL: "https://example.com/two", MaxSize: 100},
 	} {
@@ -330,7 +330,7 @@ func TestAddForceReplacesOneVersionSource(t *testing.T) {
 		}
 	}
 	// A moved source that serves the same bytes is not a rebind, so replacing one version's URL needs nothing beyond --force.
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@2"), URL: "https://mirror.example.com/two", Force: true, MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
@@ -354,14 +354,14 @@ func TestAddForceReplacesOneVersionSource(t *testing.T) {
 func TestAddResolvesNothingWithoutPin(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	fetcher := staticFetcher([]byte("content"))
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("alpha@1"), URL: "https://example.com/alpha", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	firstLock := projecttest.MustRead(t, lockPath)
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("beta@1"), URL: "https://example.com/beta", MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
@@ -379,12 +379,12 @@ func TestFailedAddDoesNotChangeProjectFiles(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	beforeManifest := projecttest.MustRead(t, manifestPath)
 	beforeLock := projecttest.MustRead(t, lockPath)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("unavailable")
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/one", Pin: true, MaxSize: 100,
 	}); err == nil {
 		t.Fatal("expected add to fail")
@@ -397,12 +397,12 @@ func TestPullUsesCacheWithoutNetwork(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	store.objects[digest.Bytes(content)] = bytes.Clone(content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("network must not be used")
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 2})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,15 +416,15 @@ func TestPullReportsOfflineMissAndContentMismatch(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, content)
 	store := newFakeStore()
 	fetcher := staticFetcher([]byte("differnt"))
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, Offline: true}); fault.As(err).Code != "offline_cache_miss" {
+	if _, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, Offline: true}); fault.As(err).Code != "offline_cache_miss" {
 		t.Fatalf("expected offline_cache_miss, got %v", err)
 	}
 	if fetcher.count() != 0 {
 		t.Fatal("offline pull made a request")
 	}
-	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1}); fault.As(err).Code != "content_mismatch" {
+	if _, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1}); fault.As(err).Code != "content_mismatch" {
 		t.Fatalf("expected content_mismatch, got %v", err)
 	}
 	if fetcher.requests[0].ETag != "" {
@@ -465,7 +465,7 @@ func TestPullRunsConcurrentlyAndSortsResults(t *testing.T) {
 	maxActive := 0
 	gate := make(chan struct{})
 	var once sync.Once
-	fetcher := &fakeFetcher{fetch: func(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(ctx context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		mutex.Lock()
 		active++
 		maxActive = max(maxActive, active)
@@ -484,11 +484,11 @@ func TestPullRunsConcurrentlyAndSortsResults(t *testing.T) {
 		name := strings.TrimPrefix(request.URL, "https://example.com/")
 		return response([]byte(name)), nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	result, err := service.Pull(ctx, application.PullOptions{Concurrency: 2})
+	result, err := service.Pull(ctx, dac.PullOptions{Concurrency: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestPullLocksConcurrentlyAndSortsResults(t *testing.T) {
 	maxActive := 0
 	gate := make(chan struct{})
 	var once sync.Once
-	fetcher := &fakeFetcher{fetch: func(ctx context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(ctx context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		mutex.Lock()
 		active++
 		maxActive = max(maxActive, active)
@@ -537,11 +537,11 @@ func TestPullLocksConcurrentlyAndSortsResults(t *testing.T) {
 		content := []byte(request.URL)
 		return response(content), nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	result, err := service.Pull(ctx, application.PullOptions{Concurrency: 2, MaxSize: 1000})
+	result, err := service.Pull(ctx, dac.PullOptions{Concurrency: 2, MaxSize: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,12 +568,12 @@ func TestPullUsesPublisherIntegrityFromCache(t *testing.T) {
 	})
 	store := newFakeStore()
 	store.objects[value] = bytes.Clone(content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return nil, errors.New("network must not be used")
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,20 +598,20 @@ func TestRefreshUsesStoredETagForRevalidation(t *testing.T) {
 	}
 	store := newFakeStore()
 	store.objects[digest.Bytes(content)] = bytes.Clone(content)
-	fetcher := &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		if request.ETag != "\"old\"" || request.LastModified != "Wed, 21 Oct 2015 07:28:00 GMT" {
 			return nil, fmt.Errorf("validators are ETag %q, Last-Modified %q", request.ETag, request.LastModified)
 		}
-		return &application.FetchResponse{
+		return &dac.FetchResponse{
 			NotModified: true,
 			ETag:        "\"new\"",
 			Length:      0,
 			Body:        io.NopCloser(bytes.NewReader(nil)),
 		}, nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, Refresh: true})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,18 +657,18 @@ func TestTransferFailureMidBodyKeepsItsNetworkCode(t *testing.T) {
 		err  error
 		code string
 	}{
-		{name: "stall", err: application.ErrStalled, code: "timeout"},
+		{name: "stall", err: dac.ErrStalled, code: "timeout"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			manifestPath, lockPath := emptyProject(t)
-			fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
-				return &application.FetchResponse{
+			fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
+				return &dac.FetchResponse{
 					Length: 8,
 					Body:   &interruptedBody{delivered: bytes.NewReader([]byte("half")), err: testCase.err},
 				}, nil
 			}}
-			service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-			_, err := service.Add(context.Background(), application.AddOptions{
+			service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+			_, err := service.Add(context.Background(), dac.AddOptions{
 				Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true,
 			})
 			if value := fault.As(err); value.Code != testCase.code {
@@ -680,11 +680,11 @@ func TestTransferFailureMidBodyKeepsItsNetworkCode(t *testing.T) {
 
 func TestNetworkTimeoutHasStableCode(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
-		return nil, application.ErrStalled
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
+		return nil, dac.ErrStalled
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true,
 	}); fault.As(err).Code != "timeout" {
 		t.Fatalf("expected timeout, got %v", err)
@@ -701,21 +701,21 @@ func TestPullLockingHonorsCancellation(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	})
-	fetcher := &fakeFetcher{fetch: func(ctx context.Context, _ application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(ctx context.Context, _ dac.FetchRequest) (*dac.FetchResponse, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := service.Pull(ctx, application.PullOptions{Concurrency: 1}); fault.As(err).Code != "cancelled" {
+	if _, err := service.Pull(ctx, dac.PullOptions{Concurrency: 1}); fault.As(err).Code != "cancelled" {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
 }
 
 func TestCheckNeedsNoCacheOrFetcher(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	result, err := application.New(manifestPath, lockPath, nil, nil, nil).Check(context.Background(), application.CheckOptions{})
+	result, err := dac.New(manifestPath, lockPath, nil, nil, nil).Check(context.Background(), dac.CheckOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +725,7 @@ func TestCheckNeedsNoCacheOrFetcher(t *testing.T) {
 }
 
 func staticFetcher(content []byte) *fakeFetcher {
-	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	return &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		return response(content), nil
 	}}
 }
@@ -734,7 +734,7 @@ func staticFetcher(content []byte) *fakeFetcher {
 func sequenceFetcher(bodies ...[]byte) *fakeFetcher {
 	var served int
 	var mutex sync.Mutex
-	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	return &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		mutex.Lock()
 		defer mutex.Unlock()
 		content := bodies[min(served, len(bodies)-1)]
@@ -746,14 +746,14 @@ func sequenceFetcher(bodies ...[]byte) *fakeFetcher {
 // pathFetcher serves the last element of each URL path as its content.
 // A test about several versions of one asset needs distinct bytes per version, because a fetcher answering everything with one body makes every version collide, which is a different rule from the one under test.
 func pathFetcher() *fakeFetcher {
-	return &fakeFetcher{fetch: func(_ context.Context, request application.FetchRequest) (*application.FetchResponse, error) {
+	return &fakeFetcher{fetch: func(_ context.Context, request dac.FetchRequest) (*dac.FetchResponse, error) {
 		elements := strings.Split(request.URL, "/")
 		return response([]byte(elements[len(elements)-1])), nil
 	}}
 }
 
-func response(content []byte) *application.FetchResponse {
-	return &application.FetchResponse{Length: int64(len(content)), Body: io.NopCloser(bytes.NewReader(content))}
+func response(content []byte) *dac.FetchResponse {
+	return &dac.FetchResponse{Length: int64(len(content)), Body: io.NopCloser(bytes.NewReader(content))}
 }
 
 func emptyProject(t *testing.T) (string, string) {
@@ -827,14 +827,14 @@ func assertFilesEqual(t *testing.T, manifestPath, lockPath string, manifest, loc
 // warm installs content into a fake store so a test can start from a cache hit.
 func warm(t *testing.T, store *fakeStore, content []byte) {
 	t.Helper()
-	if _, err := store.Put(context.Background(), bytes.NewReader(content), application.PutAny("", 0)); err != nil {
+	if _, err := store.Put(context.Background(), bytes.NewReader(content), dac.PutAny("", 0)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func failingFetcher(t *testing.T) *fakeFetcher {
 	t.Helper()
-	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	return &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		t.Error("the command made a network request")
 		return nil, errors.New("unexpected request")
 	}}
@@ -850,8 +850,8 @@ func TestPullTrustsACacheThatSatisfiesIntegrity(t *testing.T) {
 	})
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 100})
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, MaxSize: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -872,8 +872,8 @@ func TestRefreshContactsTheOriginAnyway(t *testing.T) {
 	store := newFakeStore()
 	warm(t, store, content)
 	fetcher := staticFetcher(content)
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, MaxSize: 100, Refresh: true,
 	})
 	if err != nil {
@@ -893,8 +893,8 @@ func TestRefreshSendsNoConditionalRequest(t *testing.T) {
 	store := newFakeStore()
 	warm(t, store, content)
 	fetcher := staticFetcher(content)
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
-	if _, err := service.Pull(context.Background(), application.PullOptions{
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
+	if _, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, MaxSize: 100, Refresh: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -914,15 +914,15 @@ func TestPullRecordsValidatorsForAPinnedAsset(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/asset", Integrity: digest.Bytes(content)},
 		},
 	})
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		served := response(content)
 		served.ETag = "\"served\""
 		served.LastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
 		return served, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 100}); err != nil {
+	if _, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, MaxSize: 100}); err != nil {
 		t.Fatal(err)
 	}
 	locked, err := project.ReadLock(lockPath)
@@ -940,11 +940,11 @@ func TestAddNormalizesAnSRIIntegrityValue(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, store, staticFetcher(content), nil)
 
 	sum := sha256.Sum256(content)
 	sri := digest.SRIPrefix + base64.StdEncoding.EncodeToString(sum[:])
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/asset", Integrity: sri, MaxSize: 100,
 	}); err != nil {
 		t.Fatal(err)
@@ -961,8 +961,8 @@ func TestAddNormalizesAnSRIIntegrityValue(t *testing.T) {
 func TestCacheGCReportsWhatItRemoved(t *testing.T) {
 	store := newFakeStore()
 	warm(t, store, []byte("asset bytes"))
-	service := application.New("dac.json", "dac-lock.json", store, nil, nil)
-	result, err := service.CacheGC(context.Background(), application.GCOptions{MaxAge: time.Hour})
+	service := dac.New("dac.json", "dac-lock.json", store, nil, nil)
+	result, err := service.CacheGC(context.Background(), dac.GCOptions{MaxAge: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,9 +987,9 @@ func seedCorrupt(t *testing.T, content []byte) (string, string, *fakeStore) {
 func TestPullRepairsACorruptObject(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath, store := seedCorrupt(t, content)
-	service := application.New(manifestPath, lockPath, store, staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, store, staticFetcher(content), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,9 +1003,9 @@ func TestPullRepairsACorruptObject(t *testing.T) {
 
 func TestOfflinePullReportsACorruptObjectRatherThanAMiss(t *testing.T) {
 	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	_, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, Offline: true})
+	_, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, Offline: true})
 	if code := fault.As(err).Code; code != "cache_object_corrupt" {
 		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
 	}
@@ -1014,10 +1014,10 @@ func TestOfflinePullReportsACorruptObjectRatherThanAMiss(t *testing.T) {
 func TestVerifyCacheReportsAndRepairs(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath, store := seedCorrupt(t, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 	value := digest.Bytes(content)
 
-	result, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{})
+	result, err := service.VerifyCache(context.Background(), dac.VerifyCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1029,7 @@ func TestVerifyCacheReportsAndRepairs(t *testing.T) {
 		t.Fatal("a check without --repair removed the object")
 	}
 
-	repaired, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{Repair: true})
+	repaired, err := service.VerifyCache(context.Background(), dac.VerifyCacheOptions{Repair: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,9 +1048,9 @@ func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
 	stray := digest.Bytes([]byte("stray"))
 	store.objects[stray] = []byte("stray")
 	store.damage(stray, digest.Bytes([]byte("junk")))
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	scoped, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{})
+	scoped, err := service.VerifyCache(context.Background(), dac.VerifyCacheOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1058,7 @@ func TestVerifyCacheAllCoversObjectsNoProjectLocked(t *testing.T) {
 		t.Fatalf("a project check should not have seen the stray object: %#v", scoped)
 	}
 
-	all, err := service.VerifyCache(context.Background(), application.VerifyCacheOptions{All: true})
+	all, err := service.VerifyCache(context.Background(), dac.VerifyCacheOptions{All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,9 +1071,9 @@ func TestCheckUpstreamReportsDriftWithoutWriting(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
 	before := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher([]byte("moved bytes")), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
+	_, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckBytes})
 	value := fault.As(err)
 	if value.Code != "lock_drift" {
 		t.Fatalf("expected lock_drift, got %q (%v)", value.Code, err)
@@ -1089,9 +1089,9 @@ func TestCheckUpstreamReportsDriftWithoutWriting(t *testing.T) {
 func TestCheckUpstreamSucceedsWhenTheOriginsAgree(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
+	result, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckBytes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,14 +1104,14 @@ func TestCheckUpstreamSucceedsWhenTheOriginsAgree(t *testing.T) {
 func TestCheckUpstreamIgnoresARotatedETagWhenBytesAgree(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		served := response(content)
 		served.ETag = "\"rotated\""
 		return served, nil
 	}}
-	service := application.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), fetcher, nil)
 
-	if _, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes}); err != nil {
+	if _, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckBytes}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1126,9 +1126,9 @@ func TestCheckUpstreamReportsAStaleLockRatherThanDrift(t *testing.T) {
 			at("asset@2"): {URL: "https://example.com/asset"},
 		},
 	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	_, err := service.Check(context.Background(), application.CheckOptions{Concurrency: 1, Mode: application.CheckBytes})
+	_, err := service.Check(context.Background(), dac.CheckOptions{Concurrency: 1, Mode: dac.CheckBytes})
 	if fault.As(err).Code != "lock_stale" {
 		t.Fatalf("expected lock_stale, got %v", err)
 	}
@@ -1141,9 +1141,9 @@ func TestPullLeavesAgreeingAssetsAlone(t *testing.T) {
 	before := projecttest.MustRead(t, lockPath)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,9 +1167,9 @@ func TestPullCreatesAMissingLockFile(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 100})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, MaxSize: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1195,9 +1195,9 @@ func TestOfflinePullReportsAMissingLockFile(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/asset"},
 		},
 	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	_, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, Offline: true})
+	_, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, Offline: true})
 	if code := fault.As(err).Code; code != "lock_missing" {
 		t.Fatalf("expected lock_missing, got %q (%v)", code, err)
 	}
@@ -1207,9 +1207,9 @@ func TestOfflinePullReportsAMissingLockFile(t *testing.T) {
 // user to work out which one the run quietly ignored.
 func TestOfflineRefreshIsRefused(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	_, err := service.Pull(context.Background(), application.PullOptions{
+	_, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, Offline: true, Refresh: true,
 	})
 	if code := fault.As(err).Code; code != "invalid_arguments" {
@@ -1227,9 +1227,9 @@ func TestPullReconcilesAStaleLock(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/moved"},
 		},
 	})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 100})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, MaxSize: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1246,9 +1246,9 @@ func TestAddLeavesAMissingLockFileMissing(t *testing.T) {
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
 	writeManifest(t, manifestPath, project.Manifest{SchemaVersion: project.ManifestVersion, Assets: map[coord.Coordinate]project.Asset{}})
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/asset", MaxSize: 100,
 	})
 	if err != nil {
@@ -1273,9 +1273,9 @@ func TestAddLeavesAHandEditedLockUntouched(t *testing.T) {
 		},
 	})
 	lockBefore := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("other@1"), URL: "https://example.com/other", MaxSize: 100,
 	})
 	if err != nil {
@@ -1302,7 +1302,7 @@ func TestRemoveLeavesAStaleLockUntouched(t *testing.T) {
 		},
 	})
 	lockBefore := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
 	result, err := service.Remove(at("gone@1"))
 	if err != nil {
@@ -1330,7 +1330,7 @@ func TestRemoveIgnoresAnInvalidLock(t *testing.T) {
 	if err := os.WriteFile(lockPath, invalid, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	service := application.New(manifestPath, lockPath, nil, nil, nil)
+	service := dac.New(manifestPath, lockPath, nil, nil, nil)
 
 	if _, err := service.Remove(at("asset@1")); err != nil {
 		t.Fatalf("invalid lock blocked remove: %v", err)
@@ -1345,13 +1345,13 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 	if _, err := service.Init(false); err != nil {
 		t.Fatal(err)
 	}
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/asset", Pin: true, MaxSize: 1 << 20,
 	})
 	if err != nil {
@@ -1375,8 +1375,8 @@ func TestAddPinRecordsTheResolvedDigest(t *testing.T) {
 
 func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
-	for name, options := range map[string]application.AddOptions{
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	for name, options := range map[string]dac.AddOptions{
 		"integrity": {Coordinate: at("other@1"), URL: "https://example.com/other", Pin: true, Integrity: digest.Bytes([]byte("x"))},
 		"offline":   {Coordinate: at("other@1"), URL: "https://example.com/other", Pin: true, Offline: true},
 	} {
@@ -1389,10 +1389,10 @@ func TestAddRejectsPinWithIntegrityOrOffline(t *testing.T) {
 func TestAddAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := lockedProject(t, content)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 	lockBefore := projecttest.MustRead(t, lockPath)
 
-	_, err := service.Add(context.Background(), application.AddOptions{
+	_, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@2"), URL: "https://example.com/asset", MaxSize: 1 << 20,
 	})
 	if err != nil {
@@ -1413,9 +1413,9 @@ func TestAddAllowsTwoVersionsOfTheSameBytes(t *testing.T) {
 func TestRefreshUpdatesChangedBytes(t *testing.T) {
 	manifestPath, lockPath := lockedProject(t, []byte("asset bytes"))
 	moved := []byte("moved bytes")
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(moved), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(moved), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, MaxSize: 1 << 20, Refresh: true,
 	})
 	if err != nil {
@@ -1434,15 +1434,15 @@ func TestRefreshUpdatesChangedBytes(t *testing.T) {
 func TestAddReportsASharedSourceURL(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	// The source changes bytes between versions but keeps the same URL.
-	service := application.New(manifestPath, lockPath, newFakeStore(),
+	service := dac.New(manifestPath, lockPath, newFakeStore(),
 		sequenceFetcher([]byte("first bytes"), []byte("later bytes")), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@1"), URL: "https://example.com/rolling", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("geo@2"), URL: "https://example.com/rolling", MaxSize: 1 << 20,
 	})
 	if err != nil {
@@ -1458,7 +1458,7 @@ func TestAddReportsASharedSourceURL(t *testing.T) {
 
 // namedFetcher serves one body under a name the origin supplies, which is what a Content-Disposition header amounts to by the time it reaches the service.
 func namedFetcher(content []byte, name string) *fakeFetcher {
-	return &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
+	return &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
 		value := response(content)
 		value.Filename = name
 		return value, nil
@@ -1503,9 +1503,9 @@ func lockedFilename(t *testing.T, lockPath string) string {
 }
 
 // settleProject moves manifest-only setup through the sole lock-writing operation.
-func settleProject(t *testing.T, service *application.Service) {
+func settleProject(t *testing.T, service *dac.Service) {
 	t.Helper()
-	if _, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1, MaxSize: 1 << 20}); err != nil {
+	if _, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1, MaxSize: 1 << 20}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1514,10 +1514,10 @@ func settleProject(t *testing.T, service *application.Service) {
 func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(),
+	service := dac.New(manifestPath, lockPath, newFakeStore(),
 		namedFetcher(content, "database.bin"), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1532,9 +1532,9 @@ func TestResolveRecordsTheNameTheOriginSupplies(t *testing.T) {
 func TestResolveFallsBackToTheNameTheURLSpells(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), staticFetcher(content), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1549,10 +1549,10 @@ func TestResolveFallsBackToTheNameTheURLSpells(t *testing.T) {
 func TestResolveRefusesASuppliedNameThatEscapesItsDirectory(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(),
+	service := dac.New(manifestPath, lockPath, newFakeStore(),
 		namedFetcher(content, "../../etc/passwd"), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1569,9 +1569,9 @@ func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
 	manifestPath, lockPath := unlockedNameProject(t, content)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{Concurrency: 1})
+	result, err := service.Pull(context.Background(), dac.PullOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatalf("a lock with no file name was rejected: %v", err)
 	}
@@ -1587,9 +1587,9 @@ func TestALockWithNoFilenameStillDescribesItsManifest(t *testing.T) {
 // A manifest that repoints an asset replaces the source the old name described, so the name goes with it rather than following the bytes.
 func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), pathFetcher(), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/old/first.bin", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1605,7 +1605,7 @@ func TestResolveDropsTheOldNameWhenTheURLMoves(t *testing.T) {
 			at("asset@1"): {URL: "https://example.com/new/second.bin"},
 		},
 	})
-	if _, err := service.Pull(context.Background(), application.PullOptions{
+	if _, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, Refresh: true, MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1633,8 +1633,8 @@ func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 	}
 	store := newFakeStore()
 	warm(t, store, content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
-		return &application.FetchResponse{
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
+		return &dac.FetchResponse{
 			NotModified: true,
 			ETag:        "\"new\"",
 			// What the adapter reports for a 304 with no header: the name the URL spells, which is worse than the one already recorded.
@@ -1642,9 +1642,9 @@ func TestNotModifiedKeepsTheRecordedFilename(t *testing.T) {
 			Body:     io.NopCloser(bytes.NewReader(nil)),
 		}, nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	result, err := service.Pull(context.Background(), application.PullOptions{
+	result, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, Refresh: true,
 	})
 	if err != nil {
@@ -1674,17 +1674,17 @@ func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
 	}
 	store := newFakeStore()
 	warm(t, store, content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
-		return &application.FetchResponse{
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
+		return &dac.FetchResponse{
 			NotModified: true,
 			ETag:        "\"new\"",
 			Filename:    "database.bin",
 			Body:        io.NopCloser(bytes.NewReader(nil)),
 		}, nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	if _, err := service.Pull(context.Background(), application.PullOptions{
+	if _, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, Refresh: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -1698,10 +1698,10 @@ func TestNotModifiedBackfillsAnAbsentFilename(t *testing.T) {
 func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(),
+	service := dac.New(manifestPath, lockPath, newFakeStore(),
 		namedFetcher(content, "database.bin"), nil)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
 		Filename: "geo.db", MaxSize: 1 << 20,
 	})
@@ -1726,10 +1726,10 @@ func TestAddNameOverridesTheNameTheOriginSupplies(t *testing.T) {
 func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
 	content := []byte("asset bytes")
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(),
+	service := dac.New(manifestPath, lockPath, newFakeStore(),
 		namedFetcher(content, "database.bin"), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234", MaxSize: 1 << 20,
 	}); err != nil {
 		t.Fatal(err)
@@ -1747,9 +1747,9 @@ func TestAddWithoutANameLeavesTheOriginNaming(t *testing.T) {
 // An offline add writes only the manifest, and the declaration is a manifest field, so it is the one part of the asset that is settled with no network.
 func TestOfflineAddRecordsTheDeclaredName(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
-	result, err := service.Add(context.Background(), application.AddOptions{
+	result, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
 		Filename: "geo.db", Offline: true,
 	})
@@ -1773,10 +1773,10 @@ func TestAddRefusesANameThatIsNotOnePathElement(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	beforeManifest := projecttest.MustRead(t, manifestPath)
 	beforeLock := projecttest.MustRead(t, lockPath)
-	service := application.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, newFakeStore(), failingFetcher(t), nil)
 
 	for _, name := range []string{"../../etc/passwd", "geo/db.bin", "..", "-rf", "bad\x00name", strings.Repeat("x", 256)} {
-		_, err := service.Add(context.Background(), application.AddOptions{
+		_, err := service.Add(context.Background(), dac.AddOptions{
 			Coordinate: at("asset@1"), URL: "https://example.com/geo/database.bin",
 			Filename: name, Offline: true,
 		})
@@ -1814,17 +1814,17 @@ func TestNotModifiedKeepsTheDeclaredName(t *testing.T) {
 	}
 	store := newFakeStore()
 	warm(t, store, content)
-	fetcher := &fakeFetcher{fetch: func(context.Context, application.FetchRequest) (*application.FetchResponse, error) {
-		return &application.FetchResponse{
+	fetcher := &fakeFetcher{fetch: func(context.Context, dac.FetchRequest) (*dac.FetchResponse, error) {
+		return &dac.FetchResponse{
 			NotModified: true,
 			ETag:        "\"new\"",
 			Filename:    "database.bin",
 			Body:        io.NopCloser(bytes.NewReader(nil)),
 		}, nil
 	}}
-	service := application.New(manifestPath, lockPath, store, fetcher, nil)
+	service := dac.New(manifestPath, lockPath, store, fetcher, nil)
 
-	if _, err := service.Pull(context.Background(), application.PullOptions{
+	if _, err := service.Pull(context.Background(), dac.PullOptions{
 		Concurrency: 1, Refresh: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -1840,9 +1840,9 @@ func TestADeclaredNameReachesACachedResolution(t *testing.T) {
 	manifestPath, lockPath := emptyProject(t)
 	store := newFakeStore()
 	warm(t, store, content)
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
+	service := dac.New(manifestPath, lockPath, store, failingFetcher(t), nil)
 
-	if _, err := service.Add(context.Background(), application.AddOptions{
+	if _, err := service.Add(context.Background(), dac.AddOptions{
 		Coordinate: at("asset@1"), URL: "https://example.com/download?id=1234",
 		Integrity: digest.Bytes(content), Filename: "geo.db", MaxSize: 1 << 20,
 	}); err != nil {

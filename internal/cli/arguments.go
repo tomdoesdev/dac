@@ -5,8 +5,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/fault"
 )
 
@@ -67,22 +67,22 @@ func parseCoordinate(value string) (coord.Coordinate, error) {
 
 // selection reads the filter info applies: nothing, one coordinate, or one asset whose versions it should list.
 // Info is the command whose job is to answer what a project has, so leaving the version off is a question with a list for an answer.
-func selection(current *urfave.Command) (application.Selection, error) {
+func selection(current *urfave.Command) (dac.Selection, error) {
 	values := current.Args().Slice()
 	switch {
 	case len(values) == 0:
-		return application.EverySelection(), nil
+		return dac.EverySelection(), nil
 	case len(values) > 1:
-		return application.Selection{}, fault.New("invalid_arguments", "Specify at most one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
+		return dac.Selection{}, fault.New("invalid_arguments", "Specify at most one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 	}
 	return parseAsset(values[0])
 }
 
 // selections reads the assets a command was narrowed to, which may be none.
 // selections gives pull and unpack the same exact and group grammar.
-func selections(current *urfave.Command) ([]application.Selection, error) {
+func selections(current *urfave.Command) ([]dac.Selection, error) {
 	values := current.Args().Slice()
-	chosen := make([]application.Selection, 0, len(values))
+	chosen := make([]dac.Selection, 0, len(values))
 	for _, value := range values {
 		selection, err := parseAsset(value)
 		if err != nil {
@@ -94,19 +94,19 @@ func selections(current *urfave.Command) ([]application.Selection, error) {
 }
 
 // parseAsset reads one asset argument in either of the two spellings.
-func parseAsset(value string) (application.Selection, error) {
+func parseAsset(value string) (dac.Selection, error) {
 	if strings.Contains(value, "@") {
 		name, err := parseCoordinate(value)
 		if err != nil {
-			return application.Selection{}, err
+			return dac.Selection{}, err
 		}
-		return application.ExactSelection(name), nil
+		return dac.ExactSelection(name), nil
 	}
 	group, err := coord.ParseGroup(value)
 	if err != nil {
-		return application.Selection{}, fault.Wrap("invalid_arguments", "The asset is invalid.", err)
+		return dac.Selection{}, fault.Wrap("invalid_arguments", "The asset is invalid.", err)
 	}
-	return application.GroupSelection(group), nil
+	return dac.GroupSelection(group), nil
 }
 
 // destination reads the directory an unpack writes into.

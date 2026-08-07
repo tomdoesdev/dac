@@ -7,7 +7,7 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/output/style"
 )
 
@@ -41,7 +41,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result, err := service.Pull(ctx, application.PullOptions{
+			result, err := service.Pull(ctx, dac.PullOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Offline:     current.Bool("offline"),
@@ -55,7 +55,7 @@ func (runner *runner) pullCommand() *urfave.Command {
 
 // pullText summarizes one pull, and the lock file work in front of it when there was any.
 // A narrowed pull says what it left alone.
-func pullText(palette style.Palette, result application.PullResult) string {
+func pullText(palette style.Palette, result dac.PullResult) string {
 	text := lockText(palette, result)
 	if result.AssetCount < result.ProjectCount {
 		return text + fmt.Sprintf("Pulled %s of %d.",
@@ -66,7 +66,7 @@ func pullText(palette style.Palette, result application.PullResult) string {
 
 // lockText summarizes the lock file a pull settled, and is empty for the pull that settled none.
 // Whether the file moved is reported separately from what was resolved, because the two come apart in both directions.
-func lockText(palette style.Palette, result application.PullResult) string {
+func lockText(palette style.Palette, result dac.PullResult) string {
 	switch {
 	case len(result.Locked) > 0 && result.Changed:
 		return fmt.Sprintf("Locked %s. ", palette.Name(strings.Join(result.Locked, ", ")))

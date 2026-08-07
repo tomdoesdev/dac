@@ -9,9 +9,9 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/catalog"
 	"github.com/tomdoesdev/dac/internal/config"
+	"github.com/tomdoesdev/dac/internal/dac"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/output/style"
@@ -154,7 +154,7 @@ func (runner *runner) app() *urfave.Command {
 		Name:            "dac",
 		Usage:           "Lock and cache reproducible assets.",
 		Description:     "DAC stores remote files by their SHA-256 digest.",
-		Version:         application.Version,
+		Version:         dac.Version,
 		HideHelpCommand: true,
 		Writer:          runner.stderr,
 		ErrWriter:       runner.stderr,
@@ -212,7 +212,7 @@ func (runner *runner) runBare(name string, operation action) urfave.ActionFunc {
 }
 
 // storeAction is a command body that takes no positional arguments and needs the object store.
-type storeAction func(context.Context, *urfave.Command, *application.Service) (any, string, error)
+type storeAction func(context.Context, *urfave.Command, *dac.Service) (any, string, error)
 
 // runStore wires a command whose only preparation is opening the object store.
 // Commands that must read a flag before the store, or that take arguments, call storeService themselves.

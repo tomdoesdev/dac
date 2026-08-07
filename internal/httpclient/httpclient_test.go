@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
@@ -29,7 +29,7 @@ func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL, ETag: "\"old\""})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL, ETag: "\"old\""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestFetchPropagatesLastModifiedConditionally(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL, LastModified: modified})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL, LastModified: modified})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestProbeUsesHEADAndReturnsCanonicalValidators(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Probe(context.Background(), application.ProbeRequest{URL: server.URL})
+	response, err := client.Probe(context.Background(), dac.ProbeRequest{URL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestProbeAppliesRedirectsAndRetries(t *testing.T) {
 	})
 	defer client.Close()
 
-	response, err := client.Probe(context.Background(), application.ProbeRequest{
+	response, err := client.Probe(context.Background(), dac.ProbeRequest{
 		URL: server.URL + "/source",
 	})
 	if err != nil {
@@ -135,7 +135,7 @@ func TestFetchRetriesTransientStatus(t *testing.T) {
 	client := New(Options{Timeout: time.Second, Retries: 1})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +160,13 @@ func TestFetchStopsAStalledBody(t *testing.T) {
 	client := New(Options{Timeout: 20 * time.Millisecond})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if !errors.Is(err, application.ErrStalled) {
+	if !errors.Is(err, dac.ErrStalled) {
 		t.Fatalf("expected ErrStalled, got %v", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestFetchRejectsEncodedResponse(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL})
+	_, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL})
 	if err == nil || !strings.Contains(err.Error(), "not identity") {
 		t.Fatalf("expected identity encoding error, got %v", err)
 	}
@@ -198,7 +198,7 @@ func TestFetchPrefersTheNameTheHeaderGives(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL + "/download?id=1234"})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL + "/download?id=1234"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestFetchFallsBackToTheNameTheURLSpells(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL + "/geo/database.bin?token=abc"})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL + "/geo/database.bin?token=abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestFetchNamesTheAssetFromTheRedirectTarget(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL + "/download"})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL + "/download"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestFetchReportsNoNameWhenNothingSpellsOne(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL + "/"})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL + "/"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestFetchRefusesAHeaderNameThatEscapesItsDirectory(t *testing.T) {
 	client := New(Options{Timeout: time.Second})
 	defer client.Close()
 
-	response, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL + "/geo/database.bin"})
+	response, err := client.Fetch(context.Background(), dac.FetchRequest{URL: server.URL + "/geo/database.bin"})
 	if err != nil {
 		t.Fatal(err)
 	}

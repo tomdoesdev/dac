@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/application"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 // Recorder collects what one run learned about the cache and writes it once.
@@ -32,7 +32,7 @@ func NewRecorder(store *Store, loaded Catalog) *Recorder {
 }
 
 // Note records what a run learned. It writes nothing.
-func (recorder *Recorder) Note(entries []application.CatalogEntry) {
+func (recorder *Recorder) Note(entries []dac.CatalogEntry) {
 	if len(entries) == 0 {
 		return
 	}
@@ -65,14 +65,14 @@ func (recorder *Recorder) Forget(digests []string) {
 }
 
 // Describe reports what DAC remembers one object to be.
-func (recorder *Recorder) Describe(value string) (application.CatalogRecord, bool) {
+func (recorder *Recorder) Describe(value string) (dac.CatalogRecord, bool) {
 	recorder.mutex.Lock()
 	defer recorder.mutex.Unlock()
 	object, held := recorder.working.Objects[value]
 	if !held {
-		return application.CatalogRecord{}, false
+		return dac.CatalogRecord{}, false
 	}
-	record := application.CatalogRecord{KnownAs: object.Coordinates(), FirstSeen: object.FirstSeen}
+	record := dac.CatalogRecord{KnownAs: object.Coordinates(), FirstSeen: object.FirstSeen}
 	if newest, found := object.Newest(); found {
 		record.Filename, record.SourceURL = newest.Filename, newest.URL
 	}

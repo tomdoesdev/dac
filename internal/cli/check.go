@@ -6,8 +6,8 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/application"
 	"github.com/tomdoesdev/dac/internal/coord"
+	"github.com/tomdoesdev/dac/internal/dac"
 )
 
 // checkCommand builds the offline project check and its explicit upstream mode.
@@ -21,7 +21,7 @@ func (runner *runner) checkCommand() *urfave.Command {
 			// The plain form deliberately constructs no network, cache, or
 			// configuration dependencies. Its entire scope is the two project files.
 			manifest, lock := projectPaths(current)
-			result, err := application.New(manifest, lock, nil, nil, nil).Check(ctx, application.CheckOptions{})
+			result, err := dac.New(manifest, lock, nil, nil, nil).Check(ctx, dac.CheckOptions{})
 			return result, runner.stdoutPalette.Good("The manifest and lock file agree."), err
 		}),
 	}
@@ -56,11 +56,11 @@ func (runner *runner) checkUpstreamCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			mode := application.CheckMetadata
+			mode := dac.CheckMetadata
 			if current.Bool("verify") {
-				mode = application.CheckBytes
+				mode = dac.CheckBytes
 			}
-			result, err := service.Check(ctx, application.CheckOptions{
+			result, err := service.Check(ctx, dac.CheckOptions{
 				Concurrency: concurrency,
 				MaxSize:     maxSize,
 				Mode:        mode,
@@ -86,7 +86,7 @@ func checkCoordinates(current *urfave.Command) ([]coord.Coordinate, error) {
 	return assets, nil
 }
 
-func checkUpstreamText(runner *runner, result application.CheckResult) string {
+func checkUpstreamText(runner *runner, result dac.CheckResult) string {
 	count := runner.stdoutPalette.Strong(plural(result.AssetCount, "asset"))
 	if result.AssetCount < result.ProjectCount {
 		count = fmt.Sprintf("%s of %d assets", runner.stdoutPalette.Strong(plural(result.AssetCount, "asset")), result.ProjectCount)
