@@ -8,8 +8,8 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 // infoCommand defines the project inspection command and its coordinate filter.
@@ -63,7 +63,7 @@ func infoText(palette style.Palette, result application.InfoResult) string {
 			field("digest", palette.Detail(asset.Digest))
 		}
 		if asset.Size != nil {
-			field("size", bytesize.Format(*asset.Size))
+			field("size", bytesize.Humanize(*asset.Size))
 		}
 		if asset.Path != "" {
 			field("path", asset.Path)

@@ -9,10 +9,10 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/config"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 func (runner *runner) cacheCommand() *urfave.Command {
@@ -204,7 +204,7 @@ func listText(palette style.Palette, result application.CacheListResult) string 
 	for _, object := range result.Objects {
 		_, _ = fmt.Fprintf(&text, "%s  %s  %s",
 			palette.Detail(object.Digest),
-			palette.Detail(fmt.Sprintf("%10s", bytesize.Format(object.Size))),
+			palette.Detail(fmt.Sprintf("%10s", bytesize.Humanize(object.Size))),
 			palette.Detail(object.LastUsed.Format(time.RFC3339)))
 		if object.Filename != "" {
 			_, _ = fmt.Fprintf(&text, "  %s", palette.Detail(object.Filename))
@@ -220,7 +220,7 @@ func listText(palette style.Palette, result application.CacheListResult) string 
 		text.WriteByte('\n')
 	}
 	_, _ = fmt.Fprintf(&text, "%s (%s)",
-		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Humanize(result.ByteCount))
 	text.WriteByte('.')
 	if result.MissingCount > 0 {
 		_, _ = fmt.Fprintf(&text, " %s.", palette.Warn(plural(result.MissingCount, "asset")+" not cached"))
@@ -236,7 +236,7 @@ func listText(palette style.Palette, result application.CacheListResult) string 
 func removeObjectsText(palette style.Palette, result application.CacheRemoveResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Removed %s (%s).",
-		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Humanize(result.ByteCount))
 	if len(result.Shared) > 0 {
 		_, _ = fmt.Fprintf(&text, " %s also lost cached bytes.", palette.Name(strings.Join(result.Shared, ", ")))
 	}
@@ -251,7 +251,7 @@ func removeObjectsText(palette style.Palette, result application.CacheRemoveResu
 func scrubText(palette style.Palette, result application.VerifyCacheResult) string {
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "Checked %s (%s).",
-		palette.Strong(plural(result.Checked, "object")), bytesize.Format(result.ByteCount))
+		palette.Strong(plural(result.Checked, "object")), bytesize.Humanize(result.ByteCount))
 	if result.MissingCount > 0 {
 		_, _ = fmt.Fprintf(&text, " %s.", palette.Warn(plural(result.MissingCount, "object")+" missing"))
 	}
@@ -276,7 +276,7 @@ func gcText(palette style.Palette, result application.GCResult) string {
 	}
 	var text strings.Builder
 	_, _ = fmt.Fprintf(&text, "%s %s (%s)", verb,
-		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Format(result.ByteCount))
+		palette.Strong(plural(result.ObjectCount, "object")), bytesize.Humanize(result.ByteCount))
 	text.WriteByte('.')
 	return text.String()
 }

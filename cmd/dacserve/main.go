@@ -34,7 +34,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/bytesize"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 // defaultAddr is loopback, which is where DAC accepts plain HTTP without a
@@ -392,7 +392,7 @@ func (count *byteCount) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(data, &text); err != nil {
 			return err
 		}
-		parsed, err := bytesize.ParseRate(text)
+		parsed, err := parseByteRate(text)
 		if err != nil {
 			return err
 		}
@@ -405,6 +405,13 @@ func (count *byteCount) UnmarshalJSON(data []byte) error {
 	}
 	*count = byteCount(number)
 	return nil
+}
+
+// parseByteRate accepts DAC's optional per-second marker while keeping rate
+// syntax out of the shared byte-count package until another caller needs it.
+func parseByteRate(value string) (int64, error) {
+	trimmed, _ := strings.CutSuffix(strings.TrimSpace(value), "/s")
+	return bytesize.Parse(trimmed)
 }
 
 func rateText(rate int64) string {

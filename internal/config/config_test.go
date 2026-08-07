@@ -385,13 +385,13 @@ timeout = "90s"
 retries = 5
 concurrency = 2
 download-parts = 1
-max-size = "8GiB"
+max-size = "1500"
 progress = false
 
 [cache]
 dir = "/var/cache/dac"
 max-age = "2w"
-max-size = "20GiB"
+max-size = "1048575"
 `)
 	first := load(t, "")
 

@@ -14,7 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/tomdoesdev/dac/internal/bytesize"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 // FileName is the config file every search location looks for.
@@ -389,12 +389,12 @@ func (config *Config) Settings() []Setting {
 	return settings
 }
 
-// sizeText writes a byte bound the way a config file would, where the value that removes the bound is a word rather than a zero.
+// sizeText writes a lossless byte bound for a config file, where the value that removes the bound is a word rather than a zero.
 func sizeText(value int64) string {
 	if value == 0 {
 		return NoSizeLimit
 	}
-	return bytesize.Format(value)
+	return strconv.FormatInt(value, 10)
 }
 
 // FormatDuration writes a duration the way a config file would.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -10,6 +11,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestByteCountReadsSizeAndRateText(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  byteCount
+	}{
+		{`"256KiB"`, 256 << 10},
+		{`"256KiB/s"`, 256 << 10},
+		{`"1.5MiB/s"`, 1536 << 10},
+		{`512`, 512},
+	} {
+		var got byteCount
+		if err := json.Unmarshal([]byte(test.value), &got); err != nil {
+			t.Errorf("Unmarshal(%s) failed: %v", test.value, err)
+			continue
+		}
+		if got != test.want {
+			t.Errorf("Unmarshal(%s) = %d, want %d", test.value, got, test.want)
+		}
+	}
+	for _, value := range []string{`"1KiB/sec"`, `"1.1B/s"`, `"1e3B/s"`} {
+		var got byteCount
+		if err := json.Unmarshal([]byte(value), &got); err == nil {
+			t.Errorf("Unmarshal(%s) = %d, want an error", value, got)
+		}
+	}
+}
 
 // testOrigin builds an unthrottled origin whose logs do not reach test output.
 func testOrigin(name string, size byteCount, seed int64) *origin {

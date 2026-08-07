@@ -16,8 +16,8 @@ import (
 	"github.com/vbauerster/mpb/v8/decor"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 // New selects bars for a terminal and lines for other writers.
@@ -71,7 +71,7 @@ const (
 	barWidth = 24
 	// nameLimit bounds the name column.
 	nameLimit = 36
-	// sizeWidth fits the widest number bytesize.Format writes.
+	// sizeWidth fits the widest number bytesize.Humanize writes.
 	sizeWidth = 6
 	// unitWidth fits "KiB", and rateUnitWidth the same unit as a rate.
 	unitWidth     = 3
@@ -362,7 +362,7 @@ func counters(current, total int64) string {
 // so a size read off a bar and the same size read out of a summary are the same
 // text rather than two roundings of one number.
 func amount(count int64) string {
-	number, unit, _ := strings.Cut(bytesize.Format(count), " ")
+	number, unit, _ := strings.Cut(bytesize.Humanize(count), " ")
 	return pad(number, sizeWidth, true) + " " + pad(unit, unitWidth, false)
 }
 
@@ -372,7 +372,7 @@ func rate(moved int64, window time.Duration) string {
 	if moved <= 0 || window <= 0 {
 		return blank(rateWidth)
 	}
-	number, unit, _ := strings.Cut(bytesize.Format(int64(float64(moved)/window.Seconds())), " ")
+	number, unit, _ := strings.Cut(bytesize.Humanize(int64(float64(moved)/window.Seconds())), " ")
 	return pad(number, sizeWidth, true) + " " + pad(unit+"/s", rateUnitWidth, false)
 }
 

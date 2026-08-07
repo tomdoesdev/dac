@@ -10,9 +10,9 @@ import (
 	urfave "github.com/urfave/cli/v3"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/bytesize"
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/style"
+	"github.com/tomdoesdev/kit/bytesize"
 )
 
 func (runner *runner) initCommand() *urfave.Command {
@@ -95,7 +95,7 @@ func (runner *runner) unpackCommand() *urfave.Command {
 
 // unpackText reports when a selection wrote part of the project.
 func unpackText(palette style.Palette, result application.UnpackResult) string {
-	size := bytesize.Format(result.ByteCount)
+	size := bytesize.Humanize(result.ByteCount)
 	if result.FileCount < result.ProjectCount {
 		return fmt.Sprintf("Unpacked %s of %d (%s) into %s.",
 			palette.Strong(plural(result.FileCount, "file")), result.ProjectCount, size, result.Directory)
