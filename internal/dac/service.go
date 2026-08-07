@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -18,6 +19,13 @@ const Version = "11.1.0"
 type Object struct {
 	Digest string
 	Size   int64
+}
+
+// ObjectDescription reports what the cache holds for one digest.
+type ObjectDescription struct {
+	Digest   string    `json:"digest"`
+	Size     int64     `json:"size"`
+	LastUsed time.Time `json:"lastUsed"`
 }
 
 // PutOptions defines the checks for one object installation.

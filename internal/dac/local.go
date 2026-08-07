@@ -176,13 +176,6 @@ func lockedDigests(manifest project.Manifest, lock project.Lock) []string {
 	return digests
 }
 
-// ObjectDescription reports what the cache holds for one digest.
-type ObjectDescription struct {
-	Digest   string    `json:"digest"`
-	Size     int64     `json:"size"`
-	LastUsed time.Time `json:"lastUsed"`
-}
-
 // CacheObject is one entry in a cache listing.
 type CacheObject struct {
 	ObjectDescription
