@@ -6,8 +6,19 @@ import (
 
 	urfave "github.com/urfave/cli/v3"
 
-	"github.com/tomdoesdev/dac/internal/dac"
+	"github.com/tomdoesdev/dac/internal/config"
 )
+
+// configPathResult reports the config files one run read, most important first.
+type configPathResult struct {
+	Files []string `json:"files"`
+}
+
+// configShowResult reports the effective configuration.
+type configShowResult struct {
+	Files    []string         `json:"files"`
+	Settings []config.Setting `json:"settings"`
+}
 
 // configCommand builds the configuration inspection commands.
 func (runner *runner) configCommand() *urfave.Command {
@@ -34,7 +45,7 @@ func (runner *runner) configPathCommand() *urfave.Command {
 				return nil, "", err
 			}
 			// One path per line and nothing else, so a script can read it the way it reads dac cache dir.
-			return dac.ConfigPathResult{Files: settings.Files}, strings.Join(settings.Files, "\n"), nil
+			return configPathResult{Files: settings.Files}, strings.Join(settings.Files, "\n"), nil
 		}),
 	}
 }
@@ -49,14 +60,7 @@ func (runner *runner) configShowCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			result := dac.ConfigShowResult{Files: settings.Files}
-			for _, setting := range settings.Settings() {
-				result.Settings = append(result.Settings, dac.ConfigSetting{
-					Key:    setting.Key,
-					Value:  setting.Value,
-					Source: setting.Source,
-				})
-			}
+			result := configShowResult{Files: settings.Files, Settings: settings.Settings()}
 			// The human form is a config file.
 			return result, strings.TrimRight(settings.TOML(), "\n"), nil
 		}),

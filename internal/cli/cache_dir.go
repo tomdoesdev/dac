@@ -4,9 +4,12 @@ import (
 	"context"
 
 	urfave "github.com/urfave/cli/v3"
-
-	"github.com/tomdoesdev/dac/internal/dac"
 )
+
+// cacheDirResult reports where the object cache resolved to.
+type cacheDirResult struct {
+	Path string `json:"path"`
+}
 
 func (runner *runner) cacheDirCommand() *urfave.Command {
 	return &urfave.Command{
@@ -17,7 +20,7 @@ func (runner *runner) cacheDirCommand() *urfave.Command {
 			if err != nil {
 				return nil, "", err
 			}
-			return dac.CacheDirResult{Path: root}, root, nil
+			return cacheDirResult{Path: root}, root, nil
 		}),
 	}
 }

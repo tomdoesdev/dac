@@ -97,29 +97,6 @@ type GCResult struct {
 	DryRun      bool     `json:"dryRun"`
 }
 
-// ConfigPathResult reports the config files one run read, most important first.
-type ConfigPathResult struct {
-	Files []string `json:"files"`
-}
-
-// ConfigSetting is one effective setting and the file that supplied it.
-type ConfigSetting struct {
-	Key    string `json:"key"`
-	Value  string `json:"value"`
-	Source string `json:"source"`
-}
-
-// ConfigShowResult reports the effective configuration.
-type ConfigShowResult struct {
-	Files    []string        `json:"files"`
-	Settings []ConfigSetting `json:"settings"`
-}
-
-// CacheDirResult reports where the object cache resolved to.
-type CacheDirResult struct {
-	Path string `json:"path"`
-}
-
 // VerifyCacheOptions controls one explicit cache check.
 type VerifyCacheOptions struct {
 	// All checks every object in the cache instead of the ones this project locked.
