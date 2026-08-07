@@ -189,18 +189,6 @@ func TestCommandLifecycle(t *testing.T) {
 	if human.status != ExitOK || human.stdout != expectedInfo || human.stderr != "" {
 		t.Fatalf("unexpected human info: %#v", human)
 	}
-	human = run(t, appendArgs(base, "path", "app/geo@2026.08"))
-	if human.status != ExitOK || human.stdout != objectPath+"\n" || human.stderr != "" {
-		t.Fatalf("unexpected human path: %#v", human)
-	}
-
-	result = runJSON(t, appendArgs(base, "path", "app/geo@2026.08"))
-	assertSuccess(t, result, "path")
-	data := result.value["data"].(map[string]any)
-	if data["path"] != objectPath {
-		t.Fatalf("path result is %#v", data)
-	}
-
 	lockBeforeRemove := projecttest.MustRead(t, lockPath)
 	result = runJSON(t, appendArgs(base, "remove", "app/geo@2026.08"))
 	assertSuccess(t, result, "remove")
@@ -619,59 +607,6 @@ func settleCLIProject(t *testing.T, base []string) {
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
 }
 
-// TestPathAcceptsAnAssetWithoutItsVersion covers the shorter form and the one case it must refuse.
-func TestPathAcceptsAnAssetWithoutItsVersion(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		_, _ = io.WriteString(writer, "bytes for "+request.URL.Path)
-	}))
-	defer server.Close()
-
-	paths := newProject(t)
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "init")), "init")
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@11",
-		server.URL+"/jdk11.tar.gz", "--no-progress")), "add")
-	settleCLIProject(t, paths.base)
-
-	objectPath := objectPathFor(t, paths, coord.MustParse("java/sdk@11"))
-	bare := run(t, appendArgs(paths.base, "path", "java/sdk"))
-	if bare.status != ExitOK || bare.stdout != objectPath+"\n" {
-		t.Fatalf("path without a version returned %#v", bare)
-	}
-	versioned := run(t, appendArgs(paths.base, "path", "java/sdk@11"))
-	if versioned.stdout != bare.stdout {
-		t.Fatalf("the two spellings disagree: %q and %q", versioned.stdout, bare.stdout)
-	}
-	// The result names the version it resolved to, so a caller that left it off can still tell which asset answered.
-	result := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
-	assertSuccess(t, result, "path")
-	if data := result.value["data"].(map[string]any); data["coordinate"] != "java/sdk@11" || data["version"] != "11" {
-		t.Fatalf("path did not report the version it resolved: %#v", data)
-	}
-
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "java/sdk@17",
-		server.URL+"/jdk17.tar.gz", "--no-progress")), "add")
-	settleCLIProject(t, paths.base)
-
-	ambiguous := runJSON(t, appendArgs(paths.base, "path", "java/sdk"))
-	assertError(t, ambiguous, "asset_ambiguous")
-	details := ambiguous.value["error"].(map[string]any)["details"].(map[string]any)
-	versions := details["versions"].([]any)
-	if details["asset"] != "java/sdk" || len(versions) != 2 || versions[0] != "11" || versions[1] != "17" {
-		t.Fatalf("the refusal did not list the versions to choose from: %#v", details)
-	}
-	// Naming the version is what resolves it, and both are still reachable.
-	for _, version := range []string{"11", "17"} {
-		named := run(t, appendArgs(paths.base, "path", "java/sdk@"+version))
-		if named.status != ExitOK || named.stdout == "" {
-			t.Fatalf("path java/sdk@%s returned %#v", version, named)
-		}
-	}
-	// An asset the project does not have is a different answer from one it has too many of, and it keeps the code it always had.
-	assertError(t, runJSON(t, appendArgs(paths.base, "path", "java/nope")), "asset_unknown")
-	assertError(t, runJSON(t, appendArgs(paths.base, "path", "not-a-coordinate")), "invalid_arguments")
-	assertError(t, runJSON(t, appendArgs(paths.base, "path")), "invalid_arguments")
-}
-
 func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	content := []byte("collectable asset")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -691,10 +626,6 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	if data["objectCount"].(float64) != 1 || data["dryRun"] != true {
 		t.Fatalf("unexpected dry run: %#v", data)
 	}
-	if human := run(t, appendArgs(base, "path", "app/geo@1")); human.status != ExitOK {
-		t.Fatalf("the dry run removed the object: %#v", human)
-	}
-
 	// A long age keeps everything.
 	result = runJSON(t, appendArgs(base, "cache", "gc", "--max-age", "30d"))
 	assertSuccess(t, result, "cache.gc")
@@ -707,9 +638,6 @@ func TestCacheGCRemovesUnusedObjects(t *testing.T) {
 	assertSuccess(t, result, "cache.gc")
 	if result.value["data"].(map[string]any)["objectCount"].(float64) != 1 {
 		t.Fatalf("collection kept the object: %#v", result.value)
-	}
-	if human := run(t, appendArgs(base, "path", "app/geo@1")); human.status != ExitFailure {
-		t.Fatalf("the object survived collection: %#v", human)
 	}
 }
 
@@ -955,8 +883,6 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 	settleCLIProject(t, base)
 	corruptObject(t, cacheRoot, digest.Bytes(content))
 
-	// path used to return this object, and every script downstream would have read the wrong bytes without ever being told.
-	assertError(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "unpack", "--dest", filepath.Join(directory, "unpacked"))), "cache_object_corrupt")
 	assertError(t, runJSON(t, appendArgs(base, "cache", "scrub")), "cache_object_corrupt")
 
@@ -969,7 +895,6 @@ func TestCorruptCacheObjectIsCaughtEndToEnd(t *testing.T) {
 
 	// pull replaces the object, and the whole project comes back clean.
 	assertSuccess(t, runJSON(t, appendArgs(base, "pull", "--no-progress")), "pull")
-	assertSuccess(t, runJSON(t, appendArgs(base, "path", "app/geo@1")), "path")
 	verified := runJSON(t, appendArgs(base, "cache", "scrub"))
 	assertSuccess(t, verified, "cache.scrub")
 	if verified.value["data"].(map[string]any)["corruptCount"] != float64(0) {

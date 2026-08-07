@@ -1,9 +1,6 @@
 package application
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
 )
@@ -81,36 +78,4 @@ func chosen[V any](assets map[coord.Coordinate]V, selections []Selection) ([]coo
 		}
 	}
 	return names, nil
-}
-
-// onlyAsset resolves a selection that must identify one coordinate.
-func onlyAsset[V any](selection Selection, assets map[coord.Coordinate]V) (coord.Coordinate, error) {
-	switch selection.kind {
-	case selectExact:
-		if _, exists := assets[selection.coordinate]; !exists {
-			return coord.Coordinate{}, unknownCoordinate(selection.coordinate, assets)
-		}
-		return selection.coordinate, nil
-	case selectGroup:
-		names := coord.InGroup(assets, selection.group)
-		switch len(names) {
-		case 0:
-			return coord.Coordinate{}, &fault.Error{
-				Code:    "asset_unknown",
-				Message: "The project does not have this asset.",
-				Details: map[string]any{"asset": selection.group.String()},
-			}
-		case 1:
-			return names[0], nil
-		}
-		versions := coord.Versions(names)
-		return coord.Coordinate{}, &fault.Error{
-			Code:    "asset_ambiguous",
-			Message: "The project has more than one version of this asset. Name the version you mean.",
-			Details: map[string]any{"asset": selection.group.String(), "versions": versions},
-			Cause:   fmt.Errorf("%s has %s", selection.group, strings.Join(versions, ", ")),
-		}
-	}
-	return coord.Coordinate{}, fault.New("invalid_arguments",
-		"Specify one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
 }

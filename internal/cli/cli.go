@@ -238,7 +238,6 @@ func (runner *runner) app() *urfave.Command {
 		runner.removeCommand(),
 		runner.infoCommand(),
 		runner.pullCommand(),
-		runner.pathCommand(),
 		runner.checkCommand(),
 		runner.unpackCommand(),
 		runner.cacheCommand(),

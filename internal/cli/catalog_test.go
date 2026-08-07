@@ -124,8 +124,8 @@ func TestReadingAProjectRecordsWhatItsObjectsAre(t *testing.T) {
 		t.Fatalf("Remove catalog: %v", err)
 	}
 
-	// Path reaches the cache without reaching the network, and rebuilds the record from the lock.
-	assertSuccess(t, runJSON(t, appendArgs(served.base, "path", "app/geo@2026.08")), "path")
+	// Info reaches the cache without reaching the network, and rebuilds the record from the lock.
+	assertSuccess(t, runJSON(t, appendArgs(served.base, "info", "app/geo@2026.08")), "info")
 	after := loadCatalog(t, catalogPath)
 	if len(after.Objects) != 1 {
 		t.Fatalf("catalog = %#v, want the object recorded again", after)

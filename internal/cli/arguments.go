@@ -93,16 +93,6 @@ func selections(current *urfave.Command) ([]application.Selection, error) {
 	return chosen, nil
 }
 
-// asset reads the one asset a command acts on, with or without its version.
-// Leaving the version off asks DAC to work out which one was meant, and it will only do that when the project leaves nothing to work out.
-func asset(current *urfave.Command) (application.Selection, error) {
-	values := current.Args().Slice()
-	if len(values) != 1 {
-		return application.Selection{}, fault.New("invalid_arguments", "Specify one asset as <namespace>/<name> or <namespace>/<name>@<version>.")
-	}
-	return parseAsset(values[0])
-}
-
 // parseAsset reads one asset argument in either of the two spellings.
 func parseAsset(value string) (application.Selection, error) {
 	if strings.Contains(value, "@") {

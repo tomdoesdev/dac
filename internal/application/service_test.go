@@ -692,23 +692,6 @@ func TestNetworkTimeoutHasStableCode(t *testing.T) {
 	}
 }
 
-func TestPathChecksVersionAndCachePresence(t *testing.T) {
-	content := []byte("cached")
-	manifestPath, lockPath := lockedProject(t, content)
-	store := newFakeStore()
-	service := application.New(manifestPath, lockPath, store, nil, nil)
-	if _, err := service.Path(application.ExactSelection(at("asset@2"))); fault.As(err).Code != "asset_unknown" {
-		t.Fatalf("expected asset_unknown, got %v", err)
-	}
-	if _, err := service.Path(application.ExactSelection(at("asset@1"))); fault.As(err).Code != "cache_object_invalid" {
-		t.Fatalf("expected cache_object_invalid, got %v", err)
-	}
-	store.objects[digest.Bytes(content)] = bytes.Clone(content)
-	if _, err := service.Path(application.ExactSelection(at("asset@1"))); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPullLockingHonorsCancellation(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
@@ -1000,16 +983,6 @@ func seedCorrupt(t *testing.T, content []byte) (string, string, *fakeStore) {
 	store.objects[value] = bytes.Clone(content)
 	store.damage(value, digest.Bytes([]byte("other bytes")))
 	return manifestPath, lockPath, store
-}
-
-func TestPathRefusesACorruptObject(t *testing.T) {
-	manifestPath, lockPath, store := seedCorrupt(t, []byte("asset bytes"))
-	service := application.New(manifestPath, lockPath, store, failingFetcher(t), nil)
-
-	_, err := service.Path(application.ExactSelection(at("asset@1")))
-	if code := fault.As(err).Code; code != "cache_object_corrupt" {
-		t.Fatalf("expected cache_object_corrupt, got %q (%v)", code, err)
-	}
 }
 
 func TestPullRepairsACorruptObject(t *testing.T) {

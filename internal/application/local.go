@@ -78,51 +78,6 @@ func (service *Service) Remove(name coord.Coordinate) (RemoveResult, error) {
 	}, nil
 }
 
-// PathResult reports one verified object path.
-type PathResult struct {
-	Coordinate string `json:"coordinate"`
-	Namespace  string `json:"namespace"`
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	Digest     string `json:"digest"`
-	Size       int64  `json:"size"`
-	Path       string `json:"path"`
-}
-
-// Path returns one verified object path.
-// Path accepts a group when the project has one matching version.
-func (service *Service) Path(selection Selection) (PathResult, error) {
-	_, lock, err := service.readProject()
-	if err != nil {
-		return PathResult{}, err
-	}
-	name, err := onlyAsset(selection, lock.Assets)
-	if err != nil {
-		return PathResult{}, err
-	}
-	asset := lock.Assets[name]
-	valid, err := service.cached(Object{Digest: asset.Digest, Size: asset.Size})
-	if err != nil {
-		return PathResult{}, err
-	}
-	if !valid {
-		return PathResult{}, fault.New("cache_object_invalid", "The cache object is missing. Run dac pull.")
-	}
-	path, err := service.objectPath(asset.Digest)
-	if err != nil {
-		return PathResult{}, err
-	}
-	return PathResult{
-		Coordinate: name.String(),
-		Namespace:  name.Namespace,
-		Name:       name.Name,
-		Version:    name.Version,
-		Digest:     asset.Digest,
-		Size:       asset.Size,
-		Path:       path,
-	}, nil
-}
-
 // GCOptions controls one cache collection.
 type GCOptions struct {
 	MaxAge time.Duration

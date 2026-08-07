@@ -20,9 +20,8 @@ var pullAssets = []struct{ coordinate, path string }{
 // TestPullFetchesOnlyTheAssetsNamed covers the reason a pull can be narrowed.
 //
 // A project holds every asset every job built from it needs. Without a filter,
-// a job that needs one of them fetches all of them: dac path requires the
-// object to be cached already, so a plain pull was the only way to put it
-// there.
+// a job that needs one of them fetches all of them, even if the others are not
+// needed yet.
 func TestPullFetchesOnlyTheAssetsNamed(t *testing.T) {
 	paths, requested := newPullProject(t)
 

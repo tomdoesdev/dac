@@ -74,7 +74,6 @@ initial empty project files, pull is the only command that writes lock state.
 | `dac remove <coordinate>` | Remove one asset version from the manifest. |
 | `dac info [<asset>[@<version>]]` | Show project and cache state. |
 | `dac pull [<asset>[@<version>]...] [--refresh] [options]` | Reconcile lock state and install locked objects. |
-| `dac path <asset>[@<version>]` | Print one verified object path. |
 | `dac check [--upstream] [--concurrency <n>]` | Check project files offline and optionally inspect upstream bytes. |
 | `dac unpack [<asset>[@<version>]...] [options]` | Write cached assets to a directory. |
 | `dac cache <dir\|list\|gc\|clear\|remove\|scrub>` | Inspect or maintain the cache. |
@@ -96,9 +95,6 @@ dac pull backend/geo@2026.08
 These commands select the full project, all versions of one asset, or one exact
 version. Multiple selectors form one set. An unknown selector reports
 `asset_unknown`.
-
-`path` accepts an asset without a version only when the asset has one version.
-Otherwise, it reports `asset_ambiguous`.
 
 ## Project files
 

@@ -57,27 +57,6 @@ func removeText(palette style.Palette, name coord.Coordinate, result application
 	return text
 }
 
-func (runner *runner) pathCommand() *urfave.Command {
-	return &urfave.Command{
-		Name:  "path",
-		Usage: "Get one verified object path.",
-		// A group is valid when the project has only one matching version.
-		ArgsUsage: "<namespace>/<name>[@<version>]",
-		Action: runner.run("path", func(_ context.Context, current *urfave.Command) (any, string, error) {
-			choice, err := asset(current)
-			if err != nil {
-				return nil, "", err
-			}
-			service, err := runner.storeService(current)
-			if err != nil {
-				return nil, "", err
-			}
-			result, err := service.Path(choice)
-			return result, result.Path, err
-		}),
-	}
-}
-
 // unpackCommand builds the cache materialization command.
 func (runner *runner) unpackCommand() *urfave.Command {
 	return &urfave.Command{
