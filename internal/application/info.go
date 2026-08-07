@@ -1,9 +1,6 @@
 package application
 
 import (
-	"net/url"
-	"strings"
-
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -18,10 +15,6 @@ const (
 	CacheMissing     = "missing"
 	CacheCorrupt     = "corrupt"
 	CacheUnavailable = "unavailable"
-	TrustTrusted     = "trusted"
-	TrustUntrusted   = "untrusted"
-	// TrustUnknown is what a service with no trust list to ask can say.
-	TrustUnknown = "unknown"
 )
 
 // InfoOptions selects the assets for one inspection.
@@ -32,14 +25,11 @@ type InfoOptions struct {
 
 // InfoAsset combines manifest, lock, and cache information.
 type InfoAsset struct {
-	Coordinate string `json:"coordinate"`
-	Namespace  string `json:"namespace"`
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	SourceURL  string `json:"sourceUrl"`
-	// Host is the host the source URL names, and TrustStatus is whether DAC would download from it.
-	Host        string `json:"host,omitempty"`
-	TrustStatus string `json:"trustStatus"`
+	Coordinate  string `json:"coordinate"`
+	Namespace   string `json:"namespace"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	SourceURL   string `json:"sourceUrl"`
 	CacheStatus string `json:"cacheStatus"`
 	Integrity   string `json:"integrity,omitempty"`
 	// Filename is what the origin calls this asset.
@@ -57,12 +47,10 @@ type InfoResult struct {
 
 // InfoSummary counts the states worth acting on.
 type InfoSummary struct {
-	AssetCount   int `json:"assetCount"`
-	CachedCount  int `json:"cachedCount"`
-	CorruptCount int `json:"corruptCount"`
-	// UntrustedCount is how many assets a pull would refuse to download.
-	UntrustedCount int    `json:"untrustedCount"`
-	LockStatus     string `json:"lockStatus"`
+	AssetCount   int    `json:"assetCount"`
+	CachedCount  int    `json:"cachedCount"`
+	CorruptCount int    `json:"corruptCount"`
+	LockStatus   string `json:"lockStatus"`
 }
 
 // Info inspects manifest assets without network access.
@@ -79,7 +67,7 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 	if err != nil {
 		return InfoResult{}, err
 	}
-	// A stale lock arrives here empty, so a project DAC cannot trust records nothing.
+	// A stale lock arrives here empty, so no catalog entries are recorded.
 	service.note(lock.Assets)
 	result := InfoResult{
 		Assets:  make([]InfoAsset, 0, len(names)),
@@ -95,9 +83,6 @@ func (service *Service) Info(options InfoOptions) (InfoResult, error) {
 			result.Summary.CachedCount++
 		case CacheCorrupt:
 			result.Summary.CorruptCount++
-		}
-		if asset.TrustStatus == TrustUntrusted {
-			result.Summary.UntrustedCount++
 		}
 		result.Assets = append(result.Assets, asset)
 	}
@@ -121,20 +106,15 @@ func (service *Service) infoLock(manifest project.Manifest) (project.Lock, strin
 
 // infoAsset combines one manifest asset with its lock and cache states.
 func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, lock project.Lock, lockStatus string) (InfoAsset, error) {
-	host := hostOf(source.URL)
 	result := InfoAsset{
 		Coordinate:  name.String(),
 		Namespace:   name.Namespace,
 		Name:        name.Name,
 		Version:     name.Version,
 		SourceURL:   source.URL,
-		Host:        host,
-		TrustStatus: service.trustStatus(host),
 		CacheStatus: CacheUnavailable,
 		Integrity:   source.Integrity,
 	}
-	// Trust is settled above the lock check because it comes from the manifest URL,
-	// so unlike the cache fields it is knowable even when the lock is stale.
 	if lockStatus != LockCurrent {
 		return result, nil
 	}
@@ -155,28 +135,4 @@ func (service *Service) infoAsset(name coord.Coordinate, source project.Asset, l
 		result.CacheStatus = CacheMissing
 	}
 	return result, nil
-}
-
-// trustStatus reports whether a download would be allowed to reach a host.
-// A service with no list to ask says so rather than saying no, because reporting
-// every host as untrusted would be the wrong answer rather than a missing one.
-func (service *Service) trustStatus(host string) string {
-	if service.Trust == nil || host == "" {
-		return TrustUnknown
-	}
-	if service.Trust.Trusted(host) {
-		return TrustTrusted
-	}
-	return TrustUntrusted
-}
-
-// hostOf names the host a source URL points at.
-// A manifest URL has already passed the URL policy, so a value this cannot parse
-// is one nothing will download from anyway.
-func hostOf(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(parsed.Hostname())
 }

@@ -317,7 +317,8 @@ func TestLegacyLockEncodingDoesNotInventValidators(t *testing.T) {
 	}
 }
 
-// TestManifestValidateRejectsEachBrokenAsset covers the other half of the same guarantee, including the URL policy: a manifest is where a URL DAC will not request has to be refused, because everything after it assumes one that is.
+// TestManifestValidateRejectsEachBrokenAsset covers the other half of the same
+// guarantee: a manifest must not name a URL the HTTP fetcher cannot request.
 func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 	name := coord.MustParse("app/geo@1")
 	sound := func() Manifest {
@@ -339,7 +340,6 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 		{"a relative URL", func(manifest *Manifest) { manifest.Assets[name] = Asset{URL: "/geo.bin"} }, "invalid URL"},
 		{"a URL with no host", func(manifest *Manifest) { manifest.Assets[name] = Asset{URL: "https:///geo.bin"} }, "invalid URL"},
 		{"a scheme DAC does not speak", func(manifest *Manifest) { manifest.Assets[name] = Asset{URL: "ftp://example.com/geo.bin"} }, "not permitted"},
-		{"an insecure URL with no opt-in", func(manifest *Manifest) { manifest.Assets[name] = Asset{URL: "http://example.com/geo.bin"} }, "not permitted"},
 		{"credentials in the URL", func(manifest *Manifest) {
 			manifest.Assets[name] = Asset{URL: "https://user:pw@example.com/geo.bin"}
 		}, "not permitted"},
@@ -367,11 +367,11 @@ func TestManifestValidateRejectsEachBrokenAsset(t *testing.T) {
 		}
 	}
 
-	// The opt-in is what makes an insecure URL a decision rather than an accident, so it has to actually permit one.
+	// HTTP is supported alongside HTTPS without a DAC-specific opt-in.
 	manifest := sound()
-	manifest.Assets[name] = Asset{URL: "http://example.com/geo.bin", AllowInsecureHTTP: true}
+	manifest.Assets[name] = Asset{URL: "http://example.com/geo.bin"}
 	if err := manifest.Validate(); err != nil {
-		t.Fatalf("an insecure URL that opted in was refused: %v", err)
+		t.Fatalf("an HTTP URL was refused: %v", err)
 	}
 
 	// A declared name is optional and every asset written before the field existed has none, so an empty one is not a broken one.

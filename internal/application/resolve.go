@@ -98,7 +98,7 @@ func (service *Service) resolve(ctx context.Context, coordinate coord.Coordinate
 // resolvedFilename returns the best name known for an asset.
 // A manifest name wins because it is an explicit project decision.
 // A name is only carried over from the old entry while the URL is unchanged.
-// Both the declared and the supplied name are cleaned again here rather than trusted.
+// Both the declared and the supplied name are cleaned again here rather than assumed safe.
 func resolvedFilename(supplied string, source project.Asset, old project.LockAsset) string {
 	if name := filename.Clean(source.Filename); name != "" {
 		return name
@@ -118,7 +118,6 @@ func (service *Service) fetch(ctx context.Context, source project.Asset, validat
 	}
 	response, err := service.Fetcher.Fetch(ctx, FetchRequest{
 		URL: source.URL, ETag: validator.ETag, LastModified: validator.LastModified,
-		AllowInsecureHTTP: source.AllowInsecureHTTP,
 	})
 	if err != nil {
 		return nil, networkError(err)

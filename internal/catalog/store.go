@@ -14,8 +14,8 @@ import (
 )
 
 // ResolvePath returns the absolute catalog file path.
-// The catalog sits with the trusted-hosts file under the XDG data location, because it is data
-// DAC writes and means to keep. It is deliberately not in the cache: a record that lived where
+// The catalog sits under the XDG data location because it is data DAC writes and
+// means to keep. It is deliberately not in the cache: a record that lived where
 // the objects live would be emptied by the same commands that empty them, and a record of what
 // DAC has downloaded is worth more than that.
 //
@@ -25,7 +25,7 @@ import (
 func ResolvePath(option string) (string, error) {
 	selected := option
 	if selected == "" {
-		// Relative XDG paths are ignored, matching the trusted-hosts file.
+		// Relative XDG paths are ignored so a build cannot write beside its source.
 		if value := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(value) {
 			selected = filepath.Join(value, DirName, FileName)
 		}

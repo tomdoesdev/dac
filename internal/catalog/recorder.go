@@ -10,9 +10,8 @@ import (
 
 // Recorder collects what one run learned about the cache and writes it once.
 //
-// Records are collected in memory and written at the end, for the reason the trusted-hosts use
-// times are: a write per observation would mean one file rewrite per asset of every command that
-// reads a project.
+// Records are collected in memory and written at the end because a write per
+// observation would mean one file rewrite per asset of every command that reads a project.
 type Recorder struct {
 	store *Store
 

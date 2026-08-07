@@ -89,10 +89,9 @@ func (service *Service) objectPath(digest string) (string, error) {
 
 // FetchRequest describes one remote asset request.
 type FetchRequest struct {
-	URL               string
-	ETag              string
-	LastModified      string
-	AllowInsecureHTTP bool
+	URL          string
+	ETag         string
+	LastModified string
 }
 
 // FetchResponse contains the response fields used by DAC.
@@ -113,8 +112,7 @@ type Fetcher interface {
 
 // ProbeRequest describes an unconditional metadata request for one remote asset.
 type ProbeRequest struct {
-	URL               string
-	AllowInsecureHTTP bool
+	URL string
 }
 
 // ProbeResponse contains the origin metadata that can cheaply signal changed bytes.
@@ -129,13 +127,6 @@ type ProbeResponse struct {
 // pretend they can issue HEAD requests.
 type UpstreamProber interface {
 	Probe(ctx context.Context, request ProbeRequest) (*ProbeResponse, error)
-}
-
-// HostTrust reports whether DAC is willing to download from a host.
-// Info answers without making a request, so it asks the trusted-hosts file
-// rather than the transport stage that enforces the same answer.
-type HostTrust interface {
-	Trusted(host string) bool
 }
 
 // Reporter is the progress boundary used by the service.
@@ -162,9 +153,6 @@ type Service struct {
 	Fetcher      Fetcher
 	Prober       UpstreamProber
 	Reporter     Reporter
-	// Trust reports which hosts a download would be allowed to reach. A nil value
-	// reports nothing rather than reporting that nothing is trusted.
-	Trust HostTrust
 	// Catalog records what this run learned about the objects it saw, so that a project file
 	// that later changes or disappears does not take the only description of those bytes with
 	// it. A nil value records nothing.

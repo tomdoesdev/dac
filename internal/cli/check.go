@@ -18,7 +18,7 @@ func (runner *runner) checkCommand() *urfave.Command {
 		HideHelpCommand: true,
 		Commands:        []*urfave.Command{runner.checkUpstreamCommand()},
 		Action: runner.runBare("check", func(ctx context.Context, current *urfave.Command) (any, string, error) {
-			// The plain form deliberately constructs no network, cache, trust, or
+			// The plain form deliberately constructs no network, cache, or
 			// configuration dependencies. Its entire scope is the two project files.
 			manifest, lock := projectPaths(current)
 			result, err := application.New(manifest, lock, nil, nil, nil).Check(ctx, application.CheckOptions{})

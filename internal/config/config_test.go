@@ -247,6 +247,7 @@ func TestLoadRejectsRemovedSettings(t *testing.T) {
 		{"[credentials]\ndefault = \"helper\"\n", "credentials"},
 		{"[[rewrite]]\npattern = \"x\"\nreplacement = \"y\"\n", "rewrite"},
 		{"[hosts]\nblock = [\"*\"]\n", "hosts"},
+		{"[trust]\nfile = \"/var/lib/dac/trusted-hosts.json\"\n", "trust"},
 	}
 	for _, setting := range settings {
 		userHome, _ := isolate(t)

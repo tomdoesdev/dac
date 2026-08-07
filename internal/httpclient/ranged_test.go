@@ -153,24 +153,6 @@ func TestFetchSplitsARangedAsset(t *testing.T) {
 	}
 }
 
-func TestTransportDecoratorSeesRangeRequests(t *testing.T) {
-	origin := newRangeServer(assetSize)
-	server := httptest.NewServer(origin)
-	defer server.Close()
-	var requests atomic.Int32
-	client := New(Options{
-		Timeout:             10 * time.Second,
-		Parallelism:         4,
-		TransportDecorators: []TransportDecorator{countRequests(&requests)},
-	})
-	defer client.Close()
-
-	fetchAll(t, client, server.URL)
-	if int64(requests.Load()) != origin.requests.Load() || requests.Load() != 3 {
-		t.Fatalf("decorated requests = %d, origin requests = %d", requests.Load(), origin.requests.Load())
-	}
-}
-
 // A split download reads one asset over several requests, so DAC declines to
 // split what it cannot pin: an asset that changes mid-transfer would otherwise
 // be reassembled out of two versions.

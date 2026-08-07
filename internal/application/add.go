@@ -13,10 +13,9 @@ import (
 
 // AddOptions defines one manifest addition.
 type AddOptions struct {
-	Coordinate        coord.Coordinate
-	URL               string
-	Integrity         string
-	AllowInsecureHTTP bool
+	Coordinate coord.Coordinate
+	URL        string
+	Integrity  string
 	// Filename is the project name that overrides origin names during later resolutions.
 	Filename string
 	Force    bool
@@ -73,10 +72,9 @@ func (service *Service) Add(ctx context.Context, options AddOptions) (AddResult,
 	}
 	updated := manifest.Clone()
 	asset := project.Asset{
-		URL:               options.URL,
-		Integrity:         integrity,
-		Filename:          name,
-		AllowInsecureHTTP: options.AllowInsecureHTTP,
+		URL:       options.URL,
+		Integrity: integrity,
+		Filename:  name,
 	}
 	updated.Assets[options.Coordinate] = asset
 	if err := updated.Validate(); err != nil {

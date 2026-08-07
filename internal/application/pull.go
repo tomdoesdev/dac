@@ -192,7 +192,7 @@ func (service *Service) pull(ctx context.Context, coordinate coord.Coordinate, s
 			}
 			return fault.New("offline_cache_miss", "Offline mode could not find the required cache object.")
 		}
-		response, err := service.fetch(ctx, project.Asset{URL: source.URL, AllowInsecureHTTP: source.AllowInsecureHTTP}, project.LockAsset{})
+		response, err := service.fetch(ctx, project.Asset{URL: source.URL}, project.LockAsset{})
 		if err != nil {
 			return err
 		}

@@ -50,9 +50,8 @@ func TestLoadTreatsAMissingFileAsAnEmptyCatalog(t *testing.T) {
 	}
 }
 
-// TestLoadKeepsACatalogItCannotRead is the deliberate difference from the trusted-hosts file,
-// which reports a bad file and stops. Nothing regenerates these records, so a file DAC cannot
-// parse is left exactly as it is for somebody to look at rather than replaced with an empty one.
+// TestLoadKeepsACatalogItCannotRead ensures a malformed catalog is left for an
+// operator to inspect rather than silently replaced with an empty record.
 func TestLoadKeepsACatalogItCannotRead(t *testing.T) {
 	store := testStore(t)
 	damaged := []byte("{ this is not JSON")

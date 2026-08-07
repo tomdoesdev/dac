@@ -39,9 +39,6 @@ const (
 	DefaultMaxAge        = "30d"
 	// A cache nobody bounded is unbounded.
 	DefaultCacheMaxSize = NoSizeLimit
-	// Hosts turn over far more slowly than the objects they served, so trust is
-	// collected on its own much longer clock.
-	DefaultTrustMaxAge = "180d"
 )
 
 // DefaultSource is the source name reported for a value no file supplied.
@@ -60,10 +57,6 @@ type Config struct {
 	MaxAge   time.Duration
 	// CacheMaxSize bounds what the cache holds after a collection.
 	CacheMaxSize int64
-	// TrustFile names the trusted-hosts file, or is empty to use the XDG data location.
-	TrustFile string
-	// TrustMaxAge is how long a trusted host survives without a download reaching it.
-	TrustMaxAge time.Duration
 	// Files are the config files that were read, most important first.
 	Files []string
 	// Sources maps each setting to the file that supplied it, or DefaultSource.
@@ -144,7 +137,6 @@ type fileData struct {
 	SchemaVersion *int         `toml:"schema-version"`
 	Transfer      fileTransfer `toml:"transfer"`
 	Cache         fileCache    `toml:"cache"`
-	Trust         fileTrust    `toml:"trust"`
 }
 
 type fileTransfer struct {
@@ -160,11 +152,6 @@ type fileCache struct {
 	Dir     *string `toml:"dir"`
 	MaxAge  *string `toml:"max-age"`
 	MaxSize *string `toml:"max-size"`
-}
-
-type fileTrust struct {
-	File   *string `toml:"file"`
-	MaxAge *string `toml:"max-age"`
 }
 
 // readFile parses one config file.
@@ -214,8 +201,6 @@ func merge(files []*file) (*Config, error) {
 	cacheDir := setting[string]{name: "cache.dir"}
 	maxAge := setting[string]{name: "cache.max-age"}
 	cacheMaxSize := setting[string]{name: "cache.max-size"}
-	trustFile := setting[string]{name: "trust.file"}
-	trustMaxAge := setting[string]{name: "trust.max-age"}
 
 	for _, parsed := range files {
 		data := parsed.data
@@ -228,8 +213,6 @@ func merge(files []*file) (*Config, error) {
 		cacheDir.take(data.Cache.Dir, parsed.path)
 		maxAge.take(data.Cache.MaxAge, parsed.path)
 		cacheMaxSize.take(data.Cache.MaxSize, parsed.path)
-		trustFile.take(data.Trust.File, parsed.path)
-		trustMaxAge.take(data.Trust.MaxAge, parsed.path)
 	}
 
 	var err error
@@ -238,7 +221,6 @@ func merge(files []*file) (*Config, error) {
 	config.DownloadParts = scalar(config, parts, DefaultDownloadParts)
 	config.Progress = scalar(config, progress, true)
 	config.CacheDir = scalar(config, cacheDir, "")
-	config.TrustFile = scalar(config, trustFile, "")
 	if config.Timeout, err = converted(config, timeout, DefaultTimeout, ParseDuration); err != nil {
 		return nil, err
 	}
@@ -249,9 +231,6 @@ func merge(files []*file) (*Config, error) {
 		return nil, err
 	}
 	if config.CacheMaxSize, err = converted(config, cacheMaxSize, DefaultCacheMaxSize, ParseSize); err != nil {
-		return nil, err
-	}
-	if config.TrustMaxAge, err = converted(config, trustMaxAge, DefaultTrustMaxAge, ParseDuration); err != nil {
 		return nil, err
 	}
 	if err := config.validate(); err != nil {
@@ -325,12 +304,6 @@ func (config *Config) validate() error {
 	if config.CacheDir != "" && !filepath.IsAbs(config.CacheDir) {
 		return configError(config, "cache.dir", "must be an absolute path")
 	}
-	if config.TrustMaxAge < 0 {
-		return configError(config, "trust.max-age", "must not be negative")
-	}
-	if config.TrustFile != "" && !filepath.IsAbs(config.TrustFile) {
-		return configError(config, "trust.file", "must be an absolute path")
-	}
 	return nil
 }
 
@@ -373,9 +346,6 @@ func (config *Config) settingKeys() []settingKey {
 			unsetNote: "# dir is unset, so DAC uses the XDG cache location"},
 		{name: "cache.max-age", value: FormatDuration(config.MaxAge), quoted: true},
 		{name: "cache.max-size", value: sizeText(config.CacheMaxSize), quoted: true},
-		{name: "trust.file", value: config.TrustFile, section: "trust", quoted: true,
-			unsetNote: "# file is unset, so DAC uses the XDG data location"},
-		{name: "trust.max-age", value: FormatDuration(config.TrustMaxAge), quoted: true},
 	}
 }
 

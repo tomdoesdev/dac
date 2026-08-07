@@ -21,7 +21,6 @@ import (
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/dac/internal/projecttest"
-	"github.com/tomdoesdev/dac/internal/trust"
 )
 
 type invocation struct {
@@ -31,9 +30,8 @@ type invocation struct {
 	value  map[string]any
 }
 
-// TestMain points the config search path and the trusted-hosts file at an empty directory.
-// DAC reads a config file from the XDG base directories, so without this every test in this package would read whatever the machine running it has installed, and a developer with a config would get different results from CI.
-// The trusted-hosts file is pointed the same way and seeded with the loopback names, because every test in this package downloads from an httptest server and DAC refuses a host nothing trusts.
+// TestMain points the config search path at an empty directory so local settings
+// cannot change a test run.
 func TestMain(main *testing.M) {
 	root, err := os.MkdirTemp("", "dac-cli-test")
 	if err != nil {
@@ -44,20 +42,12 @@ func TestMain(main *testing.M) {
 		"XDG_CONFIG_DIRS": filepath.Join(root, "system"),
 		"XDG_DATA_HOME":   filepath.Join(root, "data"),
 		"HOME":            root,
-		"DAC_TRUST_FILE":  filepath.Join(root, "trusted-hosts.json"),
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			panic(err)
 		}
 	}
 	if err := os.Unsetenv("DAC_CONFIG"); err != nil {
-		panic(err)
-	}
-	if _, err := trust.New(os.Getenv("DAC_TRUST_FILE")).Update(context.Background(),
-		func(list trust.List) (trust.List, error) {
-			updated, _ := list.Add([]string{"127.0.0.1", "localhost", "::1"}, time.Now().UTC())
-			return updated, nil
-		}); err != nil {
 		panic(err)
 	}
 	code := main.Run()
@@ -179,7 +169,6 @@ func TestCommandLifecycle(t *testing.T) {
 	human := run(t, appendArgs(base, "info"))
 	expectedInfo := "app/geo@2026.08\n" +
 		"source: " + server.URL + "\n" +
-		"trust: trusted\n" +
 		"lock: current\n" +
 		"cache: cached\n" +
 		"filename: geo.bin\n" +
@@ -366,7 +355,7 @@ func TestAddDefaultsToManifestOnly(t *testing.T) {
 	}
 }
 
-func TestCheckNeedsNoCacheConfigOrTrustEnvironment(t *testing.T) {
+func TestCheckIgnoresFormerTrustEnvironment(t *testing.T) {
 	directory := t.TempDir()
 	manifestPath := filepath.Join(directory, "dac.json")
 	lockPath := filepath.Join(directory, "dac-lock.json")
@@ -462,11 +451,9 @@ func TestCheckHelpUsesOnlyTheNewCommandAndFlagNames(t *testing.T) {
 // runJSON selects JSON mode and decodes the result.
 // TestGroupCommandShowsItsOwnHelp covers what a bare group command answers.
 // The commands that only group others share one action with the root, and the
-// question somebody typing "dac trust" is asking is what trust can do, not what
-// dac can do.
+// question somebody typing a group command is asking is what that group can do.
 func TestGroupCommandShowsItsOwnHelp(t *testing.T) {
 	for _, group := range []struct{ name, command string }{
-		{name: "trust", command: "list"},
 		{name: "cache", command: "scrub"},
 		{name: "config", command: "show"},
 	} {
@@ -491,7 +478,7 @@ func TestGroupCommandShowsItsOwnHelp(t *testing.T) {
 // exiting successfully with nothing on standard output leaves a caller with no
 // result and no failure to handle.
 func TestIncompleteCommandInJSONModeWritesADocument(t *testing.T) {
-	for _, name := range []string{"", "trust", "cache", "config"} {
+	for _, name := range []string{"", "cache", "config"} {
 		t.Run("dac "+name, func(t *testing.T) {
 			args := []string{"--json"}
 			if name != "" {
@@ -513,14 +500,32 @@ func TestIncompleteCommandInJSONModeWritesADocument(t *testing.T) {
 // reported against: the group that was asked, rather than the word that is not
 // one of its commands.
 func TestUnknownSubcommandNamesTheGroupItWasGiven(t *testing.T) {
-	result := runJSON(t, []string{"trust", "bogus"})
+	result := runJSON(t, []string{"cache", "bogus"})
 	if result.status != ExitUsage {
 		t.Fatalf("status = %d, want %d", result.status, ExitUsage)
 	}
-	if result.value["command"] != "trust" {
-		t.Fatalf("command = %v, want trust", result.value["command"])
+	if result.value["command"] != "cache" {
+		t.Fatalf("command = %v, want cache", result.value["command"])
 	}
 	assertError(t, result, "invalid_arguments")
+}
+
+// TestRemovedTrustOptionsAreUsageErrors prevents a removed security control
+// from becoming an accepted no-op through a parser alias.
+func TestRemovedTrustOptionsAreUsageErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"trust"},
+		{"--trust-file", "hosts.json", "info"},
+		{"add", "app/geo@1", "http://example.com/geo", "--trust"},
+		{"add", "app/geo@1", "http://example.com/geo", "--allow-insecure-http"},
+		{"pull", "--insecure-trust-all"},
+	} {
+		result := runJSON(t, args)
+		if result.status != ExitUsage {
+			t.Fatalf("args %v status = %d, want %d", args, result.status, ExitUsage)
+		}
+		assertError(t, result, "invalid_arguments")
+	}
 }
 
 func runJSON(t *testing.T, args []string) invocation {

@@ -108,7 +108,7 @@ func TestForgetDropsTheWholeRecord(t *testing.T) {
 	}
 }
 
-// TestChangesLeaveTheCatalogTheyWereGivenAlone holds the pure-functional contract the trust list
+// TestChangesLeaveTheCatalogTheyWereGivenAlone holds the pure-functional contract the catalog
 // holds to. It matters more here, because an object carries a map of its own: a value copied
 // without copying that map would let one caller write through another's record.
 func TestChangesLeaveTheCatalogTheyWereGivenAlone(t *testing.T) {

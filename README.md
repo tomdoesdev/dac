@@ -21,7 +21,6 @@ Use `mise run build` to build a checkout.
 
 ```bash
 dac init
-dac trust add example.com
 dac add backend/geo@2026.08 \
   https://example.com/geo/2026.08/database.bin --pin --name geo.db
 dac pull
@@ -80,7 +79,6 @@ initial empty project files, pull is the only command that writes lock state.
 | `dac check upstream [<coordinate>...] [--verify] [options]` | Check upstream metadata, or download and verify locked bytes. |
 | `dac unpack [<asset>[@<version>]...] [options]` | Write cached assets to a directory. |
 | `dac cache <dir\|list\|gc\|clear\|remove\|scrub>` | Inspect or maintain the cache. |
-| `dac trust <list\|add\|remove\|gc\|path>` | Manage trusted hosts. |
 | `dac config <path\|show>` | Inspect the configuration. |
 
 Run `dac --help` or `dac <command> --help` for all flags.
@@ -108,10 +106,9 @@ The manifest records source intent:
   "schemaVersion": 2,
   "assets": {
     "backend/geo@2026.08": {
-      "url": "https://example.com/geo.bin",
-      "integrity": "sha256:optional-publisher-digest",
-      "filename": "geo.db",
-      "allowInsecureHttp": false
+		"url": "https://example.com/geo.bin",
+		"integrity": "sha256:optional-publisher-digest",
+		"filename": "geo.db"
     }
   }
 }
@@ -140,35 +137,8 @@ The lock file records resolved bytes:
 canonical form. The `add --pin` option saves the resolved digest as the manifest
 integrity value.
 
-DAC requires HTTPS but permits HTTP loopback URLs. Use
-`add --allow-insecure-http` for another HTTP source. The policy also applies to
-redirects.
-
-## Trusted hosts
-
-DAC downloads only from hosts in its trusted-hosts file. This check applies to
-source URLs, redirects, retries, and split downloads.
-
-```bash
-dac trust add example.com
-dac trust add https://example.com/asset
-dac trust list
-```
-
-Host matches ignore case and port, but they do not include subdomains. DAC does
-not support wildcards.
-
-By default, the file is `dac/trusted-hosts.json` in the XDG data directory. Use
-`dac trust path` to print the active path. The `--trust-file`, `DAC_TRUST_FILE`,
-and `trust.file` settings can select a different file.
-
-Use `dac add --trust` to trust the source host while recording it in the
-manifest. Pair it with `--pin` to download in the same run. This option does not
-trust redirect hosts. Use `--insecure-trust-all` to skip checks for one run
-without changing the trust file.
-
-`dac trust gc` removes hosts that exceed `trust.max-age`. The default limit is
-180 days. It does not remove hosts that have no usage timestamps.
+DAC fetches HTTP and HTTPS sources, including redirects. URLs with embedded
+credentials and schemes other than HTTP or HTTPS are rejected.
 
 ## Configuration
 
@@ -191,9 +161,6 @@ dir = "/var/cache/dac"
 max-age = "30d"
 max-size = "none"
 
-[trust]
-file = "/var/lib/dac/trusted-hosts.json"
-max-age = "180d"
 ```
 
 Command flags and these environment variables override configured values:
@@ -220,7 +187,7 @@ damaged objects.
 An object is named on disk by its digest and nothing else, so a project that is
 edited or deleted takes with it the only record of what its objects were. DAC
 keeps that record separately, in `dac/catalog.json` under the XDG data
-directory, beside the trusted-hosts file.
+directory.
 
 Each record holds the size of an object, when DAC first stored it, and every
 coordinate it has been seen under, each with its own URL, file name, and time

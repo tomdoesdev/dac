@@ -155,8 +155,7 @@ func (service *Service) checkMetadataAsset(ctx context.Context, source project.A
 		return assetCheck{}, fault.New("network_error", "No upstream prober is configured.")
 	}
 	probe, err := service.Prober.Probe(ctx, ProbeRequest{
-		URL:               source.URL,
-		AllowInsecureHTTP: source.AllowInsecureHTTP,
+		URL: source.URL,
 	})
 	if err != nil {
 		return assetCheck{}, networkError(err)

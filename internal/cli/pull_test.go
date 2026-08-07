@@ -120,10 +120,19 @@ func TestPullRefusesAnAssetTheProjectDoesNotHave(t *testing.T) {
 // does not permit pull to write an incomplete lock.
 func TestPullNarrowedStillReconcilesTheWholeLock(t *testing.T) {
 	paths, _ := newPullProject(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "extra asset")
+	}))
+	defer server.Close()
 	// A manifest edit that nothing has locked, which is what a hand edit leaves.
-	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "extra/thing@1", "https://example.com/x.bin", "--offline")), "add")
+	assertSuccess(t, runJSON(t, appendArgs(paths.base, "add", "extra/thing@1", server.URL, "--offline")), "add")
 
-	assertError(t, runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0")), "host_not_trusted")
+	result := runJSON(t, appendArgs(paths.base, "pull", "app/geo@1.0.0"))
+	assertSuccess(t, result, "pull")
+	locked := result.value["data"].(map[string]any)["locked"].([]any)
+	if len(locked) != 1 || locked[0] != "extra/thing@1" {
+		t.Fatalf("reconciled assets = %#v, want extra/thing@1", locked)
+	}
 }
 
 // TestNarrowedRefreshReachesOnlyTheNamedOrigins covers what naming assets buys a

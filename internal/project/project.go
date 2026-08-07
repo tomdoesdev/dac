@@ -13,9 +13,9 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/coord"
 	"github.com/tomdoesdev/dac/internal/digest"
-	"github.com/tomdoesdev/dac/internal/urlpolicy"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/util/filename"
+	"github.com/tomdoesdev/kit/http/getit"
 	"github.com/tomdoesdev/kit/strictjson"
 )
 
@@ -35,10 +35,9 @@ type Manifest struct {
 // Asset defines one source.
 // Filename is the name the project chooses for the asset, which is the one thing about a file name that is a decision rather than an observation.
 type Asset struct {
-	URL               string `json:"url"`
-	Integrity         string `json:"integrity,omitempty"`
-	Filename          string `json:"filename,omitempty"`
-	AllowInsecureHTTP bool   `json:"allowInsecureHttp,omitempty"`
+	URL       string `json:"url"`
+	Integrity string `json:"integrity,omitempty"`
+	Filename  string `json:"filename,omitempty"`
 }
 
 // Lock records the exact bytes for a manifest.
@@ -135,7 +134,7 @@ func (manifest Manifest) Validate() error {
 		if err != nil || !parsed.IsAbs() || parsed.Host == "" {
 			return fmt.Errorf("asset %q has an invalid URL", name)
 		}
-		if err := urlpolicy.Check(parsed, asset.AllowInsecureHTTP); err != nil {
+		if err := getit.CheckURL(parsed); err != nil {
 			return fmt.Errorf("asset %q: %w", name, err)
 		}
 		if asset.Integrity != "" {

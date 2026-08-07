@@ -24,17 +24,14 @@ func TestInfoCommandCombinesManifestAndCacheState(t *testing.T) {
 	human := run(t, appendArgs(paths.base, "info"))
 	expected := "app/first@1\n" +
 		"source: https://one.example.com/asset\n" +
-		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
 		"app/second@2\n" +
 		"source: https://two.example.com/asset\n" +
-		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n\n" +
 		"app/third@3\n" +
 		"source: https://three.example.com/asset\n" +
-		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n"
 	if human.status != ExitOK || human.stdout != expected || human.stderr != "" {
@@ -52,13 +49,16 @@ func TestInfoCommandCombinesManifestAndCacheState(t *testing.T) {
 	if _, found := summary["blockedCount"]; found {
 		t.Fatalf("info summary contains removed blockedCount: %#v", summary)
 	}
+	if _, found := summary["untrustedCount"]; found {
+		t.Fatalf("info summary contains removed untrustedCount: %#v", summary)
+	}
 	assets := data["assets"].([]any)
 	first := assets[0].(map[string]any)
 	if first["name"] != "first" || first["cacheStatus"] != "unavailable" ||
 		first["sourceUrl"] != "https://one.example.com/asset" {
 		t.Fatalf("unexpected first asset: %#v", first)
 	}
-	for _, field := range []string{"requestUrl", "requestStatus", "rewritten"} {
+	for _, field := range []string{"host", "trustStatus", "requestUrl", "requestStatus", "rewritten"} {
 		if _, found := first[field]; found {
 			t.Fatalf("info asset contains removed %s: %#v", field, first)
 		}
@@ -76,7 +76,6 @@ func TestInfoCommandCombinesManifestAndCacheState(t *testing.T) {
 	singleHuman := run(t, appendArgs(paths.base, "info", "app/third@3"))
 	expectedSingle := "app/third@3\n" +
 		"source: https://three.example.com/asset\n" +
-		"trust: untrusted\n" +
 		"lock: missing\n" +
 		"cache: unavailable\n"
 	if singleHuman.status != ExitOK || singleHuman.stdout != expectedSingle || singleHuman.stderr != "" {

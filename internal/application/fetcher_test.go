@@ -40,8 +40,7 @@ func TestFetcherDecoratorRunsOnceForARedirectedAsset(t *testing.T) {
 	var calls atomic.Int32
 	decorated := countingFetcher{next: client, calls: &calls}
 	response, err := decorated.Fetch(context.Background(), application.FetchRequest{
-		URL:               server.URL + "/source",
-		AllowInsecureHTTP: true,
+		URL: server.URL + "/source",
 	})
 	if err != nil {
 		t.Fatal(err)

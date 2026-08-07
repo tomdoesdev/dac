@@ -6,9 +6,8 @@
 // the bytes stay while every way of identifying them goes, which leaves a cache full of objects
 // nobody can account for.
 //
-// The catalog is the record that survives the project. It is written where DAC keeps the data
-// it means to keep, beside the trusted-hosts file, rather than in the cache, which collection
-// is free to empty.
+// The catalog is the record that survives the project. It is written in DAC's
+// XDG data directory rather than in the cache, which collection is free to empty.
 package catalog
 
 import (

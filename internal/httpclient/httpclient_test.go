@@ -6,33 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/application"
-	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-// RoundTrip lets a test use a function as an HTTP transport.
-func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return function(request)
-}
-
-// countRequests returns a decorator that counts each HTTP request.
-func countRequests(count *atomic.Int32) TransportDecorator {
-	return func(next http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			count.Add(1)
-			return next.RoundTrip(request)
-		})
-	}
-}
 
 func TestFetchSendsIdentityAndETagHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -105,12 +85,12 @@ func TestProbeUsesHEADAndReturnsCanonicalValidators(t *testing.T) {
 	}
 }
 
-func TestProbeAppliesRedirectsRetriesAndTransportDecorators(t *testing.T) {
+func TestProbeAppliesRedirectsAndRetries(t *testing.T) {
 	var responses atomic.Int32
-	var methods sync.Map
+	methods := map[string]bool{}
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		methods.Store(request.Method, true)
+		methods[request.Method] = true
 		if request.URL.Path == "/source" {
 			http.Redirect(writer, request, server.URL+"/asset", http.StatusFound)
 			return
@@ -122,47 +102,23 @@ func TestProbeAppliesRedirectsRetriesAndTransportDecorators(t *testing.T) {
 		writer.Header().Set("ETag", "\"settled\"")
 	}))
 	defer server.Close()
-	var requests atomic.Int32
 	client := New(Options{
-		Timeout:             time.Second,
-		Retries:             1,
-		TransportDecorators: []TransportDecorator{countRequests(&requests)},
+		Timeout: time.Second,
+		Retries: 1,
 	})
 	defer client.Close()
 
 	response, err := client.Probe(context.Background(), application.ProbeRequest{
-		URL:               server.URL + "/source",
-		AllowInsecureHTTP: true,
+		URL: server.URL + "/source",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.ETag != "\"settled\"" || requests.Load() != 4 || responses.Load() != 2 {
-		t.Fatalf("unexpected retried probe: %#v requests=%d responses=%d", response, requests.Load(), responses.Load())
+	if response.ETag != "\"settled\"" || responses.Load() != 2 {
+		t.Fatalf("unexpected retried probe: %#v responses=%d", response, responses.Load())
 	}
-	if _, sawGET := methods.Load(http.MethodGet); sawGET {
+	if methods[http.MethodGet] {
 		t.Fatal("a HEAD redirect or retry became GET")
-	}
-}
-
-func TestProbeHonorsATrustRefusalWithoutRetry(t *testing.T) {
-	var requests atomic.Int32
-	refuse := func(http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			requests.Add(1)
-			return nil, &application.HostError{Host: request.URL.Hostname()}
-		})
-	}
-	client := New(Options{
-		Timeout:             time.Second,
-		Retries:             3,
-		TransportDecorators: []TransportDecorator{refuse},
-	})
-	defer client.Close()
-
-	_, err := client.Probe(context.Background(), application.ProbeRequest{URL: "https://example.com/asset"})
-	if !errors.Is(err, application.ErrHostNotTrusted) || requests.Load() != 1 {
-		t.Fatalf("probe refusal=%v requests=%d", err, requests.Load())
 	}
 }
 
@@ -193,149 +149,6 @@ func TestFetchRetriesTransientStatus(t *testing.T) {
 	}
 }
 
-func TestTransportDecoratorSeesRedirectsAndRetries(t *testing.T) {
-	var responses atomic.Int32
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/source" {
-			http.Redirect(writer, request, server.URL+"/asset", http.StatusFound)
-			return
-		}
-		if responses.Add(1) == 1 {
-			writer.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = io.WriteString(writer, "asset")
-	}))
-	defer server.Close()
-
-	var requests atomic.Int32
-	client := New(Options{
-		Timeout:             time.Second,
-		Retries:             1,
-		TransportDecorators: []TransportDecorator{countRequests(&requests)},
-	})
-	defer client.Close()
-	response, err := client.Fetch(context.Background(), application.FetchRequest{
-		URL:               server.URL + "/source",
-		AllowInsecureHTTP: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if requests.Load() != 4 {
-		t.Fatalf("decorated requests = %d, want 4", requests.Load())
-	}
-}
-
-// TestARefusedRequestIsNotRetried covers what a transport decorator needs in
-// order to refuse anything at all. Retrying defaults to yes, so without the
-// permanent list a refusal would be re-asked once per retry and once per range
-// of a split download, and every one of them would be refused again.
-func TestARefusedRequestIsNotRetried(t *testing.T) {
-	var requests atomic.Int32
-	refuse := func(http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			requests.Add(1)
-			return nil, &application.HostError{Host: request.URL.Hostname()}
-		})
-	}
-	client := New(Options{
-		Timeout:             time.Second,
-		Retries:             3,
-		TransportDecorators: []TransportDecorator{refuse},
-	})
-	defer client.Close()
-
-	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: "https://example.com/asset"})
-	if !errors.Is(err, application.ErrHostNotTrusted) {
-		t.Fatalf("error is %v, want a refusal", err)
-	}
-	if requests.Load() != 1 {
-		t.Fatalf("attempts = %d, want 1", requests.Load())
-	}
-}
-
-// TestADecoratorSeesTheHostARedirectMovesTo is why the trust check belongs in
-// the transport: the URL DAC was given is not the only host it would talk to.
-func TestADecoratorSeesTheHostARedirectMovesTo(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(writer, "asset")
-	}))
-	defer origin.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		http.Redirect(writer, request, origin.URL+"/asset", http.StatusFound)
-	}))
-	defer redirect.Close()
-
-	// The first host is allowed and the one it redirects to is not, so only a
-	// decorator that sees the second hop can tell the difference.
-	allowed := mustHostPort(t, redirect.URL)
-	refuseOthers := func(next http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.URL.Host != allowed {
-				return nil, &application.HostError{Host: request.URL.Hostname()}
-			}
-			return next.RoundTrip(request)
-		})
-	}
-	client := New(Options{
-		Timeout:             time.Second,
-		Retries:             2,
-		TransportDecorators: []TransportDecorator{refuseOthers},
-	})
-	defer client.Close()
-
-	_, err := client.Fetch(context.Background(), application.FetchRequest{
-		URL:               redirect.URL + "/source",
-		AllowInsecureHTTP: true,
-	})
-	if !errors.Is(err, application.ErrHostNotTrusted) {
-		t.Fatalf("error is %v, want a refusal", err)
-	}
-	var refusal *application.HostError
-	if !errors.As(err, &refusal) || refusal.Host != mustHostname(t, origin.URL) {
-		t.Fatalf("error names %v, want the host the redirect moved to", err)
-	}
-}
-
-func mustHostPort(t *testing.T, rawURL string) string {
-	t.Helper()
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", rawURL, err)
-	}
-	return parsed.Host
-}
-
-func mustHostname(t *testing.T, rawURL string) string {
-	t.Helper()
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", rawURL, err)
-	}
-	return parsed.Hostname()
-}
-
-func TestURLPolicyRunsBeforeTransportDecorators(t *testing.T) {
-	var requests atomic.Int32
-	client := New(Options{
-		Timeout:             time.Second,
-		TransportDecorators: []TransportDecorator{countRequests(&requests)},
-	})
-	defer client.Close()
-
-	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: "http://example.com/asset"})
-	if !errors.Is(err, urlpolicy.ErrNotPermitted) {
-		t.Fatalf("expected URL policy error, got %v", err)
-	}
-	if requests.Load() != 0 {
-		t.Fatalf("decorator saw %d blocked requests", requests.Load())
-	}
-}
-
 func TestFetchStopsAStalledBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Length", "10")
@@ -355,93 +168,6 @@ func TestFetchStopsAStalledBody(t *testing.T) {
 	_ = response.Body.Close()
 	if !errors.Is(err, application.ErrStalled) {
 		t.Fatalf("expected ErrStalled, got %v", err)
-	}
-}
-
-func TestFetchRejectsUnsafeRedirect(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Location", "http://example.com/asset")
-		writer.WriteHeader(http.StatusFound)
-	}))
-	defer server.Close()
-	var requests atomic.Int32
-	client := New(Options{
-		Timeout:             time.Second,
-		TransportDecorators: []TransportDecorator{countRequests(&requests)},
-	})
-	defer client.Close()
-
-	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: server.URL})
-	if !errors.Is(err, urlpolicy.ErrNotPermitted) {
-		t.Fatalf("expected URL policy error, got %v", err)
-	}
-	if requests.Load() != 1 {
-		t.Fatalf("decorator saw blocked redirect request: count=%d", requests.Load())
-	}
-}
-
-// redirectOnce answers the first host with a redirect to the second, and the second with an asset,
-// so a test can send a request across hosts that do not exist without reaching a network.
-func redirectOnce(from, to string) TransportDecorator {
-	return func(http.RoundTripper) http.RoundTripper {
-		return roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.URL.Host == from {
-				return &http.Response{
-					StatusCode: http.StatusFound,
-					Header:     http.Header{"Location": {to}},
-					Body:       io.NopCloser(strings.NewReader("")),
-					Request:    request,
-				}, nil
-			}
-			return &http.Response{
-				StatusCode:    http.StatusOK,
-				Header:        http.Header{},
-				Body:          io.NopCloser(strings.NewReader("asset")),
-				ContentLength: 5,
-				Request:       request,
-			}, nil
-		})
-	}
-}
-
-// The permission to use plain HTTP belongs to one asset rather than to the client, so it travels
-// on the request context. These two tests are the pair that gives it meaning: the permission has
-// to still be readable at a redirect, which is the hop a rule applied only to the URL the caller
-// named would miss, and without it the same redirect is refused.
-func TestAPermittedAssetMayBeRedirectedOverPlainHTTP(t *testing.T) {
-	client := New(Options{
-		Timeout:             time.Second,
-		TransportDecorators: []TransportDecorator{redirectOnce("source.example.com", "http://origin.example.com/asset")},
-	})
-	defer client.Close()
-
-	response, err := client.Fetch(context.Background(), application.FetchRequest{
-		URL:               "http://source.example.com/asset",
-		AllowInsecureHTTP: true,
-	})
-	if err != nil {
-		t.Fatalf("a permitted asset was refused at its redirect: %v", err)
-	}
-	body, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "asset" {
-		t.Fatalf("body = %q, want the asset from the redirect target", body)
-	}
-}
-
-func TestAnUnpermittedAssetIsNotRedirectedOverPlainHTTP(t *testing.T) {
-	client := New(Options{
-		Timeout:             time.Second,
-		TransportDecorators: []TransportDecorator{redirectOnce("source.example.com", "http://origin.example.com/asset")},
-	})
-	defer client.Close()
-
-	_, err := client.Fetch(context.Background(), application.FetchRequest{URL: "https://source.example.com/asset"})
-	if !errors.Is(err, urlpolicy.ErrNotPermitted) {
-		t.Fatalf("expected the redirect to plain HTTP to be refused, got %v", err)
 	}
 }
 

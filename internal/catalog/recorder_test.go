@@ -28,7 +28,7 @@ func observation(value, name string) application.CatalogEntry {
 }
 
 // TestFlushWritesNothingWhenTheRunSawNothing keeps commands that never open a project, like
-// dac trust list, from touching the file at all.
+// a cache listing, from touching the file at all.
 func TestFlushWritesNothingWhenTheRunSawNothing(t *testing.T) {
 	recorder := testRecorder(t)
 	if err := recorder.Flush(context.Background()); err != nil {

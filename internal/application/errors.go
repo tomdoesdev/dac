@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/urlpolicy"
 )
 
 // ErrTooLarge marks a response that exceeded its size limit.
@@ -17,28 +16,6 @@ var ErrTooLarge = errors.New("asset is larger than the permitted size")
 
 // ErrStalled marks a response that stopped transferring bytes.
 var ErrStalled = errors.New("asset transfer stalled")
-
-// ErrHostNotTrusted marks a request DAC refused because the trusted-hosts file does not name its host.
-var ErrHostNotTrusted = errors.New("host is not in the trusted-hosts file")
-
-// HostError names the host behind a trust refusal.
-// It is declared here rather than beside the trust list so that the HTTP client
-// can classify a refusal without importing the package that raises it.
-type HostError struct {
-	Host string
-}
-
-func (value *HostError) Error() string { return fmt.Sprintf("%s %v", value.Host, ErrHostNotTrusted) }
-
-func (value *HostError) Unwrap() error { return ErrHostNotTrusted }
-
-// Details returns the stable JSON details for one refused host.
-func (value *HostError) Details() map[string]any {
-	if value.Host == "" {
-		return nil
-	}
-	return map[string]any{"host": value.Host}
-}
 
 // transferError marks a failure that came from reading the asset body rather than from the object store.
 // Installing an asset is one call that reads the network and writes the cache, and
@@ -150,20 +127,12 @@ type RequestDetail interface {
 
 func networkError(err error) error {
 	code, message := "network_error", "The asset request failed."
-	var host *HostError
 	var network net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
 		code, message = "cancelled", "The command was cancelled."
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrStalled):
 		code, message = "timeout", "The network request timed out."
-	case errors.Is(err, urlpolicy.ErrNotPermitted):
-		code, message = "url_not_permitted", "The asset URL is not permitted."
-	// A refusal is reported before the timeout case below because the transport
-	// wraps every round-trip error in one that answers to net.Error.
-	case errors.As(err, &host):
-		code = "host_not_trusted"
-		message = fmt.Sprintf("DAC will not download from %s. Run dac trust add %s.", host.Host, host.Host)
 	case errors.As(err, &network) && network.Timeout():
 		code, message = "timeout", "The network request timed out."
 	}
@@ -172,8 +141,6 @@ func networkError(err error) error {
 
 // requestDetails names the request behind a transport failure.
 // Request details keep JSON consumers from parsing status and URL from error text.
-// A refused redirect carries both: the URL is the asset that was asked for, and
-// the host is the hop it was refused at.
 func requestDetails(err error) map[string]any {
 	details := map[string]any{}
 	var detail RequestDetail
@@ -184,10 +151,6 @@ func requestDetails(err error) map[string]any {
 		if value := detail.StatusCode(); value != 0 {
 			details["status"] = value
 		}
-	}
-	var host *HostError
-	if errors.As(err, &host) {
-		maps.Copy(details, host.Details())
 	}
 	if len(details) == 0 {
 		return nil
@@ -200,8 +163,7 @@ func requestDetails(err error) map[string]any {
 // three things that can go wrong there are reported as three different failures
 // rather than all as a content check. Only bytes that arrived and then failed
 // their check are a content mismatch; a transfer keeps the code its own failure
-// has, which is the one that says whether to retry, to trust a host, or to look
-// at the publisher.
+// has, which is the one that says whether to retry or to look at the publisher.
 func contentError(err error) error {
 	var transfer *transferError
 	if errors.As(err, &transfer) {

@@ -658,7 +658,6 @@ func TestTransferFailureMidBodyKeepsItsNetworkCode(t *testing.T) {
 		code string
 	}{
 		{name: "stall", err: application.ErrStalled, code: "timeout"},
-		{name: "refused redirect", err: &application.HostError{Host: "elsewhere.example"}, code: "host_not_trusted"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			manifestPath, lockPath := emptyProject(t)
