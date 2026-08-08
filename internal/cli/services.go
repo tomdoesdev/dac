@@ -115,7 +115,7 @@ func (runner *runner) networkService(ctx context.Context, current *urfave.Comman
 	service.Fetcher = client
 	service.Prober = client
 	// A trace and a progress bar share standard error, and mpb redraws in place.
-	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug")
+	progressEnabled := settings.Progress && !current.Bool("no-progress") && !suppressProgress && !current.Bool("debug") && !current.Bool("json")
 	service.Reporter = progress.New(ctx, runner.stderr, isTerminal(runner.stderr), progressEnabled, runner.stderrPalette)
 	return service, client, nil
 }
