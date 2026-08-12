@@ -3,7 +3,6 @@ package asset
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,33 @@ type Request struct {
 	URL     string
 	File    string
 	Headers map[string]string
+}
+
+var (
+	// ErrInvalidDownloadRequest marks a URL that cannot form an HTTP request.
+	ErrInvalidDownloadRequest = errors.New("cannot create HTTP request")
+	// ErrDownloadTransport marks a request that failed before a response arrived.
+	ErrDownloadTransport = errors.New("failed to download from remote host")
+	// ErrDownloadStatus marks a response outside HTTP's successful status range.
+	ErrDownloadStatus = errors.New("download returned an unsuccessful HTTP status")
+	// ErrDownloadBody marks a failure while streaming response bytes.
+	ErrDownloadBody = errors.New("failed while downloading response body")
+	// ErrDigestMismatch marks downloaded bytes that fail integrity verification.
+	ErrDigestMismatch = errors.New("downloaded bytes do not match expected digest")
+)
+
+// downloadStatusError preserves the response code in human-readable output
+// while allowing callers to classify every non-success status with errors.Is.
+type downloadStatusError struct {
+	statusCode int
+}
+
+func (err *downloadStatusError) Error() string {
+	return fmt.Sprintf("server returned HTTP %d", err.statusCode)
+}
+
+func (err *downloadStatusError) Unwrap() error {
+	return ErrDownloadStatus
 }
 
 // Downloader binds the process's HTTP policy and identity for every request.
@@ -76,7 +102,7 @@ func (downloader *Downloader) newRequest(ctx context.Context, request Request) (
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
 	if err != nil {
-		return nil, &project.Error{Kind: "configuration", Asset: request.Name, Err: errors.New("cannot create HTTP request")}
+		return nil, &project.Error{Kind: "configuration", Asset: request.Name, Err: ErrInvalidDownloadRequest}
 	}
 	httpRequest.Header = headers
 	httpRequest.Header.Set("User-Agent", downloader.userAgent)
@@ -91,11 +117,11 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			return nil, &project.Error{Kind: "cancelled", Asset: assetName, Err: context.Canceled}
 		}
-		return nil, &project.Error{Kind: "network", Asset: assetName, Err: errors.New("failed to download from remote host")}
+		return nil, &project.Error{Kind: "network", Asset: assetName, Err: ErrDownloadTransport}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()
-		return nil, &project.Error{Kind: "network", Asset: assetName, Err: fmt.Errorf("server returned HTTP %d", response.StatusCode)}
+		return nil, &project.Error{Kind: "network", Asset: assetName, Err: &downloadStatusError{statusCode: response.StatusCode}}
 	}
 	return response, nil
 }
@@ -116,7 +142,7 @@ func stageResponse(downloads *os.Root, request Request, body io.Reader, expected
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(temporary, hash), body)
 	if err != nil {
-		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: errors.New("failed while downloading response body")}
+		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: ErrDownloadBody}
 	}
 	digest := DigestFromHash(hash)
 	if err := verifyExpectedDigest(request.Name, expected, digest); err != nil {
@@ -140,7 +166,7 @@ func verifyExpectedDigest(assetName, expected, received string) error {
 		Asset:    assetName,
 		Expected: normalized,
 		Received: received,
-		Err:      errors.New("downloaded bytes do not match expected digest"),
+		Err:      ErrDigestMismatch,
 	}
 }
 
@@ -166,5 +192,5 @@ func VerifyLocal(downloads *os.Root, name, expected string, size int64) (bool, e
 	if _, err := io.Copy(hash, file); err != nil {
 		return false, project.NewError("filesystem", err)
 	}
-	return "sha256:"+hex.EncodeToString(hash.Sum(nil)) == expected, nil
+	return DigestFromHash(hash) == expected, nil
 }
