@@ -12,7 +12,7 @@ var (
 	// ErrInvalidAssetName marks an unsafe logical asset identifier.
 	ErrInvalidAssetName = errors.New("invalid asset name")
 	// ErrInvalidAssetEncoding marks non-UTF-8 manifest asset fields.
-	ErrInvalidAssetEncoding = errors.New("url, file, and pin must be valid UTF-8")
+	ErrInvalidAssetEncoding = errors.New("url, file, pin, and transfer settings must be valid UTF-8")
 	// ErrMissingAssetLocation marks an asset without both required templates.
 	ErrMissingAssetLocation = errors.New("url and file are required")
 	// ErrInvalidPin marks a pin outside the supported digest format.

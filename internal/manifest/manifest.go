@@ -18,6 +18,9 @@ import (
 
 var variableNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
+// Version is the current human-authored manifest format.
+const Version = 1
+
 // Manifest is the human-owned desired state. Maps are used only in memory;
 // writes sort their keys so committed files remain deterministic.
 type Manifest struct {
@@ -27,11 +30,13 @@ type Manifest struct {
 
 // Asset describes one remote artifact before its templates are rendered.
 type Asset struct {
-	URL       string            `toml:"url"`
-	File      string            `toml:"file"`
-	Pin       string            `toml:"pin,omitempty"`
-	Variables map[string]string `toml:"variables"`
-	Headers   map[string]string `toml:"headers"`
+	URL         string            `toml:"url"`
+	File        string            `toml:"file"`
+	Pin         string            `toml:"pin,omitempty"`
+	MaxSize     string            `toml:"max_size,omitempty"`
+	IdleTimeout string            `toml:"idle_timeout,omitempty"`
+	Variables   map[string]string `toml:"variables"`
+	Headers     map[string]string `toml:"headers"`
 }
 
 // Load strictly decodes and validates a manifest from path.
@@ -101,14 +106,14 @@ func Create(path string, value Manifest) error {
 // Validate makes every declared artifact safe to render. Resolution checks run
 // afterwards because template output may introduce a collision.
 func Validate(value Manifest) error {
-	if value.Version != project.Version {
+	if value.Version != Version {
 		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	for name, file := range value.Files {
 		if !ValidAssetName(name) {
 			return project.NewConfigurationError(ErrInvalidAssetName, project.WithAsset(name))
 		}
-		if !utf8.ValidString(file.URL) || !utf8.ValidString(file.File) || !utf8.ValidString(file.Pin) {
+		if !utf8.ValidString(file.URL) || !utf8.ValidString(file.File) || !utf8.ValidString(file.Pin) || !utf8.ValidString(file.MaxSize) || !utf8.ValidString(file.IdleTimeout) {
 			return project.NewConfigurationError(ErrInvalidAssetEncoding, project.WithAsset(name))
 		}
 		if strings.TrimSpace(file.URL) == "" || strings.TrimSpace(file.File) == "" {
@@ -123,6 +128,16 @@ func Validate(value Manifest) error {
 		if file.Pin != "" {
 			if _, err := asset.NormalizeDigest(file.Pin); err != nil {
 				return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidPin, err), project.WithAsset(name))
+			}
+		}
+		if file.MaxSize != "" {
+			if _, err := asset.ParseMaxSize(file.MaxSize); err != nil {
+				return project.NewConfigurationError(err, project.WithAsset(name))
+			}
+		}
+		if file.IdleTimeout != "" {
+			if _, err := asset.ParseIdleTimeout(file.IdleTimeout); err != nil {
+				return project.NewConfigurationError(err, project.WithAsset(name))
 			}
 		}
 		for key, item := range file.Variables {
@@ -153,3 +168,7 @@ func ValidAssetName(value string) bool {
 	}
 	return true
 }
+
+// ValidVariableName reports whether a key can be addressed by manifest
+// templates and update flags.
+func ValidVariableName(value string) bool { return variableNamePattern.MatchString(value) }

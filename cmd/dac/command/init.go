@@ -15,6 +15,9 @@ import (
 type initCommand struct{ runtime *runtime }
 
 func (*initCommand) Description() string { return "Create a dac project in the current directory" }
+func (command *initCommand) Validate() error {
+	return command.runtime.Output.ValidateOptions()
+}
 func (command *initCommand) Run(ctx context.Context) error {
 	directory, err := command.runtime.CWD()
 	if err != nil {
@@ -32,7 +35,7 @@ func (command *initCommand) Run(ctx context.Context) error {
 			return err
 		}
 		_ = downloads.Close()
-		value := manifest.Manifest{Version: project.Version, Files: map[string]manifest.Asset{}}
+		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{}}
 		if err := manifest.Create(paths.Manifest(), value); err != nil {
 			return err
 		}

@@ -15,6 +15,9 @@ import (
 	"github.com/tomdoesdev/kit/strictjson"
 )
 
+// Version is the current machine-authored lock format.
+const Version = 2
+
 // Lockfile is machine-owned accepted state. It stores only the resolution and
 // bytes, never request credentials or response metadata.
 type Lockfile struct {
@@ -24,17 +27,18 @@ type Lockfile struct {
 
 // Asset records the accepted resolution and bytes for one manifest asset.
 type Asset struct {
-	ResolvedURL  string `json:"resolved_url"`
-	ResolvedFile string `json:"resolved_file"`
-	Digest       string `json:"digest"`
-	Size         int64  `json:"size"`
+	ResolvedURL         string `json:"resolved_url"`
+	ResolvedFile        string `json:"resolved_file"`
+	ConfigurationDigest string `json:"configuration_digest"`
+	Digest              string `json:"digest"`
+	Size                int64  `json:"size"`
 }
 
 // Load reads and validates a strict machine-authored lock file.
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, project.NewConfigurationError(ErrNotFound, project.WithHint("run `dac lock`"))
+		return Lockfile{}, project.NewConfigurationError(ErrNotFound, project.WithHint("run `dac lock --all`"))
 	}
 	if err != nil {
 		return Lockfile{}, project.NewFilesystemError(err)
@@ -85,8 +89,8 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 // Validate rejects values that could evade manifest comparison or make local
 // verification ambiguous.
 func Validate(value Lockfile) error {
-	if value.Version != project.Version {
-		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
+	if value.Version != Version {
+		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), project.WithHint("run `dac lock --all`"))
 	}
 	if value.Files == nil {
 		return project.NewConfigurationError(ErrMissingFiles)
@@ -103,6 +107,11 @@ func Validate(value Lockfile) error {
 			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), project.WithAsset(name))
 		}
 		file.Digest = digest
+		configurationDigest, err := asset.NormalizeDigest(file.ConfigurationDigest)
+		if err != nil {
+			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), project.WithAsset(name))
+		}
+		file.ConfigurationDigest = configurationDigest
 		value.Files[name] = file
 	}
 	return nil

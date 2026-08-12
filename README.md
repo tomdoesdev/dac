@@ -9,7 +9,7 @@ installation lifecycle.
 ```sh
 dac init
 dac add artifact https://example.com/releases/artifact.ear
-dac lock
+dac lock --all
 dac pull
 ```
 
@@ -37,11 +37,14 @@ Use variables for versioned URLs and filenames:
 ```sh
 dac add --set VERSION=3.9.0 --file artifact.ear artifact \
   'https://example.com/artifact-{{.VERSION}}.ear'
-dac lock artifact
+dac lock --all
 ```
 
-Changing a URL, filename, variable, or pin makes the lock stale. Follow with
-`dac lock <asset>` (or `dac lock`) before `dac pull` can run again.
+Changing a URL, filename, variable, header, pin, or transfer policy makes the
+lock stale. Follow with `dac lock <asset>` before `dac pull` can run again.
+Lock always requires an explicit selection: use one or more asset names for a
+targeted update, or `dac lock --all` to replace the entire lock file. A targeted
+lock requires an existing current lock for every asset it retains.
 
 An optional manifest pin limits the bytes lock is allowed to accept:
 
@@ -58,6 +61,24 @@ dac add --pin artifact https://example.com/artifact.ear
 --force` downloads every locked artifact and still requires each digest to
 match. The flags cannot be combined.
 
+Use `dac status` to inspect desired, locked, and downloaded state without using
+the network. It reports assets as `stale`, `missing`, `invalid`, or `verified`,
+and reports lock-only assets and unreferenced download entries as `orphaned`.
+Status is observational and exits successfully for a valid report; use `dac
+pull --offline` when automation needs a failing verification gate.
+
+`update` can change the complete desired source policy without editing TOML:
+
+```sh
+dac update artifact --url 'https://example.com/artifact-{{.VERSION}}.ear' \
+  --file 'artifact-{{.VERSION}}.ear' --set VERSION=4.0.0 \
+  --unset OLD_VERSION --header Authorization=env:ARTIFACT_TOKEN \
+  --remove-header X-Old-Repository --max-size 2GiB --idle-timeout 1m
+```
+
+Unknown removals, conflicting edits, and updates that make no effective change
+are rejected so automation cannot silently hide a typo.
+
 ## Manifest and authentication
 
 ```toml
@@ -67,6 +88,8 @@ version = 1
 url = "https://internal.example/artifact-{{.VERSION}}.ear"
 file = "artifact.ear"
 pin = "sha256:..."
+max_size = "4GiB"
+idle_timeout = "30s"
 
 [files.artifact.variables]
 VERSION = "3.9.0"
@@ -81,6 +104,13 @@ never written to the lock file or emitted in errors/JSON. Configured headers
 are removed if a redirect crosses origin. Do not put secrets in literal header
 values or URL query strings: those are persisted user configuration.
 
+Every asset has an effective maximum response size and idle body-read timeout.
+The defaults are 4 GiB and 30 seconds. `max_size` accepts integral byte values,
+decimal units (`MB`, `GB`) and IEC units (`MiB`, `GiB`); `idle_timeout` uses Go
+duration syntax. Set either value to `"0"` to disable that limit. The idle
+timeout applies only while waiting for response-body progress, not while writing
+bytes locally, and neither setting is a total transfer deadline.
+
 Managed downloads are opened relative to the project root. Symlinks may point
 elsewhere inside the project, but cannot redirect a download outside it.
 
@@ -91,14 +121,21 @@ not retained. Commit `dac.toml` and `dac.lock`; normally add `.dac/` to
 ## Automation and support
 
 Use `--json` for versioned structured success on stdout and structured errors
-on stderr. `--quiet` suppresses human success messages and is intentionally
-incompatible with `--json`. Exit status `2` denotes invalid invocation or
-project configuration; other operational failures exit `1`.
+on stderr. Status JSON contains ordered `assets` and `orphans` arrays. `--quiet`
+suppresses human success messages and is intentionally incompatible with
+`--json`. Exit status `2` denotes invalid invocation or project configuration;
+other operational failures exit `1`.
+
+Lock format version 2 fingerprints the complete non-secret source policy. Lock
+version 1 is intentionally rejected by pull, status, and targeted lock; replace
+it explicitly with `dac lock --all`.
 
 The MVP supports macOS, Linux, DragonFlyBSD, FreeBSD, NetBSD, OpenBSD, and
 Illumos, where the included project lock uses `flock(2)`. Other platforms build
 but report unsupported locking at runtime.
 
 This repository intentionally resolves `github.com/tomdoesdev/kit` through its
-sibling `kit` module. Build and test it from this workspace with `go test ./...`
-and `go run ./cmd/dac --help`; standalone module installation is not supported.
+sibling `kit` module. Run `mise check` for vet plus race-enabled tests across
+both modules, or invoke `go vet ./... ./kit/...` and `go test -race ./...
+./kit/...` directly. Use `go run ./cmd/dac --help` during development;
+standalone module installation is not supported.

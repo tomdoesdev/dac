@@ -43,6 +43,24 @@ func (paths Paths) OpenDownloads() (*os.Root, error) {
 	return downloads, nil
 }
 
+// OpenDownloadsOptional opens the managed directory without creating it. This
+// keeps observational commands free of persistent filesystem side effects.
+func (paths Paths) OpenDownloadsOptional() (*os.Root, bool, error) {
+	root, err := os.OpenRoot(paths.Root)
+	if err != nil {
+		return nil, false, NewFilesystemError(err)
+	}
+	defer func() { _ = root.Close() }()
+	downloads, err := root.OpenRoot(filepath.Join(".dac", "downloads"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, NewFilesystemError(err)
+	}
+	return downloads, true, nil
+}
+
 // Discover walks up from start to the project root. It returns a configuration
 // error rather than silently operating in a nearby unrelated directory.
 func Discover(start string) (Paths, error) {

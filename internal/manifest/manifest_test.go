@@ -4,8 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // TestAssetNamesAreOpaquePrintableIdentifiers documents that asset names are
@@ -58,7 +56,7 @@ func TestManifestControlCharactersRoundTrip(t *testing.T) {
 	}
 	value := controls.String()
 	path := t.TempDir() + "/dac.toml"
-	want := Manifest{Version: project.Version, Files: map[string]Asset{
+	want := Manifest{Version: Version, Files: map[string]Asset{
 		"namespace/asset@version": {
 			URL:       "https://example.com/artifact.bin",
 			File:      "artifact.bin",
@@ -96,7 +94,7 @@ func TestResolveRejectsUnicodeEquivalentFilenames(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			value := Manifest{Version: project.Version, Files: map[string]Asset{
+			value := Manifest{Version: Version, Files: map[string]Asset{
 				"first":  {URL: "https://example.com/first", File: test.left},
 				"second": {URL: "https://example.com/second", File: test.right},
 			}}

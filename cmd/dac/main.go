@@ -27,7 +27,7 @@ var BuildVersion = "dev"
 // CLI exit status while allowing tests to provide isolated streams.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	options := &output.Options{}
-	writer := output.New(options, stdout)
+	writer := output.New(options, stdout, stderr)
 	downloader := asset.NewDownloader(asset.NewHTTPClient(), "dac/"+BuildVersion)
 
 	app := cli.New(ctx, cli.WithName("dac"), cli.WithVersion(BuildVersion), cli.WithOutput(stdout), cli.WithErrorOutput(stderr))

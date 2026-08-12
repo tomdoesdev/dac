@@ -15,3 +15,19 @@ func TestSetErrorsAreClassifiable(t *testing.T) {
 		t.Fatalf("duplicate set error = %v, want ErrDuplicateSet", err)
 	}
 }
+
+func TestHeaderAndSingletonErrorsAreClassifiable(t *testing.T) {
+	if _, err := parseHeaders([]string{"missing-separator"}); !errors.Is(err, ErrInvalidHeader) {
+		t.Fatalf("invalid header error = %v, want ErrInvalidHeader", err)
+	}
+	if _, err := parseHeaders([]string{"X-Test=one", "x-test=two"}); !errors.Is(err, ErrDuplicateHeader) {
+		t.Fatalf("duplicate header error = %v, want ErrDuplicateHeader", err)
+	}
+	value := newSingleValue("--url")
+	if err := value.Set("one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := value.Set("two"); !errors.Is(err, ErrOptionRepeated) {
+		t.Fatalf("repeated singleton error = %v, want ErrOptionRepeated", err)
+	}
+}

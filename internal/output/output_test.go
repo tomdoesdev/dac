@@ -1,8 +1,13 @@
 package output
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // TestSanitizeErrorRemovesURLSecrets keeps diagnostics from becoming a secret
@@ -22,5 +27,36 @@ func TestSanitizeErrorRemovesURLSecrets(t *testing.T) {
 func TestOptionsRejectJSONAndQuiet(t *testing.T) {
 	if err := (Options{JSON: true, Quiet: true}).Validate(); !errors.Is(err, ErrConflictingModes) {
 		t.Fatalf("Validate error = %v, want ErrConflictingModes", err)
+	}
+}
+
+func TestSuccessWarningsReachHumanAndJSONOutputSafely(t *testing.T) {
+	for _, jsonMode := range []bool{false, true} {
+		name := "human"
+		if jsonMode {
+			name = "json"
+		}
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			writer := New(&Options{JSON: jsonMode}, stdout, stderr)
+			warning := "cleanup failed for https://example.com/file?token=secret"
+			if err := writer.Success("lock", project.Paths{Root: "/project"}, nil, []string{warning}); err != nil {
+				t.Fatal(err)
+			}
+			combined := stdout.String() + stderr.String()
+			if strings.Contains(combined, "secret") {
+				t.Fatalf("warning leaked URL query: %q", combined)
+			}
+			if jsonMode {
+				var value struct {
+					Warnings []string `json:"warnings"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &value); err != nil || len(value.Warnings) != 1 {
+					t.Fatalf("JSON warning = %#v, %v", value, err)
+				}
+			} else if !strings.Contains(stderr.String(), "Warning:") {
+				t.Fatalf("human stderr = %q", stderr.String())
+			}
+		})
 	}
 }

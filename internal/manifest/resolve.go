@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"text/template"
 
+	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/fs/util/filename"
 	"golang.org/x/text/cases"
@@ -18,6 +19,7 @@ type ResolvedAsset struct {
 	Asset
 	ResolvedURL  string
 	ResolvedFile string
+	Transfer     asset.TransferPolicy
 }
 
 // Resolve renders and validates every entry together, including destination
@@ -50,7 +52,14 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 			return nil, project.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), project.WithAsset(name))
 		}
 		seen[key] = name
-		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile})
+		transfer := asset.DefaultTransferPolicy()
+		if file.MaxSize != "" {
+			transfer.MaxSize, _ = asset.ParseMaxSize(file.MaxSize)
+		}
+		if file.IdleTimeout != "" {
+			transfer.IdleTimeout, _ = asset.ParseIdleTimeout(file.IdleTimeout)
+		}
+		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile, Transfer: transfer})
 	}
 	return result, nil
 }

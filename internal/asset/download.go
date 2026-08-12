@@ -2,12 +2,16 @@ package asset
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/fs/atomic"
@@ -21,6 +25,7 @@ type Request struct {
 	URL     string
 	File    string
 	Headers map[string]string
+	Policy  TransferPolicy
 }
 
 var (
@@ -32,6 +37,10 @@ var (
 	ErrDownloadStatus = errors.New("download returned an unsuccessful HTTP status")
 	// ErrDownloadBody marks a failure while streaming response bytes.
 	ErrDownloadBody = errors.New("failed while downloading response body")
+	// ErrDownloadTooLarge marks response bytes outside the configured policy.
+	ErrDownloadTooLarge = errors.New("download exceeds configured maximum size")
+	// ErrDownloadIdleTimeout marks a body read that made no progress in time.
+	ErrDownloadIdleTimeout = errors.New("download response body timed out while idle")
 	// ErrDigestMismatch marks downloaded bytes that fail integrity verification.
 	ErrDigestMismatch = errors.New("downloaded bytes do not match expected digest")
 )
@@ -79,17 +88,23 @@ func (download *StagedDownload) CommitReversible() (*atomic.Commit, error) {
 // Download streams one artifact into a temporary file and verifies an optional
 // expected digest before anything reaches the managed destination.
 func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, request Request, expected string) (*StagedDownload, error) {
-	httpRequest, err := downloader.newRequest(ctx, request)
+	requestContext, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	httpRequest, err := downloader.newRequest(requestContext, request)
 	if err != nil {
 		return nil, err
 	}
-	response, err := downloader.doRequest(ctx, request.Name, httpRequest)
+	response, err := downloader.doRequest(requestContext, request.Name, httpRequest)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 
-	return stageResponse(downloads, request, response.Body, expected)
+	body := io.ReadCloser(response.Body)
+	if request.Policy.IdleTimeout > 0 {
+		body = &idleReadCloser{body: body, timeout: request.Policy.IdleTimeout, ctx: requestContext, cancel: cancel}
+	}
+	return stageResponseWithPolicy(downloads, request, body, expected, response.ContentLength, requestContext)
 }
 
 // newRequest resolves configured headers at the last possible moment so
@@ -113,10 +128,10 @@ func (downloader *Downloader) newRequest(ctx context.Context, request Request) (
 func (downloader *Downloader) doRequest(ctx context.Context, assetName string, request *http.Request) (*http.Response, error) {
 	response, err := downloader.client.Do(request)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return nil, project.NewCancelledError(context.Canceled, project.WithAsset(assetName))
+		if ctx.Err() != nil {
+			return nil, project.NewCancelledError(context.Cause(ctx), project.WithAsset(assetName))
 		}
-		return nil, project.NewNetworkError(ErrDownloadTransport, project.WithAsset(assetName))
+		return nil, project.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, err), project.WithAsset(assetName))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()
@@ -128,6 +143,15 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 // stageResponse streams and hashes a successful response into an atomic file.
 // Any failure discards partial bytes before returning the original error.
 func stageResponse(downloads *os.Root, request Request, body io.Reader, expected string) (_ *StagedDownload, err error) {
+	return stageResponseWithPolicy(downloads, request, body, expected, -1, context.Background())
+}
+
+// stageResponseWithPolicy separates remote read failures from local write
+// failures and applies transfer policy before returning verified staged bytes.
+func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader, expected string, contentLength int64, ctx context.Context) (_ *StagedDownload, err error) {
+	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, contentLength, false); err != nil {
+		return nil, err
+	}
 	temporary, err := atomic.CreateRoot(downloads, request.File, 0o644)
 	if err != nil {
 		return nil, project.NewFilesystemError(err)
@@ -138,15 +162,103 @@ func stageResponse(downloads *os.Root, request Request, body io.Reader, expected
 		}
 	}()
 
-	size, digest, err := copyWithDigest(temporary, body)
+	size, digest, writeErr, err := copyResponseWithDigest(temporary, body, request.Policy.MaxSize)
 	if err != nil {
-		return nil, project.NewNetworkError(ErrDownloadBody, project.WithAsset(request.Name))
+		if writeErr != nil {
+			return nil, project.NewFilesystemError(writeErr, project.WithAsset(request.Name))
+		}
+		if errors.Is(context.Cause(ctx), ErrDownloadIdleTimeout) || errors.Is(err, ErrDownloadIdleTimeout) {
+			return nil, project.NewNetworkError(ErrDownloadIdleTimeout, project.WithAsset(request.Name))
+		}
+		if ctx.Err() != nil {
+			return nil, project.NewCancelledError(context.Cause(ctx), project.WithAsset(request.Name))
+		}
+		return nil, project.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadBody, err), project.WithAsset(request.Name))
+	}
+	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, size, true); err != nil {
+		return nil, err
 	}
 	if err := verifyExpectedDigest(request.Name, expected, digest); err != nil {
 		return nil, err
 	}
 	return &StagedDownload{file: temporary, Digest: digest, Size: size}, nil
 }
+
+// copyResponseWithDigest records which side of io.Copy failed while retaining
+// the single-pass hashing behavior used for large artifacts.
+func copyResponseWithDigest(destination io.Writer, source io.Reader, maximum int64) (int64, string, error, error) {
+	trackedDestination := &recordingWriter{writer: destination}
+	reader := source
+	if maximum > 0 {
+		limit := maximum
+		if maximum < math.MaxInt64 {
+			limit++
+		}
+		reader = &io.LimitedReader{R: source, N: limit}
+	}
+	hasher := sha256.New()
+	size, err := io.Copy(io.MultiWriter(trackedDestination, hasher), reader)
+	if err != nil {
+		return size, "", trackedDestination.err, err
+	}
+	return size, formatSHA256Digest(hasher.Sum(nil)), nil, nil
+}
+
+// verifyMaximumSize handles both authoritative Content-Length values and the
+// max+1 observation used when a streamed response has no reliable length.
+func verifyMaximumSize(assetName string, maximum, received int64, streamed bool) error {
+	if maximum <= 0 || received < 0 || received <= maximum {
+		return nil
+	}
+	receivedValue := strconv.FormatInt(received, 10)
+	if streamed {
+		receivedValue = "at least " + receivedValue
+	}
+	return project.NewIntegrityError(
+		ErrDownloadTooLarge,
+		project.WithAsset(assetName),
+		project.WithIntegrity("at most "+strconv.FormatInt(maximum, 10)+" bytes", receivedValue+" bytes"),
+	)
+}
+
+type recordingWriter struct {
+	writer io.Writer
+	err    error
+}
+
+// Write remembers destination-side failures so io.MultiWriter's single error
+// can still be classified as a local filesystem problem by the caller.
+func (writer *recordingWriter) Write(buffer []byte) (int, error) {
+	count, err := writer.writer.Write(buffer)
+	if err == nil && count != len(buffer) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		writer.err = err
+	}
+	return count, err
+}
+
+// idleReadCloser cancels the request only while a body read is blocked. Time
+// spent hashing or writing local bytes therefore cannot trigger network idle.
+type idleReadCloser struct {
+	body    io.ReadCloser
+	timeout time.Duration
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+}
+
+func (reader *idleReadCloser) Read(buffer []byte) (int, error) {
+	timer := time.AfterFunc(reader.timeout, func() { reader.cancel(ErrDownloadIdleTimeout) })
+	count, err := reader.body.Read(buffer)
+	timer.Stop()
+	if errors.Is(context.Cause(reader.ctx), ErrDownloadIdleTimeout) {
+		return count, ErrDownloadIdleTimeout
+	}
+	return count, err
+}
+
+func (reader *idleReadCloser) Close() error { return reader.body.Close() }
 
 // verifyExpectedDigest keeps integrity policy separate from byte transfer and
 // reports canonical digest values when an expectation is present.
@@ -168,24 +280,53 @@ func verifyExpectedDigest(assetName, expected, received string) error {
 // VerifyLocal hashes a regular managed file only when its size can match. A
 // symlink is intentionally untrusted: later replacement must not follow it.
 func VerifyLocal(downloads *os.Root, name, expected string, size int64) (bool, error) {
+	inspection, err := InspectLocal(downloads, name, expected, size)
+	return inspection.State == LocalVerified, err
+}
+
+// LocalState describes the on-disk side of one current lock entry.
+type LocalState string
+
+const (
+	LocalMissing  LocalState = "missing"
+	LocalInvalid  LocalState = "invalid"
+	LocalVerified LocalState = "verified"
+)
+
+// LocalInspection distinguishes absence from invalid bytes while sharing the
+// exact verification path used by pull and status.
+type LocalInspection struct {
+	State  LocalState
+	Reason string
+}
+
+// InspectLocal hashes a regular managed file only when its size can match. A
+// symlink is intentionally invalid because later replacement must not follow it.
+func InspectLocal(downloads *os.Root, name, expected string, size int64) (LocalInspection, error) {
 	info, err := downloads.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return LocalInspection{State: LocalMissing, Reason: "download is missing"}, nil
 	}
 	if err != nil {
-		return false, project.NewFilesystemError(err)
+		return LocalInspection{}, project.NewFilesystemError(err)
 	}
-	if !info.Mode().IsRegular() || info.Size() != size {
-		return false, nil
+	if !info.Mode().IsRegular() {
+		return LocalInspection{State: LocalInvalid, Reason: "download is not a regular file"}, nil
+	}
+	if info.Size() != size {
+		return LocalInspection{State: LocalInvalid, Reason: "download size does not match dac.lock"}, nil
 	}
 	file, err := downloads.Open(name)
 	if err != nil {
-		return false, project.NewFilesystemError(err)
+		return LocalInspection{}, project.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Close() }()
 	digest, err := computeDigest(file)
 	if err != nil {
-		return false, project.NewFilesystemError(err)
+		return LocalInspection{}, project.NewFilesystemError(err)
 	}
-	return digest == expected, nil
+	if digest != expected {
+		return LocalInspection{State: LocalInvalid, Reason: "download digest does not match dac.lock"}, nil
+	}
+	return LocalInspection{State: LocalVerified}, nil
 }

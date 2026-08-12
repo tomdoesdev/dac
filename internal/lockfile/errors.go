@@ -17,10 +17,14 @@ var (
 	ErrInvalidResolvedURL = errors.New("invalid resolved_url")
 	// ErrInvalidDigest marks a persisted digest outside dac's supported format.
 	ErrInvalidDigest = errors.New("invalid digest")
+	// ErrInvalidConfigurationDigest marks an invalid manifest-policy fingerprint.
+	ErrInvalidConfigurationDigest = errors.New("invalid configuration_digest")
 	// ErrResolutionChanged marks a manifest resolution that differs from locked state.
 	ErrResolutionChanged = errors.New("resolution changed")
 	// ErrPinChanged marks a manifest trust pin that differs from locked bytes.
 	ErrPinChanged = errors.New("pin changed")
+	// ErrConfigurationChanged marks manifest policy that differs from locked state.
+	ErrConfigurationChanged = errors.New("configuration changed")
 	// ErrStale marks lock state that no longer describes the manifest.
 	ErrStale = errors.New("dac.lock is stale")
 )

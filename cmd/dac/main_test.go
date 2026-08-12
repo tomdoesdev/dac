@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/project"
 )
@@ -31,7 +34,7 @@ func TestWorkflowLocksAndReproducesBytes(t *testing.T) {
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
 		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
-		runOK(t, "lock", "artifact")
+		runOK(t, "lock", "--all")
 
 		// Lock is the explicit acceptance step: it installs the fetched bytes and
 		// records their digest together.
@@ -94,7 +97,7 @@ func TestCalculatedPinDoesNotInstallOrPreacceptBytes(t *testing.T) {
 		}
 		// Lock must fetch independently rather than reuse preaccepted hidden state
 		// from pin calculation.
-		runOK(t, "lock", "artifact")
+		runOK(t, "lock", "--all")
 		if requests != 2 {
 			t.Fatalf("lock did not download independently; requests=%d", requests)
 		}
@@ -114,7 +117,7 @@ func TestUpdateMakesLockStaleAndJSONDoesNotLeakQuery(t *testing.T) {
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
 		runOK(t, "add", "--set", "VERSION=one", "artifact", server.URL+"/artifact-{{.VERSION}}.bin?token=do-not-print")
-		runOK(t, "lock")
+		runOK(t, "lock", "--all")
 		runOK(t, "update", "artifact", "--set", "VERSION=two")
 		_, stderr, code := run("pull", "--json")
 		if code != 2 || strings.Contains(stderr, "do-not-print") {
@@ -153,7 +156,7 @@ func TestCrossOriginRedirectStripsConfiguredHeaders(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("TEST_DAC_TOKEN", "secret")
-		runOK(t, "lock")
+		runOK(t, "lock", "--all")
 		if leaked != "" {
 			t.Fatalf("cross-origin Authorization leaked as %q", leaked)
 		}
@@ -170,8 +173,6 @@ func TestOpaqueAssetNamesAndControlValuesRoundTrip(t *testing.T) {
 		runOK(t, "init")
 		runOK(t, "add", "--set", "UNUSED=\v", "--file", "artifact.bin", "namespace/asset@version", "https://example.com/artifact.bin")
 		runOK(t, "add", "--file", "leading.bin", "--", "-leading'$`", "https://example.com/leading.bin")
-		runOK(t, "update", "namespace/asset@version")
-
 		paths := project.Paths{Root: directory}
 		value, err := manifest.Load(paths.Manifest())
 		if err != nil {
@@ -224,7 +225,7 @@ func TestLockRejectsDownloadsSymlinkBeforeNetworkAccess(t *testing.T) {
 		if err := os.Symlink(outside, downloads); err != nil {
 			t.Fatal(err)
 		}
-		_, _, code := run("lock")
+		_, _, code := run("lock", "--all")
 		if code != 1 {
 			t.Fatalf("lock code=%d, want filesystem failure", code)
 		}
@@ -254,7 +255,7 @@ func TestLockRollsBackDownloadsWhenLockfileCommitFails(t *testing.T) {
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
 		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
-		_, _, code := run("lock")
+		_, _, code := run("lock", "--all")
 		if code != 1 {
 			t.Fatalf("lock code=%d, want filesystem failure", code)
 		}
@@ -262,6 +263,224 @@ func TestLockRollsBackDownloadsWhenLockfileCommitFails(t *testing.T) {
 			t.Fatalf("download survived failed lock transaction: %v", err)
 		}
 	})
+}
+
+func TestInitRejectsConflictingOutputModesBeforeCreatingProject(t *testing.T) {
+	withinTempDir(t, func(string) {
+		_, stderr, code := run("--json", "--quiet", "init")
+		if code != 2 || !strings.Contains(stderr, "--json and --quiet") {
+			t.Fatalf("init conflict: code=%d stderr=%q", code, stderr)
+		}
+		if _, err := os.Stat("dac.toml"); !os.IsNotExist(err) {
+			t.Fatalf("invalid init created manifest: %v", err)
+		}
+	})
+}
+
+func TestLockRequiresSelectionAndAllReplacesLegacyLock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("locked bytes"))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		if _, _, code := run("lock"); code != 2 {
+			t.Fatalf("lock without selection code=%d, want 2", code)
+		}
+		if _, _, code := run("lock", "--all", "artifact"); code != 2 {
+			t.Fatalf("lock with --all and names code=%d, want 2", code)
+		}
+		if _, _, code := run("lock", "artifact"); code != 2 {
+			t.Fatalf("initial targeted lock code=%d, want 2", code)
+		}
+		legacy := `{"version":1,"files":{}}` + "\n"
+		if err := os.WriteFile("dac.lock", []byte(legacy), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, code := run("status"); code != 2 {
+			t.Fatalf("status with v1 lock code=%d, want 2", code)
+		}
+		if _, _, code := run("pull"); code != 2 {
+			t.Fatalf("pull with v1 lock code=%d, want 2", code)
+		}
+		if _, _, code := run("lock", "artifact"); code != 2 {
+			t.Fatalf("targeted lock with v1 lock code=%d, want 2", code)
+		}
+		runOK(t, "lock", "--all")
+		locked, err := lockfile.Load("dac.lock")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if locked.Version != lockfile.Version || locked.Files["artifact"].ConfigurationDigest == "" {
+			t.Fatalf("rebuilt lock = %#v", locked)
+		}
+	})
+}
+
+func TestUpdateEditsCompleteAssetPolicyAndRejectsNoOps(t *testing.T) {
+	body := []byte("policy bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		runOK(t, "add",
+			"--set", "VERSION=one", "--set", "UNUSED=value",
+			"--file", "old-{{.VERSION}}.bin", "--header", "X-Old=value",
+			"--pin="+digestFor(body), "--max-size", "1MiB", "--idle-timeout", "2s",
+			"artifact", server.URL+"/old-{{.VERSION}}",
+		)
+		runOK(t, "lock", "--all")
+		runOK(t, "update", "artifact",
+			"--url", server.URL+"/new-{{.VERSION}}", "--file", "new-{{.VERSION}}.bin",
+			"--set", "VERSION=two", "--unset", "UNUSED",
+			"--header", "X-New=new", "--remove-header", "x-old", "--unpin",
+			"--max-size", "2MiB", "--idle-timeout", "4s",
+		)
+		value, err := manifest.Load(filepath.Join(directory, "dac.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := value.Files["artifact"]
+		if file.URL != server.URL+"/new-{{.VERSION}}" || file.File != "new-{{.VERSION}}.bin" ||
+			file.Variables["VERSION"] != "two" || file.Variables["UNUSED"] != "" || file.Pin != "" ||
+			file.Headers["X-New"] != "new" || len(file.Headers) != 1 || file.MaxSize != "2MiB" || file.IdleTimeout != "4s" {
+			t.Fatalf("updated asset = %#v", file)
+		}
+		if _, _, code := run("pull"); code != 2 {
+			t.Fatalf("pull after policy update code=%d, want stale configuration", code)
+		}
+		if _, stderr, code := run("update", "artifact", "--set", "VERSION=two"); code != 2 || !strings.Contains(stderr, "no changes") {
+			t.Fatalf("no-op update: code=%d stderr=%q", code, stderr)
+		}
+		if _, _, code := run("update", "artifact", "--unset", "MISSING"); code != 2 {
+			t.Fatalf("unknown variable removal code=%d, want 2", code)
+		}
+		if _, _, code := run("update", "artifact", "--remove-header", "Missing"); code != 2 {
+			t.Fatalf("unknown header removal code=%d, want 2", code)
+		}
+	})
+}
+
+func TestStatusReportsAssetAndOrphanStates(t *testing.T) {
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{
+			"verified": {URL: "https://example.com/verified", File: "verified.bin"},
+			"missing":  {URL: "https://example.com/missing", File: "missing.bin"},
+			"invalid":  {URL: "https://example.com/invalid", File: "invalid.bin"},
+			"stale":    {URL: "https://example.com/stale", File: "stale.bin"},
+		}}
+		if err := manifest.Write(filepath.Join(directory, "dac.toml"), value); err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := manifest.Resolve(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locked := lockfile.Lockfile{Version: lockfile.Version, Files: map[string]lockfile.Asset{}}
+		for _, item := range resolved {
+			content := []byte(item.Name)
+			locked.Files[item.Name] = lockfile.Asset{
+				ResolvedURL: item.ResolvedURL, ResolvedFile: item.ResolvedFile,
+				ConfigurationDigest: lockfile.ConfigurationDigest(item), Digest: digestFor(content), Size: int64(len(content)),
+			}
+		}
+		stale := locked.Files["stale"]
+		stale.ConfigurationDigest = "sha256:" + strings.Repeat("0", 64)
+		locked.Files["stale"] = stale
+		locked.Files["orphan"] = lockfile.Asset{
+			ResolvedURL: "https://example.com/orphan", ResolvedFile: "orphan.bin",
+			ConfigurationDigest: "sha256:" + strings.Repeat("1", 64), Digest: digestFor([]byte("orphan")), Size: 6,
+		}
+		writeTestLock(t, filepath.Join(directory, "dac.lock"), locked)
+		downloads := filepath.Join(directory, ".dac", "downloads")
+		if err := os.WriteFile(filepath.Join(downloads, "verified.bin"), []byte("verified"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(downloads, "invalid.bin"), []byte("INVALID"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(downloads, "orphan.bin"), []byte("orphan"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(downloads, "extra file.bin"), []byte("extra"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		stdout, stderr, code := run("status", "--json")
+		if code != 0 || stderr != "" {
+			t.Fatalf("status: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		var report struct {
+			Assets  []struct{ Name, Status string }     `json:"assets"`
+			Orphans []struct{ Kind, Name, File string } `json:"orphans"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatal(err)
+		}
+		states := make(map[string]string, len(report.Assets))
+		for _, item := range report.Assets {
+			states[item.Name] = item.Status
+		}
+		for name, want := range map[string]string{"verified": "verified", "missing": "missing", "invalid": "invalid", "stale": "stale"} {
+			if states[name] != want {
+				t.Errorf("status[%q] = %q, want %q", name, states[name], want)
+			}
+		}
+		if len(report.Orphans) != 2 || report.Orphans[0].Kind != "lock" || report.Orphans[0].Name != "orphan" ||
+			report.Orphans[1].Kind != "file" || report.Orphans[1].File != "extra file.bin" {
+			t.Fatalf("orphans = %#v", report.Orphans)
+		}
+		if stdout, stderr, code := run("status", "--quiet"); code != 0 || stdout != "" || stderr != "" {
+			t.Fatalf("quiet status: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+}
+
+func TestTargetedLockRemovesOnlyPreviouslyManagedObsoleteFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		runOK(t, "add", "--file", "old.bin", "artifact", server.URL+"/artifact")
+		runOK(t, "lock", "--all")
+		downloads := filepath.Join(directory, ".dac", "downloads")
+		extra := filepath.Join(downloads, "extra.bin")
+		if err := os.WriteFile(extra, []byte("unmanaged"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runOK(t, "update", "artifact", "--file", "new.bin")
+		runOK(t, "lock", "artifact")
+		if _, err := os.Stat(filepath.Join(downloads, "old.bin")); !os.IsNotExist(err) {
+			t.Fatalf("obsolete managed file remains: %v", err)
+		}
+		assertFile(t, filepath.Join(downloads, "new.bin"), []byte("content"))
+		assertFile(t, extra, []byte("unmanaged"))
+	})
+}
+
+func digestFor(value []byte) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(value))
+}
+
+func writeTestLock(t *testing.T, path string, value lockfile.Lockfile) {
+	t.Helper()
+	file, err := lockfile.Stage(path, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Discard() }()
+	if err := file.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // withinTempDir isolates CLI tests that resolve project files from the process

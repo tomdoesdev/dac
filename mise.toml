@@ -6,3 +6,14 @@ run = "go run ./cmd/dac/main.go"
 
 [tasks.build]
 run = "go build -o ./bin/dac ./cmd/dac/main.go"
+
+[tasks.add-path]
+description = "Copy the binary from bin to ~/.local/bin"
+run = "mv -f ./bin/dac ~/.local/bin/dac && chmod +x ~/.local/bin/dac"
+
+[tasks.check]
+description = "Vet and run race-enabled tests across dac and kit"
+run = [
+  "go vet ./... ./kit/...",
+  "go test -race ./... ./kit/...",
+]

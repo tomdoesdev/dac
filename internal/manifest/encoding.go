@@ -19,6 +19,12 @@ func encode(value Manifest) []byte {
 			digest, _ := asset.NormalizeDigest(file.Pin)
 			fmt.Fprintf(&result, "pin = %s\n", tomlQuote(digest))
 		}
+		if file.MaxSize != "" {
+			fmt.Fprintf(&result, "max_size = %s\n", tomlQuote(file.MaxSize))
+		}
+		if file.IdleTimeout != "" {
+			fmt.Fprintf(&result, "idle_timeout = %s\n", tomlQuote(file.IdleTimeout))
+		}
 		if len(file.Variables) > 0 {
 			fmt.Fprintf(&result, "\n[files.%s.variables]\n", tomlQuote(name))
 			for _, key := range sortedKeys(file.Variables) {

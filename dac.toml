@@ -3,3 +3,10 @@ version = 1
 [files."roadmap"]
 url = "https://gist.githubusercontent.com/tomdoesdev/f08b7739bcfeccf60de8faafe914d100/raw/8f0ca82d54554af597adc6161016b08f68c1625b/andrew.md"
 file = "andrew.md"
+
+[files."test/app@1.0"]
+url = "http://127.0.0.1:8080/drifting.bin"
+file = "drifting.bin"
+
+[files."test/app@1.0".headers]
+AuthX = "Foo"

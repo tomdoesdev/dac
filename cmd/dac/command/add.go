@@ -3,18 +3,31 @@ package command
 import (
 	"context"
 
+	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type addCommand struct {
-	runtime *runtime
-	Name    string   `arg:"name"`
-	URL     string   `arg:"url"`
-	File    string   `flag:"file" help:"local filename template"`
-	Set     []string `flag:"set" help:"set an artifact variable (KEY=VALUE)"`
-	Pin     pinValue `flag:"pin" help:"calculate or require a SHA-256 pin"`
+	runtime     *runtime
+	Name        string       `arg:"name"`
+	URL         string       `arg:"url"`
+	File        *singleValue `flag:"file" help:"local filename template"`
+	Set         []string     `flag:"set" help:"set an artifact variable (KEY=VALUE)"`
+	Header      []string     `flag:"header" help:"set an HTTP header (NAME=VALUE)"`
+	Pin         pinValue     `flag:"pin" help:"calculate or require a SHA-256 pin"`
+	MaxSize     *singleValue `flag:"max-size" help:"maximum response body size"`
+	IdleTimeout *singleValue `flag:"idle-timeout" help:"maximum idle body-read duration"`
+}
+
+func newAddCommand(runtime *runtime) *addCommand {
+	return &addCommand{
+		runtime:     runtime,
+		File:        newSingleValue("--file"),
+		MaxSize:     newSingleValue("--max-size"),
+		IdleTimeout: newSingleValue("--idle-timeout"),
+	}
 }
 
 func (*addCommand) Description() string { return "Add a desired remote artifact" }
@@ -22,8 +35,23 @@ func (command *addCommand) Validate() error {
 	if err := command.runtime.Output.ValidateOptions(); err != nil {
 		return err
 	}
-	_, err := parseSets(command.Set)
-	return err
+	if _, err := parseSets(command.Set); err != nil {
+		return err
+	}
+	if _, err := parseHeaders(command.Header); err != nil {
+		return err
+	}
+	if command.MaxSize.set {
+		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
+			return err
+		}
+	}
+	if command.IdleTimeout.set {
+		if _, err := asset.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (command *addCommand) Run(ctx context.Context) error {
@@ -43,14 +71,24 @@ func (command *addCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return project.NewConfigurationError(err)
 		}
-		fileName := command.File
-		if fileName == "" {
+		headers, err := parseHeaders(command.Header)
+		if err != nil {
+			return project.NewConfigurationError(err)
+		}
+		fileName := command.File.value
+		if !command.File.set {
 			fileName, err = manifest.InferFile(command.URL)
 			if err != nil {
 				return project.NewConfigurationError(err, project.WithAsset(command.Name))
 			}
 		}
-		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: variables}
+		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: variables, Headers: headers}
+		if command.MaxSize.set {
+			candidate.MaxSize = command.MaxSize.value
+		}
+		if command.IdleTimeout.set {
+			candidate.IdleTimeout = command.IdleTimeout.value
+		}
 		if command.Pin.digest != "" {
 			candidate.Pin = command.Pin.digest
 		}

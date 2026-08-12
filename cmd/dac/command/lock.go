@@ -3,6 +3,9 @@ package command
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"strconv"
 
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/lockfile"
@@ -15,11 +18,21 @@ import (
 type lockCommand struct {
 	runtime *runtime
 	Names   []string `arg:"names"`
+	All     bool     `flag:"all" help:"replace dac.lock from every manifest asset"`
 }
 
 func (*lockCommand) Description() string { return "Accept current upstream bytes into dac.lock" }
 func (command *lockCommand) Validate() error {
-	return command.runtime.Output.ValidateOptions()
+	if err := command.runtime.Output.ValidateOptions(); err != nil {
+		return err
+	}
+	if command.All && len(command.Names) > 0 {
+		return ErrAllLockConflict
+	}
+	if !command.All && len(command.Names) == 0 {
+		return ErrLockSelectionRequired
+	}
+	return nil
 }
 
 func (command *lockCommand) Run(ctx context.Context) error {
@@ -41,7 +54,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 			return err
 		}
 		defer func() { _ = downloads.Close() }()
-		current, hasLock, err := lockfile.LoadOptional(paths.Lockfile())
+		current, hasLock, loadWarning, err := command.loadCurrent(paths)
 		if err != nil {
 			return err
 		}
@@ -49,19 +62,17 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if len(command.Names) > 0 {
-			if !hasLock && len(selected) != len(resolved) {
-				return project.NewConfigurationError(ErrTargetedLockNeedsExisting, project.WithHint("run `dac lock`"))
+		if !command.All {
+			if !hasLock {
+				return project.NewConfigurationError(ErrTargetedLockNeedsExisting, project.WithHint("run `dac lock --all`"))
 			}
-			if hasLock {
-				if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
-					return err
-				}
+			if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
+				return err
 			}
 		}
 
-		next := lockfile.Lockfile{Version: project.Version, Files: map[string]lockfile.Asset{}}
-		if hasLock {
+		next := lockfile.Lockfile{Version: lockfile.Version, Files: map[string]lockfile.Asset{}}
+		if hasLock && !command.All {
 			for name, file := range current.Files {
 				next.Files[name] = file
 			}
@@ -77,7 +88,10 @@ func (command *lockCommand) Run(ctx context.Context) error {
 				return err
 			}
 			transaction.downloads[resolvedAsset.Name] = download
-			next.Files[resolvedAsset.Name] = lockfile.Asset{ResolvedURL: resolvedAsset.ResolvedURL, ResolvedFile: resolvedAsset.ResolvedFile, Digest: download.Digest, Size: download.Size}
+			next.Files[resolvedAsset.Name] = lockfile.Asset{
+				ResolvedURL: resolvedAsset.ResolvedURL, ResolvedFile: resolvedAsset.ResolvedFile,
+				ConfigurationDigest: lockfile.ConfigurationDigest(resolvedAsset), Digest: download.Digest, Size: download.Size,
+			}
 		}
 		// The manifest is authoritative even for targeted locks; entries for
 		// deleted assets must not survive in accepted state.
@@ -98,6 +112,12 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if loadWarning != "" {
+			warnings = append(warnings, loadWarning)
+		}
+		if hasLock {
+			warnings = append(warnings, cleanupObsoleteDownloads(downloads, current, next)...)
+		}
 		results := make([]output.Result, 0, len(selected))
 		for _, resolvedAsset := range resolved {
 			if file, ok := next.Files[resolvedAsset.Name]; ok && selected[resolvedAsset.Name] {
@@ -106,6 +126,68 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		}
 		return command.runtime.Output.Success("lock", paths, results, warnings)
 	})
+}
+
+// loadCurrent permits --all to recover from an unreadable or unsupported lock
+// while retaining valid v2 metadata for safe obsolete-file cleanup.
+func (command *lockCommand) loadCurrent(paths project.Paths) (lockfile.Lockfile, bool, string, error) {
+	current, exists, err := lockfile.LoadOptional(paths.Lockfile())
+	if err == nil {
+		return current, exists, "", nil
+	}
+	if !command.All {
+		return lockfile.Lockfile{}, false, "", err
+	}
+	if _, statErr := os.Stat(paths.Lockfile()); errors.Is(statErr, fs.ErrNotExist) {
+		return lockfile.Lockfile{}, false, "", nil
+	}
+	return lockfile.Lockfile{}, false, "existing dac.lock could not be read; obsolete downloads were not pruned", nil
+}
+
+// cleanupObsoleteDownloads removes only destinations proven to have belonged
+// to the previous valid lock. Untracked entries remain available to status.
+func cleanupObsoleteDownloads(downloads *os.Root, previous, next lockfile.Lockfile) []string {
+	retained := make(map[string]bool, len(next.Files))
+	for _, file := range next.Files {
+		retained[file.ResolvedFile] = true
+	}
+	var warnings []string
+	removed := false
+	seen := make(map[string]bool, len(previous.Files))
+	for _, file := range previous.Files {
+		name := file.ResolvedFile
+		if retained[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		info, err := downloads.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			warnings = append(warnings, "could not inspect obsolete download "+strconv.Quote(name)+": "+err.Error())
+			continue
+		}
+		if info.IsDir() {
+			warnings = append(warnings, "obsolete download is a directory and was not removed: "+strconv.Quote(name))
+			continue
+		}
+		if err := downloads.Remove(name); err != nil {
+			warnings = append(warnings, "could not remove obsolete download "+strconv.Quote(name)+": "+err.Error())
+			continue
+		}
+		removed = true
+	}
+	if removed {
+		directory, err := downloads.Open(".")
+		if err == nil {
+			err = errors.Join(directory.Sync(), directory.Close())
+		}
+		if err != nil {
+			warnings = append(warnings, "could not sync downloads after removing obsolete files: "+err.Error())
+		}
+	}
+	return warnings
 }
 
 func selectedNames(names []string, values []manifest.ResolvedAsset) (map[string]bool, error) {
