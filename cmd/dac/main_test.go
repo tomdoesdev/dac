@@ -1,4 +1,4 @@
-package dac
+package main
 
 import (
 	"bytes"
