@@ -5,8 +5,15 @@
       "resolved_url": "http://127.0.0.1:8080/drifting.bin",
       "resolved_file": "drifting.bin",
       "configuration_digest": "sha256:045b60b3b7dd791cddae6dc291bcabc24c71ab40022e2ca91bd7020ee9da1ebb",
-      "digest": "sha256:113738b4c6c95ea86332c5341d7e4ab59c702d6e27f577f007be72b4953cf3b7",
+      "digest": "sha256:82527e6f6f8802cbdba30115a595e468145bd0094ed0807245e966ec7bb865a8",
       "size": 4194304
+    },
+    "slower": {
+      "resolved_url": "http://127.0.0.1:8080/slow.bin",
+      "resolved_file": "slow.bin",
+      "configuration_digest": "sha256:c6a51383cd6e72c478d9a0e392ce0809d48c640ed5ad0ae654d1af0951d798f9",
+      "digest": "sha256:bdd738ea4099864085b3242dfbcdf2cd316be60af59ee1a5072ac6c3330a4fea",
+      "size": 3145728
     },
     "test": {
       "resolved_url": "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore",

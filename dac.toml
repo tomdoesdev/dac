@@ -4,6 +4,10 @@ version = 1
 url = "http://127.0.0.1:8080/drifting.bin"
 file = "drifting.bin"
 
+[files."slower"]
+url = "http://127.0.0.1:8080/slow.bin"
+file = "slow.bin"
+
 [files."test"]
 url = "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore"
 file = "Go.gitignore"

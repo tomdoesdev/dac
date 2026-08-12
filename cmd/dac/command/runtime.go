@@ -48,7 +48,11 @@ func (runtime *runtime) calculatePin(ctx context.Context, paths project.Paths, r
 		return "", err
 	}
 	defer func() { _ = downloads.Close() }()
-	download, err := runtime.Downloader.Download(ctx, downloads, assetRequest(resolved), "")
+	var download *asset.StagedDownload
+	err = runtime.Output.WithDownloadProgress(ctx, resolved.Name, resolved.ResolvedFile, resolved.ResolvedURL, func(ctx context.Context) error {
+		download, err = runtime.Downloader.Download(ctx, downloads, assetRequest(resolved), "")
+		return err
+	})
 	if err != nil {
 		return "", err
 	}

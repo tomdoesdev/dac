@@ -3,7 +3,7 @@
   "rate": "8MiB/s",
   "assets": {
     "geo/2026.08/database.bin": { "size": "4MiB" },
-    "slow.bin": { "size": "20MiB", "rate": "256KiB/s" },
-    "drifting.bin": { "size": "4MiB", "rate": "256KiB/s", "seed": 7 }
+    "slow.bin": { "size": "3MiB", "rate": "256KiB/s" },
+    "drifting.bin": { "size": "4MiB", "rate": "256KiB/s", "seed": 77 }
   }
 }

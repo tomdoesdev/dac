@@ -81,7 +81,11 @@ func (command *lockCommand) Run(ctx context.Context) error {
 			if !selected[resolvedAsset.Name] {
 				continue
 			}
-			download, err := command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), resolvedAsset.Pin)
+			var download *asset.StagedDownload
+			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, resolvedAsset.ResolvedFile, resolvedAsset.ResolvedURL, func(ctx context.Context) error {
+				download, err = command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), resolvedAsset.Pin)
+				return err
+			})
 			if err != nil {
 				return err
 			}

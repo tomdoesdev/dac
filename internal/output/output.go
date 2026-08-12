@@ -147,7 +147,12 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filen
 				return ""
 			}
 			writer.reportedDownloads[assetName] = true
-			return fmt.Sprintf("✅ %s %s from %s (%s)", filename, writer.stderrStyler.Success("downloaded"), source, formatElapsed(end.Elapsed))
+			return fmt.Sprintf("%s %s %s from %s (%s)",
+				writer.stderrStyler.Success("✔"),
+				filename,
+				writer.stderrStyler.Success("downloaded"),
+				source,
+				formatElapsed(end.Elapsed))
 		}),
 	)
 	return throbber.Run(ctx, operation)
