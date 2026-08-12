@@ -1,6 +1,11 @@
 package command
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/tomdoesdev/dac/internal/asset"
+)
 
 var (
 	// ErrAssetAlreadyExists marks an add that would replace a manifest asset.
@@ -15,6 +20,10 @@ var (
 	ErrAssetSelectedMultipleTimes = errors.New("asset selected more than once")
 	// ErrPinRepeated marks more than one value supplied for --pin.
 	ErrPinRepeated = errors.New("--pin may be supplied only once")
+	// ErrJobsRepeated marks more than one value supplied for --jobs.
+	ErrJobsRepeated = errors.New("--jobs may be supplied only once")
+	// ErrInvalidJobs marks a download concurrency outside what dac will run.
+	ErrInvalidJobs = fmt.Errorf("--jobs must be between 1 and %d", asset.MaxDownloadJobs)
 	// ErrOfflineForceConflict marks mutually exclusive pull modes.
 	ErrOfflineForceConflict = errors.New("--offline and --force cannot be combined")
 	// ErrOfflineVerification marks local files that failed offline verification.

@@ -87,6 +87,26 @@ func TestThrobberInactiveModes(t *testing.T) {
 	}
 }
 
+// TestAnimatesAnswersForCallersSharingTheLine covers the question a caller has
+// to ask before writing a permanent line beside a running throbber: whether
+// there is a frame on screen to erase at all. Its answer must be the one the
+// throbber itself acts on.
+func TestAnimatesAnswersForCallersSharingTheLine(t *testing.T) {
+	output := &bytes.Buffer{}
+	for mode, want := range map[ThrobberMode]bool{ThrobberAlways: true, ThrobberNever: false, ThrobberAuto: false} {
+		throbber := NewThrobber(output, "Working…", WithThrobberMode(mode))
+		if got := Animates(output, mode); got != want || got != throbber.animates() {
+			t.Fatalf("Animates(mode %d) = %v, want %v and the throbber's own answer", mode, got, want)
+		}
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("an invalid mode was accepted")
+		}
+	}()
+	Animates(output, ThrobberMode(200))
+}
+
 // TestThrobberFailuresClearWithoutLosingThePrimaryError covers both operation
 // and rendering failures, which may occur together after work has begun.
 func TestThrobberFailuresClearWithoutLosingThePrimaryError(t *testing.T) {

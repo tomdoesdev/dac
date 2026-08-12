@@ -122,8 +122,14 @@ host that ignores or rejects the range serves the asset in one response, exactly
 as before, and nothing about the result differs — the digest and size recorded
 in `dac.lock` are of the assembled bytes either way.
 
-Transfers are sequential by design. One request is in flight at a time, in
-order; `dac` does not open parallel connections to the same host.
+`lock` and `pull` transfer several assets at the same time, four by default.
+Use `--jobs` (`-j`) to choose another number between 1 and 16; `--jobs 1` gives
+a host exactly one request at a time. Concurrency is between assets only: one
+asset is still one ordered sequence of chunks on one connection, and the
+transfers never share a destination file. Whatever order they finish in, `dac`
+reports results, writes `dac.lock`, and reports a failure in the order the
+manifest declares. The first failure stops the transfers still running, and
+`lock` accepts either every selected asset or none of them.
 
 Response compression is not negotiated. Byte ranges, digests, and size limits
 are all expressed in the asset's own bytes, and a content encoding applied in

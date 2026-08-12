@@ -265,13 +265,23 @@ func (throbber *Throbber) finish(animation *throbberAnimation, started time.Time
 // animates separates motion policy from color policy: forcing ANSI color does
 // not make a redirected stream safe for cursor-control sequences.
 func (throbber *Throbber) animates() bool {
-	switch throbber.config.mode {
+	return Animates(throbber.output, throbber.config.mode)
+}
+
+// Animates reports whether a throbber created for output with mode would emit
+// animation. A caller that shares the line a throbber is using, such as one
+// leaving a permanent record beside a frame that is still on screen, has to
+// erase that frame first, and needs this same answer before it writes any
+// cursor-control sequence of its own.
+func Animates(output io.Writer, mode ThrobberMode) bool {
+	validateThrobberMode(mode)
+	switch mode {
 	case ThrobberAlways:
 		return true
 	case ThrobberNever:
 		return false
 	default:
-		return terminalWriter(throbber.output) && os.Getenv("TERM") != "dumb"
+		return terminalWriter(output) && os.Getenv("TERM") != "dumb"
 	}
 }
 

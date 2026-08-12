@@ -1,12 +1,10 @@
 package output
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"time"
 
@@ -147,60 +145,6 @@ func (writer *Writer) Success(command, root string, assets []Result, warnings []
 		}
 	}
 	return nil
-}
-
-// WithDownloadProgress runs operation with DAC's human download presentation.
-// Non-interactive, structured, and quiet invocations fall back to Success
-// output. It reports whether it announced the completed download, which the
-// caller records on the Result so the summary does not repeat it.
-func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, sourceURL string, operation func(context.Context) error) (bool, error) {
-	mode := writer.throbberMode
-	if writer.options.JSON || writer.options.Quiet {
-		mode = cli.ThrobberNever
-	}
-	source := downloadHostname(sourceURL)
-	message := fmt.Sprintf("Downloading %s from %s…", filename, source)
-	var reported bool
-	throbber := cli.NewThrobber(
-		writer.stderr,
-		message,
-		cli.WithThrobberMode(mode),
-		cli.WithThrobberInterval(writer.throbberInterval),
-		cli.WithThrobberStyle(writer.stderrStyler.Progress),
-		cli.WithThrobberOnEnd(func(end cli.ThrobberEnd) string {
-			if !end.Animated || end.Err != nil || writer.options.JSON || writer.options.Quiet {
-				return ""
-			}
-			reported = true
-			return fmt.Sprintf("%s %s %s from %s (%s)",
-				writer.stderrStyler.Success("✔"),
-				filename,
-				writer.stderrStyler.Success("downloaded"),
-				source,
-				formatElapsed(end.Elapsed))
-		}),
-	)
-	err := throbber.Run(ctx, operation)
-	return reported, err
-}
-
-// downloadHostname deliberately retains only the least sensitive useful part
-// of a validated asset URL for transient terminal output.
-func downloadHostname(sourceURL string) string {
-	parsed, err := url.Parse(sourceURL)
-	if err != nil || parsed.Hostname() == "" {
-		return "remote host"
-	}
-	return parsed.Hostname()
-}
-
-// formatElapsed keeps permanent download records consistent with the transient
-// throbber without exposing the cli package's private rendering helper.
-func formatElapsed(elapsed time.Duration) string {
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	return elapsed.Truncate(time.Second).String()
 }
 
 // Status writes a complete observational report without turning unhealthy

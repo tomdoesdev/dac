@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
@@ -473,6 +475,111 @@ func TestTargetedLockRemovesOnlyPreviouslyManagedObsoleteFile(t *testing.T) {
 		}
 		assertFile(t, filepath.Join(downloads, "new.bin"), []byte("content"))
 		assertFile(t, extra, []byte("unmanaged"))
+	})
+}
+
+// TestConcurrentDownloadsOverlapAndJobsOneDoesNot pins both halves of dac's
+// transfer concurrency: several assets are fetched at the same time by default,
+// and --jobs 1 still means one request in flight for callers who need a host to
+// see exactly one client.
+func TestConcurrentDownloadsOverlapAndJobsOneDoesNot(t *testing.T) {
+	const assets = 3
+	// While the rendezvous is armed each request waits for the others to
+	// arrive, so a handler can only answer if dac really does have three
+	// transfers open at once.
+	together := make(chan struct{})
+	var rendezvous atomic.Bool
+	var inFlight atomic.Int64
+	var peak atomic.Int64
+	rendezvous.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		current := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			highest := peak.Load()
+			if current <= highest || peak.CompareAndSwap(highest, current) {
+				break
+			}
+		}
+		if rendezvous.Load() {
+			if current == assets {
+				close(together)
+			}
+			select {
+			case <-together:
+			case <-request.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+		}
+		_, _ = writer.Write([]byte(request.URL.Path))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		for index := range assets {
+			name := fmt.Sprintf("artifact-%d", index)
+			runOK(t, "add", name, fmt.Sprintf("%s/%s.bin", server.URL, name))
+		}
+		runOK(t, "lock", "--all")
+		if peak.Load() != assets {
+			t.Fatalf("lock ran %d transfers at once, want %d", peak.Load(), assets)
+		}
+
+		// One transfer at a time can never satisfy the rendezvous, so the second
+		// half measures overlap against a handler that answers immediately.
+		rendezvous.Store(false)
+		peak.Store(0)
+		runOK(t, "pull", "--force", "--jobs", "1")
+		if peak.Load() != 1 {
+			t.Fatalf("--jobs 1 ran %d transfers at once, want 1", peak.Load())
+		}
+	})
+}
+
+// TestFailedConcurrentLockStagesNothing keeps concurrency out of lock's
+// all-or-nothing acceptance: bytes that arrived beside a failing asset are
+// staged rather than installed, so a failed lock leaves no trace of them.
+func TestFailedConcurrentLockStagesNothing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.Contains(request.URL.Path, "broken") {
+			http.Error(writer, "gone", http.StatusGone)
+			return
+		}
+		_, _ = writer.Write([]byte(request.URL.Path))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		runOK(t, "add", "healthy", server.URL+"/healthy.bin")
+		runOK(t, "add", "broken", server.URL+"/broken.bin")
+		if _, _, code := run("lock", "--all"); code != 1 {
+			t.Fatalf("lock code=%d, want a network failure", code)
+		}
+		if _, err := os.Stat("dac.lock"); !os.IsNotExist(err) {
+			t.Fatalf("failed lock wrote dac.lock: %v", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(directory, ".dac", "downloads"))
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("failed lock left %v behind: %v", entries, err)
+		}
+	})
+}
+
+// TestJobsRejectsValuesDACWillNotRun keeps the concurrency option honest: it is
+// an invalid invocation rather than a number dac quietly reinterprets.
+func TestJobsRejectsValuesDACWillNotRun(t *testing.T) {
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		for _, value := range []string{"0", "-1", "99", "many"} {
+			if _, _, code := run("pull", "--jobs", value); code != 2 {
+				t.Fatalf("--jobs %s code=%d, want 2", value, code)
+			}
+		}
+		if _, _, code := run("lock", "--jobs", "2", "--jobs", "3"); code != 2 {
+			t.Fatal("repeated --jobs was accepted")
+		}
 	})
 }
 
