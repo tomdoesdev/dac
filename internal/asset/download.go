@@ -64,12 +64,16 @@ func (err *downloadStatusError) Unwrap() error {
 type Downloader struct {
 	client    *http.Client
 	userAgent string
+	// chunkSize is the largest byte range requested at a time from a host that
+	// supports ranges. It is a field rather than a constant only so tests can
+	// drive the multi-chunk path without transferring megabytes.
+	chunkSize int64
 }
 
 // NewDownloader constructs a downloader from an injectable client and the
 // process-controlled user agent sent to remote hosts.
 func NewDownloader(client *http.Client, userAgent string) *Downloader {
-	return &Downloader{client: client, userAgent: userAgent}
+	return &Downloader{client: client, userAgent: userAgent, chunkSize: defaultChunkSize}
 }
 
 // StagedDownload is verified bytes in a destination-adjacent temporary file.
@@ -87,25 +91,18 @@ func (download *StagedDownload) CommitReversible() (*atomic.Commit, error) {
 }
 
 // Download streams one artifact into a temporary file and verifies an optional
-// expected digest before anything reaches the managed destination.
+// expected digest before anything reaches the managed destination. The bytes
+// arrive either as one response or as a sequence of byte ranges, which is a
+// decision the remote host makes and the rest of this function does not see.
 func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, request Request, expected string) (*StagedDownload, error) {
 	requestContext, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	httpRequest, err := downloader.newRequest(requestContext, request)
+	transfer, err := downloader.begin(requestContext, cancel, request)
 	if err != nil {
 		return nil, err
 	}
-	response, err := downloader.doRequest(requestContext, request.Name, httpRequest)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = response.Body.Close() }()
-
-	body := io.ReadCloser(response.Body)
-	if request.Policy.IdleTimeout > 0 {
-		body = &idleReadCloser{body: body, timeout: request.Policy.IdleTimeout, ctx: requestContext, cancel: cancel}
-	}
-	return stageResponseWithPolicy(downloads, request, body, expected, response.ContentLength, requestContext)
+	defer func() { _ = transfer.body.Close() }()
+	return stageResponseWithPolicy(downloads, request, transfer.body, expected, transfer.size, requestContext)
 }
 
 // CalculateDigest retrieves an asset and returns the digest of the bytes the
@@ -125,14 +122,27 @@ func (downloader *Downloader) CalculateDigest(ctx context.Context, downloads *os
 	return digest, nil
 }
 
-// newRequest resolves configured headers at the last possible moment so
-// environment-backed secrets exist only for the lifetime of the HTTP request.
+// newRequest builds the request for the URL the manifest named.
 func (downloader *Downloader) newRequest(ctx context.Context, request Request) (*http.Request, error) {
-	headers, err := requestHeaders(request.Headers)
-	if err != nil {
-		return nil, fault.NewConfigurationError(err, fault.WithAsset(request.Name))
+	return downloader.newRequestTo(ctx, request, request.URL, true)
+}
+
+// newRequestTo builds a request for one location, which is not always the URL
+// the manifest named once a redirect has been followed. Configured headers are
+// resolved at the last possible moment so environment-backed secrets exist only
+// for the lifetime of the HTTP request, and the caller decides whether they may
+// be sent at all, because a location outside the manifest's origin must not
+// receive them.
+func (downloader *Downloader) newRequestTo(ctx context.Context, request Request, location string, configured bool) (*http.Request, error) {
+	headers := make(http.Header)
+	if configured {
+		resolved, err := requestHeaders(request.Headers)
+		if err != nil {
+			return nil, fault.NewConfigurationError(err, fault.WithAsset(request.Name))
+		}
+		headers = resolved
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 	if err != nil {
 		return nil, fault.NewConfigurationError(ErrInvalidDownloadRequest, fault.WithAsset(request.Name))
 	}
@@ -141,9 +151,24 @@ func (downloader *Downloader) newRequest(ctx context.Context, request Request) (
 	return httpRequest, nil
 }
 
-// doRequest owns transport-specific failure classification and rejects error
-// responses before their bodies can be mistaken for downloaded artifacts.
+// doRequest is the whole-response form of a request: a status outside HTTP's
+// successful range is rejected before its body can be mistaken for a
+// downloaded artifact.
 func (downloader *Downloader) doRequest(ctx context.Context, assetName string, request *http.Request) (*http.Response, error) {
+	response, err := downloader.send(ctx, assetName, request)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectUnsuccessfulStatus(assetName, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// send owns transport-specific failure classification. It leaves the status
+// alone for callers that treat one unsuccessful code as an answer rather than
+// a failure, such as the range probe and its 416.
+func (downloader *Downloader) send(ctx context.Context, assetName string, request *http.Request) (*http.Response, error) {
 	response, err := downloader.client.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -154,17 +179,25 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 		// dac's chain rather than trusting the render boundary to catch it.
 		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, redact.Error(err)), fault.WithAsset(assetName))
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_ = response.Body.Close()
-		return nil, fault.NewNetworkError(&downloadStatusError{statusCode: response.StatusCode}, fault.WithAsset(assetName))
-	}
 	return response, nil
+}
+
+// rejectUnsuccessfulStatus closes and classifies an error response.
+func rejectUnsuccessfulStatus(assetName string, response *http.Response) error {
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	_ = response.Body.Close()
+	return fault.NewNetworkError(&downloadStatusError{statusCode: response.StatusCode}, fault.WithAsset(assetName))
 }
 
 // stageResponseWithPolicy separates remote read failures from local write
 // failures and applies transfer policy before returning verified staged bytes.
-func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader, expected string, contentLength int64, ctx context.Context) (_ *StagedDownload, err error) {
-	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, contentLength, false); err != nil {
+// The declared size is whatever the host committed to up front — a
+// Content-Length, or the complete length behind a byte range — so an asset too
+// large to accept is refused before any of it is transferred.
+func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader, expected string, declaredSize int64, ctx context.Context) (_ *StagedDownload, err error) {
+	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, declaredSize, false); err != nil {
 		return nil, err
 	}
 	temporary, err := atomic.CreateRoot(downloads, request.File, 0o644)
@@ -188,6 +221,13 @@ func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader
 		if ctx.Err() != nil {
 			return nil, fault.NewCancelledError(context.Cause(ctx), fault.WithAsset(request.Name))
 		}
+		// A chunked transfer requests bytes while the copy runs, so a failure
+		// arriving here may already carry its own classification. Wrapping it
+		// again would describe a failed request as a failed body read.
+		var operation *fault.Error
+		if errors.As(err, &operation) {
+			return nil, err
+		}
 		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadBody, err), fault.WithAsset(request.Name))
 	}
 	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, size, true); err != nil {
@@ -199,7 +239,12 @@ func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader
 	return &StagedDownload{file: temporary, Digest: digest, Size: size}, nil
 }
 
-// copyResponseWithDigest records which side of io.Copy failed while retaining
+// copyBufferSize is how much of an artifact moves per read, hash, and write.
+// io.Copy's own 32 KiB would spend an order of magnitude more system calls and
+// hash invocations on the multi-gigabyte artifacts dac exists to fetch.
+const copyBufferSize = 512 << 10
+
+// copyResponseWithDigest records which side of the copy failed while retaining
 // the single-pass hashing behavior used for large artifacts.
 func copyResponseWithDigest(destination io.Writer, source io.Reader, maximum int64) (int64, string, error, error) {
 	trackedDestination := &recordingWriter{writer: destination}
@@ -212,7 +257,9 @@ func copyResponseWithDigest(destination io.Writer, source io.Reader, maximum int
 		reader = &io.LimitedReader{R: source, N: limit}
 	}
 	hasher := sha256.New()
-	size, err := io.Copy(io.MultiWriter(trackedDestination, hasher), reader)
+	// Neither side implements ReaderFrom or WriterTo here, so the buffer is
+	// the one that is actually used rather than a hint io.CopyBuffer ignores.
+	size, err := io.CopyBuffer(io.MultiWriter(trackedDestination, hasher), reader, make([]byte, copyBufferSize))
 	if err != nil {
 		return size, "", trackedDestination.err, err
 	}
@@ -254,6 +301,15 @@ func (writer *recordingWriter) Write(buffer []byte) (int, error) {
 	return count, err
 }
 
+// guardIdleReads applies the policy's idle timeout to one response body, and
+// returns the body unchanged when the policy disables the limit.
+func guardIdleReads(ctx context.Context, cancel context.CancelCauseFunc, policy TransferPolicy, body io.ReadCloser) io.ReadCloser {
+	if policy.IdleTimeout <= 0 {
+		return body
+	}
+	return &idleReadCloser{body: body, timeout: policy.IdleTimeout, ctx: ctx, cancel: cancel}
+}
+
 // idleReadCloser cancels the request only while a body read is blocked. Time
 // spent hashing or writing local bytes therefore cannot trigger network idle.
 type idleReadCloser struct {
@@ -261,12 +317,19 @@ type idleReadCloser struct {
 	timeout time.Duration
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
+	// timer is reused across reads because a large artifact performs thousands
+	// of them, and each one would otherwise allocate a timer of its own.
+	timer *time.Timer
 }
 
 func (reader *idleReadCloser) Read(buffer []byte) (int, error) {
-	timer := time.AfterFunc(reader.timeout, func() { reader.cancel(ErrDownloadIdleTimeout) })
+	if reader.timer == nil {
+		reader.timer = time.AfterFunc(reader.timeout, func() { reader.cancel(ErrDownloadIdleTimeout) })
+	} else {
+		reader.timer.Reset(reader.timeout)
+	}
 	count, err := reader.body.Read(buffer)
-	timer.Stop()
+	reader.timer.Stop()
 	if errors.Is(context.Cause(reader.ctx), ErrDownloadIdleTimeout) {
 		return count, ErrDownloadIdleTimeout
 	}

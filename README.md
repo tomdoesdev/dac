@@ -105,6 +105,30 @@ never written to the lock file or emitted in errors/JSON. Configured headers
 are removed if a redirect crosses origin. Do not put secrets in literal header
 values or URL query strings: those are persisted user configuration.
 
+CLI edits canonically rewrite `dac.toml`, so comments and custom formatting are
+not retained. Commit `dac.toml` and `dac.lock`; normally add `.dac/` to
+`.gitignore` because downloads are derived and independently verified.
+
+## Transfer
+
+`dac` asks for the first 16 MiB of an asset as an HTTP byte range. A host that
+supports ranges then serves the rest the same way, one chunk at a time on the
+same connection, so a connection lost part-way through a large artifact costs
+the current chunk instead of every byte already transferred: the next request
+resumes at the first byte `dac` has not accepted. Each chunk carries the entity
+tag or modification date the first response returned, so an asset that changes
+mid-transfer is rejected rather than stitched together from two versions. A
+host that ignores or rejects the range serves the asset in one response, exactly
+as before, and nothing about the result differs — the digest and size recorded
+in `dac.lock` are of the assembled bytes either way.
+
+Transfers are sequential by design. One request is in flight at a time, in
+order; `dac` does not open parallel connections to the same host.
+
+Response compression is not negotiated. Byte ranges, digests, and size limits
+are all expressed in the asset's own bytes, and a content encoding applied in
+transit would put a different sequence of bytes between them.
+
 Every asset has an effective maximum response size and idle body-read timeout.
 The defaults are 4 GiB and 30 seconds. `max_size` accepts integral byte values,
 decimal units (`MB`, `GB`) and IEC units (`MiB`, `GiB`); `idle_timeout` uses Go
@@ -114,10 +138,6 @@ bytes locally, and neither setting is a total transfer deadline.
 
 Managed downloads are opened relative to the project root. Symlinks may point
 elsewhere inside the project, but cannot redirect a download outside it.
-
-CLI edits canonically rewrite `dac.toml`, so comments and custom formatting are
-not retained. Commit `dac.toml` and `dac.lock`; normally add `.dac/` to
-`.gitignore` because downloads are derived and independently verified.
 
 ## Automation and support
 

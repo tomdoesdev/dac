@@ -51,9 +51,11 @@ var transportManagedHeaderNames = map[string]struct{}{
 	"connection":          {},
 	"content-length":      {},
 	"host":                {},
+	"if-range":            {},
 	"keep-alive":          {},
 	"proxy-authenticate":  {},
 	"proxy-authorization": {},
+	"range":               {},
 	"te":                  {},
 	"trailer":             {},
 	"transfer-encoding":   {},
@@ -151,8 +153,23 @@ func requestHeaders(headers map[string]string) (http.Header, error) {
 	return result, nil
 }
 
+const (
+	// idleConnections keeps a small pool per host. A chunked download is a
+	// sequence of requests to one host, so reusing its connection saves a TCP
+	// and TLS handshake per chunk.
+	idleConnections = 4
+	// socketReadBufferSize replaces net/http's 4 KiB default. Artifacts are
+	// large, so the transport is worth letting read from the socket in pieces
+	// closer to the size the copy loop asks for.
+	socketReadBufferSize = 256 << 10
+)
+
 // NewHTTPClient returns dac's deliberately small HTTP client. Timeouts cover
 // setup and response headers but not legitimate long-running body streams.
+//
+// HTTP/2 is deliberately not negotiated. dac transfers one large body at a
+// time, which gains nothing from multiplexing and loses to its flow-control
+// windows, and HTTP/1.1 keep-alive is what carries a chunked download.
 func NewHTTPClient() *http.Client {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -160,6 +177,17 @@ func NewHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: time.Second,
+		MaxIdleConns:          idleConnections,
+		MaxIdleConnsPerHost:   idleConnections,
+		IdleConnTimeout:       90 * time.Second,
+		// Transparent compression would make the transferred bytes a different
+		// sequence from the asset's own. Byte ranges, dac's digests, and its
+		// size limits are all expressed in the asset's bytes, so the encoding
+		// that would save a little bandwidth on already-compressed artifacts
+		// cannot be allowed to come between them.
+		DisableCompression: true,
+		ReadBufferSize:     socketReadBufferSize,
+		WriteBufferSize:    32 << 10,
 	}
 	return &http.Client{Transport: transport, CheckRedirect: redirectPolicy}
 }
@@ -179,14 +207,20 @@ func redirectPolicy(request *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
 	}
-	userAgent := via[0].Header.Get("User-Agent")
+	original := via[0].Header
 	if sameOrigin(via[0].URL, request.URL) {
-		request.Header = via[0].Header.Clone()
-	} else {
-		request.Header = make(http.Header)
-		// User-Agent is dac-controlled rather than manifest-controlled, so it
-		// remains safe and useful after stripping configured credentials.
-		request.Header.Set("User-Agent", userAgent)
+		request.Header = original.Clone()
+		return nil
+	}
+	// These headers are dac-controlled rather than manifest-controlled, so
+	// they remain safe and useful after stripping configured credentials.
+	// Range in particular has to survive: dropping it would turn a redirected
+	// chunk request into a request for the whole asset.
+	request.Header = make(http.Header)
+	for _, name := range []string{"User-Agent", rangeHeader, ifRangeHeader} {
+		if value := original.Get(name); value != "" {
+			request.Header.Set(name, value)
+		}
 	}
 	return nil
 }
