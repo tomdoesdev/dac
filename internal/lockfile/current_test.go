@@ -13,8 +13,8 @@ import (
 // dash or contain shell metacharacters, so the hint must quote rather than
 // reinterpret them as options or shell syntax.
 func TestHintQuotesOpaqueNames(t *testing.T) {
-	if got, want := Hint("-scope/pkg'$`"), `run: dac lock -- '-scope/pkg'"'"'$`+"`'"; got != want {
-		t.Fatalf("Hint = %q, want %q", got, want)
+	if got, want := hint("-scope/pkg'$`"), `run: dac lock -- '-scope/pkg'"'"'$`+"`'"; got != want {
+		t.Fatalf("hint = %q, want %q", got, want)
 	}
 }
 

@@ -174,7 +174,7 @@ func TestDownloadErrorsAreClassifiable(t *testing.T) {
 		{
 			name: "response body failure",
 			run: func() error {
-				_, err := stageResponse(downloads, Request{Name: "asset", File: "artifact"}, iotest.ErrReader(errors.New("test read failure")), "")
+				_, err := stageResponseWithPolicy(downloads, Request{Name: "asset", File: "artifact"}, iotest.ErrReader(errors.New("test read failure")), "", -1, context.Background())
 				return err
 			},
 			want: ErrDownloadBody,

@@ -18,10 +18,9 @@ const (
 // Paths names every persistent path relative to one discovered project root.
 type Paths struct{ Root string }
 
-func (paths Paths) Manifest() string  { return filepath.Join(paths.Root, manifestName) }
-func (paths Paths) Lockfile() string  { return filepath.Join(paths.Root, lockName) }
-func (paths Paths) Downloads() string { return filepath.Join(paths.Root, ".dac", "downloads") }
-func (paths Paths) LockPath() string  { return flock.HiddenPath(paths.Manifest()) }
+func (paths Paths) Manifest() string { return filepath.Join(paths.Root, manifestName) }
+func (paths Paths) Lockfile() string { return filepath.Join(paths.Root, lockName) }
+func (paths Paths) LockPath() string { return flock.HiddenPath(paths.Manifest()) }
 
 // OpenDownloads returns a traversal-safe handle to the managed download
 // directory. Opening it through the project root prevents a committed symlink

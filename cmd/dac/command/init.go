@@ -2,9 +2,6 @@ package command
 
 import (
 	"context"
-	"errors"
-	"io/fs"
-	"os"
 	"path/filepath"
 
 	"github.com/tomdoesdev/dac/internal/manifest"
@@ -25,20 +22,18 @@ func (command *initCommand) Run(ctx context.Context) error {
 	}
 	paths := project.Paths{Root: directory}
 	return paths.WithLock(ctx, func(context.Context) error {
-		if _, err := os.Stat(paths.Manifest()); err == nil {
-			return project.NewConfigurationError(ErrManifestAlreadyExists)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return project.NewFilesystemError(err)
+		// Create is the single existence check: its no-replace commit is already
+		// race-free, so a separate stat would only duplicate the rule. It runs
+		// first so initializing an existing project changes nothing on disk.
+		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{}}
+		if err := manifest.Create(paths.Manifest(), value); err != nil {
+			return err
 		}
 		downloads, err := paths.OpenDownloads()
 		if err != nil {
 			return err
 		}
 		_ = downloads.Close()
-		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{}}
-		if err := manifest.Create(paths.Manifest(), value); err != nil {
-			return err
-		}
 		return command.runtime.Output.Success("init", paths, []output.Result{{Name: filepath.Base(paths.Root), Status: "initialized"}}, nil)
 	})
 }

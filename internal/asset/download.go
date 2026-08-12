@@ -140,12 +140,6 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 	return response, nil
 }
 
-// stageResponse streams and hashes a successful response into an atomic file.
-// Any failure discards partial bytes before returning the original error.
-func stageResponse(downloads *os.Root, request Request, body io.Reader, expected string) (_ *StagedDownload, err error) {
-	return stageResponseWithPolicy(downloads, request, body, expected, -1, context.Background())
-}
-
 // stageResponseWithPolicy separates remote read failures from local write
 // failures and applies transfer policy before returning verified staged bytes.
 func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader, expected string, contentLength int64, ctx context.Context) (_ *StagedDownload, err error) {

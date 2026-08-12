@@ -5,15 +5,10 @@ import "errors"
 var (
 	// ErrAssetAlreadyExists marks an add that would replace a manifest asset.
 	ErrAssetAlreadyExists = errors.New("asset already exists")
-	// ErrManifestAlreadyExists marks initialization of an existing project.
-	ErrManifestAlreadyExists = errors.New("dac.toml already exists")
 	// ErrTargetedLockNeedsExisting marks an incomplete initial targeted lock.
 	ErrTargetedLockNeedsExisting = errors.New("targeted lock requires a complete existing dac.lock")
 	// ErrLockAlreadyExists prevents a bare initial lock from replacing accepted state.
 	ErrLockAlreadyExists = errors.New("dac.lock already exists")
-	// ErrLockSelectionRequired remains for callers compiled against the previous command contract.
-	// Deprecated: a bare lock now creates dac.lock when it is absent.
-	ErrLockSelectionRequired = errors.New("lock requires one or more asset names or --all")
 	// ErrAllLockConflict marks --all combined with explicit asset names.
 	ErrAllLockConflict = errors.New("--all cannot be combined with asset names")
 	// ErrAssetNotFound marks a command selection absent from the manifest.
@@ -34,8 +29,10 @@ var (
 	ErrPinUnpinConflict = errors.New("--pin and --unpin cannot be combined")
 	// ErrOptionRepeated marks a singleton option supplied more than once.
 	ErrOptionRepeated = errors.New("option may be supplied only once")
-	// ErrInvalidHeader marks a header edit without NAME=VALUE form.
-	ErrInvalidHeader = errors.New("--header must be NAME=VALUE")
+	// ErrHeaderFormat marks a header edit without NAME=VALUE form. It is named
+	// apart from asset.ErrInvalidHeader, which classifies the HTTP grammar
+	// rather than the command-line spelling.
+	ErrHeaderFormat = errors.New("--header must be NAME=VALUE")
 	// ErrDuplicateHeader marks equivalent repeated header names.
 	ErrDuplicateHeader = errors.New("--header repeats name")
 	// ErrUnknownUnset marks a variable requested for removal that is absent.

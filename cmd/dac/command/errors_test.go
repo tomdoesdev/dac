@@ -17,8 +17,8 @@ func TestSetErrorsAreClassifiable(t *testing.T) {
 }
 
 func TestHeaderAndSingletonErrorsAreClassifiable(t *testing.T) {
-	if _, err := parseHeaders([]string{"missing-separator"}); !errors.Is(err, ErrInvalidHeader) {
-		t.Fatalf("invalid header error = %v, want ErrInvalidHeader", err)
+	if _, err := parseHeaders([]string{"missing-separator"}); !errors.Is(err, ErrHeaderFormat) {
+		t.Fatalf("invalid header error = %v, want ErrHeaderFormat", err)
 	}
 	if _, err := parseHeaders([]string{"X-Test=one", "x-test=two"}); !errors.Is(err, ErrDuplicateHeader) {
 		t.Fatalf("duplicate header error = %v, want ErrDuplicateHeader", err)

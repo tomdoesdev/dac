@@ -95,7 +95,7 @@ func parseHeaders(values []string) (map[string]string, error) {
 	for _, value := range values {
 		key, item, found := strings.Cut(value, "=")
 		if !found || key == "" {
-			return nil, ErrInvalidHeader
+			return nil, ErrHeaderFormat
 		}
 		normalized := strings.ToLower(key)
 		if seen[normalized] {

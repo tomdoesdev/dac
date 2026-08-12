@@ -22,7 +22,6 @@ const (
 type EntryState struct {
 	Resolved manifest.ResolvedAsset
 	Locked   Asset
-	Exists   bool
 	State    CurrentState
 	Reason   string
 }
@@ -44,7 +43,7 @@ func Evaluate(resolved []manifest.ResolvedAsset, lock Lockfile) (Evaluation, err
 	for _, file := range resolved {
 		manifestNames[file.Name] = true
 		locked, exists := lock.Files[file.Name]
-		entry := EntryState{Resolved: file, Locked: locked, Exists: exists, State: StateCurrent}
+		entry := EntryState{Resolved: file, Locked: locked, State: StateCurrent}
 		if !exists {
 			entry.State, entry.Reason = StateStale, "asset is not locked"
 		} else if err := validateEntry(file, locked); err != nil {
@@ -116,11 +115,11 @@ func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 }
 
 func staleError(name string) error {
-	return project.NewConfigurationError(ErrStale, project.WithAsset(name), project.WithHint(Hint(name)))
+	return project.NewConfigurationError(ErrStale, project.WithAsset(name), project.WithHint(hint(name)))
 }
 
-// Hint formats a command that safely selects one opaque asset name.
-func Hint(name string) string {
+// hint formats a command that safely selects one opaque asset name.
+func hint(name string) string {
 	if name == "" {
 		return "run `dac lock --all`"
 	}

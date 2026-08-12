@@ -33,17 +33,6 @@ func computeDigest(source io.Reader) (string, error) {
 	return formatSHA256Digest(hasher.Sum(nil)), nil
 }
 
-// copyWithDigest streams source to destination while computing the digest in
-// the same pass, avoiding a second read of downloaded content.
-func copyWithDigest(destination io.Writer, source io.Reader) (int64, string, error) {
-	hasher := sha256.New()
-	size, err := io.Copy(io.MultiWriter(destination, hasher), source)
-	if err != nil {
-		return size, "", err
-	}
-	return size, formatSHA256Digest(hasher.Sum(nil)), nil
-}
-
 // formatSHA256Digest gives raw SHA-256 bytes their canonical serialized form.
 func formatSHA256Digest(sum []byte) string {
 	return "sha256:" + hex.EncodeToString(sum)
