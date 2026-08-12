@@ -112,7 +112,7 @@ func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T)
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	progress := stderr.String()
-	if !strings.Contains(progress, "Downloading asset.zip from example.com… (0s)") || !strings.Contains(progress, "✅ asset.zip downloaded from example.com (0s)") {
+	if !strings.Contains(progress, "Downloading asset.zip from example.com… (0s)") || !strings.Contains(progress, "✔ asset.zip downloaded from example.com (0s)") {
 		t.Fatalf("stderr = %q", progress)
 	}
 	if strings.Contains(progress, "private") || strings.Contains(progress, "secret") {
@@ -145,7 +145,7 @@ func TestFailedDownloadProgressClearsWithoutSuccess(t *testing.T) {
 	writer.throbberInterval = time.Hour
 	want := errors.New("download failed")
 	err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return want })
-	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✅") || !strings.HasSuffix(stderr.String(), "\r\x1b[2K") {
+	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✔") || !strings.HasSuffix(stderr.String(), "\r\x1b[2K") {
 		t.Fatalf("error=%v stderr=%q", err, stderr.String())
 	}
 }
