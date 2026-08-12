@@ -2,30 +2,120 @@ package project
 
 import "fmt"
 
-// Error has a stable category that the process boundary maps to JSON and exit
-// codes without having to parse human-oriented error text.
+// ErrorKind is the stable category exposed in structured output and used to
+// choose process exit codes.
+type ErrorKind string
+
+const (
+	ErrorKindConfiguration ErrorKind = "configuration"
+	ErrorKindFilesystem    ErrorKind = "filesystem"
+	ErrorKindIntegrity     ErrorKind = "integrity"
+	ErrorKindNetwork       ErrorKind = "network"
+	ErrorKindCancelled     ErrorKind = "cancelled"
+	ErrorKindUnsupported   ErrorKind = "unsupported"
+)
+
+// Error describes an operation failure without requiring callers to parse
+// human-oriented text. Its fields are private so every value has a known kind
+// and an underlying cause.
 type Error struct {
-	Kind     string
-	Asset    string
-	Hint     string
-	Expected string
-	Received string
-	Err      error
+	kind     ErrorKind
+	asset    string
+	hint     string
+	expected string
+	received string
+	err      error
 }
 
 func (err *Error) Error() string {
-	if err.Asset != "" {
-		return fmt.Sprintf("%s for asset %q: %v", err.Kind, err.Asset, err.Err)
+	if err.asset != "" {
+		return fmt.Sprintf("%s for asset %q: %v", err.kind, err.asset, err.err)
 	}
-	return fmt.Sprintf("%s: %v", err.Kind, err.Err)
+	return fmt.Sprintf("%s: %v", err.kind, err.err)
 }
 
-func (err *Error) Unwrap() error { return err.Err }
+func (err *Error) Unwrap() error { return err.err }
 
-// NewError attaches an operation category to an error without losing its cause.
-func NewError(kind string, err error) error {
+// Kind returns the stable operation category used by process-boundary output.
+func (err *Error) Kind() ErrorKind { return err.kind }
+
+// Message returns the underlying human-oriented failure without category or
+// asset decoration, as required by structured output.
+func (err *Error) Message() string { return err.err.Error() }
+
+// Asset returns the logical asset associated with the failure, when present.
+func (err *Error) Asset() string { return err.asset }
+
+// Hint returns optional recovery guidance suitable for presenting to a user.
+func (err *Error) Hint() string { return err.hint }
+
+// Expected returns the expected integrity value, when present.
+func (err *Error) Expected() string { return err.expected }
+
+// Received returns the received integrity value, when present.
+func (err *Error) Received() string { return err.received }
+
+// ErrorOption adds structured context without exposing Error's representation
+// or requiring a separate constructor for every combination of metadata.
+type ErrorOption func(*Error)
+
+// WithAsset associates an error with one logical asset.
+func WithAsset(asset string) ErrorOption {
+	return func(err *Error) { err.asset = asset }
+}
+
+// WithHint attaches recovery guidance to an error.
+func WithHint(hint string) ErrorOption {
+	return func(err *Error) { err.hint = hint }
+}
+
+// WithIntegrity records the values needed to diagnose an integrity failure.
+func WithIntegrity(expected, received string) ErrorOption {
+	return func(err *Error) {
+		err.expected = expected
+		err.received = received
+	}
+}
+
+// NewConfigurationError reports invalid or inconsistent project input.
+func NewConfigurationError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindConfiguration, err, options...)
+}
+
+// NewFilesystemError reports a failure while accessing local project state.
+func NewFilesystemError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindFilesystem, err, options...)
+}
+
+// NewIntegrityError reports bytes that cannot satisfy the accepted state.
+func NewIntegrityError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindIntegrity, err, options...)
+}
+
+// NewNetworkError reports a failure while communicating with a remote host.
+func NewNetworkError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindNetwork, err, options...)
+}
+
+// NewCancelledError reports an operation stopped by context cancellation.
+func NewCancelledError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindCancelled, err, options...)
+}
+
+// NewUnsupportedError reports a platform capability required by dac.
+func NewUnsupportedError(err error, options ...ErrorOption) error {
+	return newError(ErrorKindUnsupported, err, options...)
+}
+
+// newError centralizes nil preservation so wrappers remain safe in cleanup and
+// error-joining paths where an optional operation may have succeeded.
+func newError(kind ErrorKind, err error, options ...ErrorOption) error {
 	if err == nil {
 		return nil
 	}
-	return &Error{Kind: kind, Err: err}
+	result := &Error{kind: kind, err: err}
+	for _, option := range options {
+		option(result)
+	}
+	return result
 }

@@ -99,17 +99,20 @@ func (writer *Writer) Error(stderr io.Writer, err error) int {
 	}
 	var operation *project.Error
 	if !errors.As(err, &operation) {
-		operation = &project.Error{Kind: "filesystem", Err: err}
-	}
-	if writer.options.JSON {
-		_ = json.NewEncoder(stderr).Encode(errorOutput{Version: project.Version, Kind: operation.Kind, Message: sanitizeError(operation.Err.Error()), Asset: operation.Asset, Hint: operation.Hint, Expected: operation.Expected, Received: operation.Received})
-	} else {
-		_, _ = fmt.Fprintf(stderr, "Error: %s\n", sanitizeError(operation.Error()))
-		if operation.Hint != "" {
-			_, _ = fmt.Fprintln(stderr, operation.Hint)
+		wrapped := project.NewFilesystemError(err)
+		if !errors.As(wrapped, &operation) {
+			return 1
 		}
 	}
-	if operation.Kind == "configuration" {
+	if writer.options.JSON {
+		_ = json.NewEncoder(stderr).Encode(errorOutput{Version: project.Version, Kind: string(operation.Kind()), Message: sanitizeError(operation.Message()), Asset: operation.Asset(), Hint: operation.Hint(), Expected: operation.Expected(), Received: operation.Received()})
+	} else {
+		_, _ = fmt.Fprintf(stderr, "Error: %s\n", sanitizeError(operation.Error()))
+		if operation.Hint() != "" {
+			_, _ = fmt.Fprintln(stderr, operation.Hint())
+		}
+	}
+	if operation.Kind() == project.ErrorKindConfiguration {
 		return 2
 	}
 	return 1

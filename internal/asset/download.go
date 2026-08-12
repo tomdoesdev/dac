@@ -97,11 +97,11 @@ func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, 
 func (downloader *Downloader) newRequest(ctx context.Context, request Request) (*http.Request, error) {
 	headers, err := requestHeaders(request.Headers)
 	if err != nil {
-		return nil, &project.Error{Kind: "configuration", Asset: request.Name, Err: err}
+		return nil, project.NewConfigurationError(err, project.WithAsset(request.Name))
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
 	if err != nil {
-		return nil, &project.Error{Kind: "configuration", Asset: request.Name, Err: ErrInvalidDownloadRequest}
+		return nil, project.NewConfigurationError(ErrInvalidDownloadRequest, project.WithAsset(request.Name))
 	}
 	httpRequest.Header = headers
 	httpRequest.Header.Set("User-Agent", downloader.userAgent)
@@ -114,13 +114,13 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 	response, err := downloader.client.Do(request)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return nil, &project.Error{Kind: "cancelled", Asset: assetName, Err: context.Canceled}
+			return nil, project.NewCancelledError(context.Canceled, project.WithAsset(assetName))
 		}
-		return nil, &project.Error{Kind: "network", Asset: assetName, Err: ErrDownloadTransport}
+		return nil, project.NewNetworkError(ErrDownloadTransport, project.WithAsset(assetName))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()
-		return nil, &project.Error{Kind: "network", Asset: assetName, Err: &downloadStatusError{statusCode: response.StatusCode}}
+		return nil, project.NewNetworkError(&downloadStatusError{statusCode: response.StatusCode}, project.WithAsset(assetName))
 	}
 	return response, nil
 }
@@ -130,17 +130,17 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 func stageResponse(downloads *os.Root, request Request, body io.Reader, expected string) (_ *StagedDownload, err error) {
 	temporary, err := atomic.CreateRoot(downloads, request.File, 0o644)
 	if err != nil {
-		return nil, project.NewError("filesystem", err)
+		return nil, project.NewFilesystemError(err)
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, project.NewError("filesystem", temporary.Discard()))
+			err = errors.Join(err, project.NewFilesystemError(temporary.Discard()))
 		}
 	}()
 
 	size, digest, err := copyWithDigest(temporary, body)
 	if err != nil {
-		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: ErrDownloadBody}
+		return nil, project.NewNetworkError(ErrDownloadBody, project.WithAsset(request.Name))
 	}
 	if err := verifyExpectedDigest(request.Name, expected, digest); err != nil {
 		return nil, err
@@ -158,13 +158,11 @@ func verifyExpectedDigest(assetName, expected, received string) error {
 	if received == normalized {
 		return nil
 	}
-	return &project.Error{
-		Kind:     "integrity",
-		Asset:    assetName,
-		Expected: normalized,
-		Received: received,
-		Err:      ErrDigestMismatch,
-	}
+	return project.NewIntegrityError(
+		ErrDigestMismatch,
+		project.WithAsset(assetName),
+		project.WithIntegrity(normalized, received),
+	)
 }
 
 // VerifyLocal hashes a regular managed file only when its size can match. A
@@ -175,19 +173,19 @@ func VerifyLocal(downloads *os.Root, name, expected string, size int64) (bool, e
 		return false, nil
 	}
 	if err != nil {
-		return false, project.NewError("filesystem", err)
+		return false, project.NewFilesystemError(err)
 	}
 	if !info.Mode().IsRegular() || info.Size() != size {
 		return false, nil
 	}
 	file, err := downloads.Open(name)
 	if err != nil {
-		return false, project.NewError("filesystem", err)
+		return false, project.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Close() }()
 	digest, err := computeDigest(file)
 	if err != nil {
-		return false, project.NewError("filesystem", err)
+		return false, project.NewFilesystemError(err)
 	}
 	return digest == expected, nil
 }

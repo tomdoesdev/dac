@@ -38,17 +38,17 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		if _, exists := value.Files[command.Name]; exists {
-			return &project.Error{Kind: "configuration", Asset: command.Name, Err: errors.New("asset already exists")}
+			return project.NewConfigurationError(errors.New("asset already exists"), project.WithAsset(command.Name))
 		}
 		variables, err := parseSets(command.Set)
 		if err != nil {
-			return project.NewError("configuration", err)
+			return project.NewConfigurationError(err)
 		}
 		fileName := command.File
 		if fileName == "" {
 			fileName, err = manifest.InferFile(command.URL)
 			if err != nil {
-				return &project.Error{Kind: "configuration", Asset: command.Name, Err: err}
+				return project.NewConfigurationError(err, project.WithAsset(command.Name))
 			}
 		}
 		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: variables}

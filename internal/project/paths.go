@@ -29,16 +29,16 @@ func (paths Paths) LockPath() string  { return flock.HiddenPath(paths.Manifest()
 func (paths Paths) OpenDownloads() (*os.Root, error) {
 	root, err := os.OpenRoot(paths.Root)
 	if err != nil {
-		return nil, NewError("filesystem", err)
+		return nil, NewFilesystemError(err)
 	}
 	defer func() { _ = root.Close() }()
 	managed := filepath.Join(".dac", "downloads")
 	if err := root.MkdirAll(managed, 0o755); err != nil {
-		return nil, NewError("filesystem", err)
+		return nil, NewFilesystemError(err)
 	}
 	downloads, err := root.OpenRoot(managed)
 	if err != nil {
-		return nil, NewError("filesystem", err)
+		return nil, NewFilesystemError(err)
 	}
 	return downloads, nil
 }
@@ -48,7 +48,7 @@ func (paths Paths) OpenDownloads() (*os.Root, error) {
 func Discover(start string) (Paths, error) {
 	directory, err := filepath.Abs(start)
 	if err != nil {
-		return Paths{}, NewError("filesystem", err)
+		return Paths{}, NewFilesystemError(err)
 	}
 	if info, statErr := os.Stat(directory); statErr == nil && !info.IsDir() {
 		directory = filepath.Dir(directory)
@@ -58,11 +58,11 @@ func Discover(start string) (Paths, error) {
 		if _, err := os.Stat(candidate); err == nil {
 			return Paths{Root: directory}, nil
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return Paths{}, NewError("filesystem", err)
+			return Paths{}, NewFilesystemError(err)
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return Paths{}, &Error{Kind: "configuration", Hint: "run `dac init`", Err: errors.New("no dac.toml found in this directory or any parent directory")}
+			return Paths{}, NewConfigurationError(errors.New("no dac.toml found in this directory or any parent directory"), WithHint("run `dac init`"))
 		}
 		directory = parent
 	}
@@ -73,7 +73,7 @@ func Discover(start string) (Paths, error) {
 func (paths Paths) WithLock(ctx context.Context, work func(context.Context) error) error {
 	err := flock.Hold(ctx, paths.LockPath(), work, flock.RemoveOnRelease())
 	if errors.Is(err, errors.ErrUnsupported) {
-		return NewError("unsupported", errors.New("dac requires flock(2) on this platform"))
+		return NewUnsupportedError(errors.New("dac requires flock(2) on this platform"))
 	}
 	var operation *Error
 	if errors.As(err, &operation) {
@@ -82,10 +82,10 @@ func (paths Paths) WithLock(ctx context.Context, work func(context.Context) erro
 		return err
 	}
 	if errors.Is(err, context.Canceled) {
-		return NewError("cancelled", err)
+		return NewCancelledError(err)
 	}
 	if err != nil {
-		return NewError("filesystem", err)
+		return NewFilesystemError(err)
 	}
 	return nil
 }

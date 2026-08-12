@@ -34,21 +34,21 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 		file := value.Files[name]
 		resolvedURL, err := renderTemplate("url", file.URL, file.Variables)
 		if err != nil {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: err}
+			return nil, project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		if err := ValidateResolvedURL(resolvedURL); err != nil {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: err}
+			return nil, project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		resolvedFile, err := renderTemplate("file", file.File, file.Variables)
 		if err != nil {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: err}
+			return nil, project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		if filename.Clean(resolvedFile) != resolvedFile {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: errors.New("rendered file must be one safe filename")}
+			return nil, project.NewConfigurationError(errors.New("rendered file must be one safe filename"), project.WithAsset(name))
 		}
 		key := filenameCollisionKey(resolvedFile)
 		if existing, exists := seen[key]; exists {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: fmt.Errorf("file %q conflicts with asset %q", resolvedFile, existing)}
+			return nil, project.NewConfigurationError(fmt.Errorf("file %q conflicts with asset %q", resolvedFile, existing), project.WithAsset(name))
 		}
 		seen[key] = name
 		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile})

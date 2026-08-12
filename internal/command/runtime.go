@@ -34,7 +34,7 @@ func Register(app *cli.App, dependencies Dependencies) {
 func (runtime *runtime) project() (project.Paths, error) {
 	directory, err := runtime.CWD()
 	if err != nil {
-		return project.Paths{}, project.NewError("filesystem", err)
+		return project.Paths{}, project.NewFilesystemError(err)
 	}
 	return project.Discover(directory)
 }
@@ -53,7 +53,7 @@ func (runtime *runtime) calculatePin(ctx context.Context, paths project.Paths, r
 	}
 	digest := download.Digest
 	if err := download.Discard(); err != nil {
-		return "", project.NewError("filesystem", err)
+		return "", project.NewFilesystemError(err)
 	}
 	return digest, nil
 }

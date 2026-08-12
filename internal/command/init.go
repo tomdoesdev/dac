@@ -18,14 +18,14 @@ func (*initCommand) Description() string { return "Create a dac project in the c
 func (command *initCommand) Run(ctx context.Context) error {
 	directory, err := command.runtime.CWD()
 	if err != nil {
-		return project.NewError("filesystem", err)
+		return project.NewFilesystemError(err)
 	}
 	paths := project.Paths{Root: directory}
 	return paths.WithLock(ctx, func(context.Context) error {
 		if _, err := os.Stat(paths.Manifest()); err == nil {
-			return &project.Error{Kind: "configuration", Err: errors.New("dac.toml already exists")}
+			return project.NewConfigurationError(errors.New("dac.toml already exists"))
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return project.NewError("filesystem", err)
+			return project.NewFilesystemError(err)
 		}
 		downloads, err := paths.OpenDownloads()
 		if err != nil {

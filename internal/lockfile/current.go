@@ -57,7 +57,7 @@ func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 }
 
 func staleError(name string) error {
-	return &project.Error{Kind: "configuration", Asset: name, Hint: Hint(name), Err: errors.New("dac.lock is stale")}
+	return project.NewConfigurationError(errors.New("dac.lock is stale"), project.WithAsset(name), project.WithHint(Hint(name)))
 }
 
 // Hint formats a command that safely selects one opaque asset name.

@@ -41,11 +41,11 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		}
 		file, exists := value.Files[command.Name]
 		if !exists {
-			return &project.Error{Kind: "configuration", Asset: command.Name, Err: errors.New("asset does not exist")}
+			return project.NewConfigurationError(errors.New("asset does not exist"), project.WithAsset(command.Name))
 		}
 		sets, err := parseSets(command.Set)
 		if err != nil {
-			return project.NewError("configuration", err)
+			return project.NewConfigurationError(err)
 		}
 		if file.Variables == nil {
 			file.Variables = map[string]string{}

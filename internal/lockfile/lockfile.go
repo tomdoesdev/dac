@@ -34,14 +34,14 @@ type Asset struct {
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, &project.Error{Kind: "configuration", Hint: "run `dac lock`", Err: errors.New("dac.lock does not exist")}
+		return Lockfile{}, project.NewConfigurationError(errors.New("dac.lock does not exist"), project.WithHint("run `dac lock`"))
 	}
 	if err != nil {
-		return Lockfile{}, project.NewError("filesystem", err)
+		return Lockfile{}, project.NewFilesystemError(err)
 	}
 	var value Lockfile
 	if err := strictjson.Unmarshal(data, &value); err != nil {
-		return Lockfile{}, project.NewError("configuration", fmt.Errorf("decode dac.lock: %w", err))
+		return Lockfile{}, project.NewConfigurationError(fmt.Errorf("decode dac.lock: %w", err))
 	}
 	if err := Validate(value); err != nil {
 		return Lockfile{}, err
@@ -55,7 +55,7 @@ func LoadOptional(path string) (Lockfile, bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return Lockfile{}, false, nil
 	} else if err != nil {
-		return Lockfile{}, false, project.NewError("filesystem", err)
+		return Lockfile{}, false, project.NewFilesystemError(err)
 	}
 	value, err := Load(path)
 	return value, true, err
@@ -69,15 +69,15 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return nil, project.NewError("filesystem", err)
+		return nil, project.NewFilesystemError(err)
 	}
 	file, err := atomic.Create(path, 0o644)
 	if err != nil {
-		return nil, project.NewError("filesystem", err)
+		return nil, project.NewFilesystemError(err)
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
 		cleanupErr := file.Discard()
-		return nil, project.NewError("filesystem", errors.Join(err, cleanupErr))
+		return nil, project.NewFilesystemError(errors.Join(err, cleanupErr))
 	}
 	return file, nil
 }
@@ -86,21 +86,21 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 // verification ambiguous.
 func Validate(value Lockfile) error {
 	if value.Version != project.Version {
-		return &project.Error{Kind: "configuration", Err: fmt.Errorf("unsupported dac.lock version %d", value.Version)}
+		return project.NewConfigurationError(fmt.Errorf("unsupported dac.lock version %d", value.Version))
 	}
 	if value.Files == nil {
-		return &project.Error{Kind: "configuration", Err: errors.New("dac.lock must contain files")}
+		return project.NewConfigurationError(errors.New("dac.lock must contain files"))
 	}
 	for name, file := range value.Files {
 		if !manifest.ValidAssetName(name) || file.ResolvedURL == "" || filename.Clean(file.ResolvedFile) != file.ResolvedFile || file.Size < 0 {
-			return &project.Error{Kind: "configuration", Asset: name, Err: errors.New("invalid lock entry")}
+			return project.NewConfigurationError(errors.New("invalid lock entry"), project.WithAsset(name))
 		}
 		if err := manifest.ValidateResolvedURL(file.ResolvedURL); err != nil {
-			return &project.Error{Kind: "configuration", Asset: name, Err: fmt.Errorf("invalid resolved_url: %w", err)}
+			return project.NewConfigurationError(fmt.Errorf("invalid resolved_url: %w", err), project.WithAsset(name))
 		}
 		digest, err := asset.NormalizeDigest(file.Digest)
 		if err != nil {
-			return &project.Error{Kind: "configuration", Asset: name, Err: fmt.Errorf("invalid digest: %w", err)}
+			return project.NewConfigurationError(fmt.Errorf("invalid digest: %w", err), project.WithAsset(name))
 		}
 		file.Digest = digest
 		value.Files[name] = file

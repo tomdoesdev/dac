@@ -51,7 +51,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		}
 		if len(command.Names) > 0 {
 			if !hasLock && len(selected) != len(resolved) {
-				return &project.Error{Kind: "configuration", Hint: "run `dac lock`", Err: errors.New("targeted lock requires a complete existing dac.lock")}
+				return project.NewConfigurationError(errors.New("targeted lock requires a complete existing dac.lock"), project.WithHint("run `dac lock`"))
 			}
 			if hasLock {
 				if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
@@ -122,10 +122,10 @@ func selectedNames(names []string, values []manifest.ResolvedAsset) (map[string]
 	}
 	for _, name := range names {
 		if !known[name] {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: errors.New("asset does not exist")}
+			return nil, project.NewConfigurationError(errors.New("asset does not exist"), project.WithAsset(name))
 		}
 		if result[name] {
-			return nil, &project.Error{Kind: "configuration", Asset: name, Err: errors.New("asset selected more than once")}
+			return nil, project.NewConfigurationError(errors.New("asset selected more than once"), project.WithAsset(name))
 		}
 		result[name] = true
 	}
@@ -164,7 +164,7 @@ func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset) ([]st
 			commits = append(commits, commit)
 		}
 		if err != nil {
-			return nil, rollback(commits, project.NewError("filesystem", err))
+			return nil, rollback(commits, project.NewFilesystemError(err))
 		}
 	}
 	commit, err := transaction.lock.CommitReversible()
@@ -172,7 +172,7 @@ func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset) ([]st
 		commits = append(commits, commit)
 	}
 	if err != nil {
-		return nil, rollback(commits, project.NewError("filesystem", err))
+		return nil, rollback(commits, project.NewFilesystemError(err))
 	}
 	warnings := make([]string, 0)
 	for _, commit := range commits {

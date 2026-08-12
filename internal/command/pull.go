@@ -78,12 +78,12 @@ func (command *pullCommand) Run(ctx context.Context) error {
 				return err
 			}
 			if err := download.Commit(); err != nil {
-				return project.NewError("filesystem", errors.Join(err, download.Discard()))
+				return project.NewFilesystemError(errors.Join(err, download.Discard()))
 			}
 			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
 		}
 		if len(invalid) > 0 {
-			return &project.Error{Kind: "integrity", Err: fmt.Errorf("offline verification failed for %s", quoteAssetNames(invalid))}
+			return project.NewIntegrityError(fmt.Errorf("offline verification failed for %s", quoteAssetNames(invalid)))
 		}
 		return command.runtime.Output.Success("pull", paths, results, nil)
 	})
