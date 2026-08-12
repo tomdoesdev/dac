@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/cli"
 )
@@ -62,7 +61,7 @@ func TestSuccessWarningsReachHumanAndJSONOutputSafely(t *testing.T) {
 			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 			writer := New(&Options{JSON: jsonMode}, stdout, stderr)
 			warning := "cleanup failed for https://example.com/file?token=secret"
-			if err := writer.Success("lock", project.Paths{Root: "/project"}, nil, []string{warning}); err != nil {
+			if err := writer.Success("lock", "/project", nil, []string{warning}); err != nil {
 				t.Fatal(err)
 			}
 			combined := stdout.String() + stderr.String()
@@ -91,10 +90,10 @@ func TestHumanOutputUsesSemanticColors(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	writer := New(&Options{}, stdout, stderr)
 
-	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "asset", Status: "downloaded"}}, []string{"check cache"}); err != nil {
+	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, []string{"check cache"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Status(project.Paths{}, []Result{
+	if err := writer.Status("", []Result{
 		{Name: "healthy", Status: "verified"},
 		{Name: "broken", Status: "invalid", Reason: "digest mismatch"},
 		{Name: "absent", Status: "missing"},
@@ -113,16 +112,17 @@ func TestHumanOutputUsesSemanticColors(t *testing.T) {
 // interactive contract while ensuring URL paths and query secrets stay hidden.
 func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	writer := New(&Options{}, stdout, stderr)
-	writer.throbberMode = cli.ThrobberAlways
-	writer.throbberInterval = time.Hour
+	writer := New(&Options{}, stdout, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
 
-	err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/private/asset.zip?token=secret", func(context.Context) error { return nil })
+	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/private/asset.zip?token=secret", func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Success("pull", project.Paths{}, []Result{
-		{Name: "artifact", Status: "downloaded"},
+	if !reported {
+		t.Fatal("an animated download did not report that it announced itself")
+	}
+	if err := writer.Success("pull", "", []Result{
+		{Name: "artifact", Status: "downloaded", Reported: reported},
 		{Name: "cached", Status: "verified"},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -144,10 +144,14 @@ func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T)
 func TestRedirectedDownloadProgressFallsBackToSuccess(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	writer := New(&Options{}, stdout, stderr)
-	if err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil })
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "artifact", Status: "downloaded"}}, nil); err != nil {
+	if reported {
+		t.Fatal("a non-animated download claimed to have announced itself")
+	}
+	if err := writer.Success("pull", "", []Result{{Name: "artifact", Status: "downloaded", Reported: reported}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := stdout.String(), "downloaded artifact\n"; got != want || stderr.Len() != 0 {
@@ -159,11 +163,9 @@ func TestRedirectedDownloadProgressFallsBackToSuccess(t *testing.T) {
 // from leaving a misleading completion record before the normal error output.
 func TestFailedDownloadProgressClearsWithoutSuccess(t *testing.T) {
 	stderr := &bytes.Buffer{}
-	writer := New(&Options{}, &bytes.Buffer{}, stderr)
-	writer.throbberMode = cli.ThrobberAlways
-	writer.throbberInterval = time.Hour
+	writer := New(&Options{}, &bytes.Buffer{}, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
 	want := errors.New("download failed")
-	err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return want })
+	_, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return want })
 	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✔") || !strings.HasSuffix(stderr.String(), "\r\x1b[2K") {
 		t.Fatalf("error=%v stderr=%q", err, stderr.String())
 	}
@@ -177,12 +179,11 @@ func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
 
 	jsonOutput := &bytes.Buffer{}
 	jsonError := &bytes.Buffer{}
-	writer := New(&Options{JSON: true}, jsonOutput, jsonError)
-	writer.throbberMode = cli.ThrobberAlways
-	if err := writer.WithDownloadProgress(context.Background(), "asset", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+	writer := New(&Options{JSON: true}, jsonOutput, jsonError, WithThrobber(cli.ThrobberAlways, defaultThrobberInterval))
+	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
+	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(jsonOutput.String(), "\x1b[") || !json.Valid(jsonOutput.Bytes()) || jsonError.Len() != 0 {
@@ -191,12 +192,11 @@ func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
 
 	quietOutput := &bytes.Buffer{}
 	quietError := &bytes.Buffer{}
-	writer = New(&Options{Quiet: true}, quietOutput, quietError)
-	writer.throbberMode = cli.ThrobberAlways
-	if err := writer.WithDownloadProgress(context.Background(), "asset", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+	writer = New(&Options{Quiet: true}, quietOutput, quietError, WithThrobber(cli.ThrobberAlways, defaultThrobberInterval))
+	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
+	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if quietOutput.Len() != 0 || quietError.Len() != 0 {

@@ -35,6 +35,6 @@ func (command *initCommand) Run(ctx context.Context) error {
 			return err
 		}
 		_ = downloads.Close()
-		return command.runtime.Output.Success("init", paths, []output.Result{{Name: filepath.Base(paths.Root), Status: "initialized"}}, nil)
+		return command.runtime.Output.Success("init", paths.Root, []output.Result{{Name: filepath.Base(paths.Root), Status: "initialized"}}, nil)
 	})
 }

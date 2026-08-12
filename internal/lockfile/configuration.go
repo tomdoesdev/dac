@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"hash"
 	"sort"
-	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/manifest"
@@ -43,7 +42,7 @@ func writeDigestMap(hasher hash.Hash, values map[string]string, foldKeys bool) {
 	normalized := make(map[string]string, len(values))
 	for key, value := range values {
 		if foldKeys {
-			key = strings.ToLower(key)
+			key = asset.HeaderIdentity(key)
 		}
 		keys = append(keys, key)
 		normalized[key] = value

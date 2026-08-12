@@ -73,6 +73,11 @@ func ValidateHeaders(headers map[string]string) error {
 	return nil
 }
 
+// HeaderIdentity returns the key under which HTTP considers two header names
+// the same. Every package that indexes, deduplicates, or digests headers by
+// name uses it, so the case-insensitivity rule has one owner.
+func HeaderIdentity(name string) string { return strings.ToLower(name) }
+
 // ValidateHeaderName applies the grammar and transport-ownership rules to one
 // header name. Callers that edit headers by name only, such as a removal flag,
 // use it instead of validating a synthetic single-entry map.
@@ -80,7 +85,7 @@ func ValidateHeaderName(name string) error {
 	if !validHeaderName(name) {
 		return newHeaderError(ErrInvalidHeader, name, "name is invalid")
 	}
-	if _, managed := transportManagedHeaderNames[strings.ToLower(name)]; managed {
+	if _, managed := transportManagedHeaderNames[HeaderIdentity(name)]; managed {
 		return newHeaderError(ErrDisallowedHeader, name, "managed by the HTTP transport")
 	}
 	return nil
@@ -93,7 +98,7 @@ func validateHeader(name, value string, seen map[string]struct{}) error {
 		return err
 	}
 
-	canonicalName := strings.ToLower(name)
+	canonicalName := HeaderIdentity(name)
 	if _, exists := seen[canonicalName]; exists {
 		return newHeaderError(ErrInvalidHeader, name, "duplicates another header name")
 	}

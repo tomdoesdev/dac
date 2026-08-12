@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"strings"
 
+	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -36,7 +36,7 @@ type updateCommand struct {
 // assetEdits is one update's parsed set algebra over variables and headers.
 type assetEdits struct {
 	variables      map[string]string
-	unsetVariables map[string]bool
+	unsetVariables map[string]string
 	headers        map[string]string
 	removedHeaders map[string]string
 }
@@ -72,7 +72,7 @@ func (command *updateCommand) Validate() error {
 		return err
 	}
 	for key := range sets {
-		if unsets[key] {
+		if _, exists := unsets[key]; exists {
 			return fmt.Errorf("%w: variable %q", ErrEditConflict, key)
 		}
 	}
@@ -85,7 +85,7 @@ func (command *updateCommand) Validate() error {
 		return err
 	}
 	for key := range headers {
-		if _, exists := removedHeaders[strings.ToLower(key)]; exists {
+		if _, exists := removedHeaders[asset.HeaderIdentity(key)]; exists {
 			return fmt.Errorf("%w: header %q", ErrEditConflict, key)
 		}
 	}
@@ -157,7 +157,7 @@ func (command *updateCommand) Run(ctx context.Context) error {
 			return err
 		}
 		result := output.Result{Name: command.Name, Status: "updated", File: resolvedAsset.ResolvedFile, Digest: candidate.Pin}
-		return command.runtime.Output.Success("update", paths, []output.Result{result}, nil)
+		return command.runtime.Output.Success("update", paths.Root, []output.Result{result}, nil)
 	})
 }
 
@@ -237,8 +237,9 @@ func normalizeAssetMaps(value *manifest.Asset) {
 
 // headerKey finds the persisted spelling of a case-insensitive HTTP header.
 func headerKey(headers map[string]string, requested string) (string, bool) {
+	identity := asset.HeaderIdentity(requested)
 	for name := range headers {
-		if strings.EqualFold(name, requested) {
+		if asset.HeaderIdentity(name) == identity {
 			return name, true
 		}
 	}

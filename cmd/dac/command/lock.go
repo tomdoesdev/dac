@@ -74,19 +74,22 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		transaction := lockfile.NewTransaction()
 		defer transaction.Discard()
 		order := make([]string, 0, resolved.Len())
+		announced := make(map[string]bool, resolved.Len())
 		for _, resolvedAsset := range resolved.All() {
 			order = append(order, resolvedAsset.Name)
 			if !selected[resolvedAsset.Name] {
 				continue
 			}
 			var download *asset.StagedDownload
-			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, resolvedAsset.ResolvedFile, resolvedAsset.ResolvedURL, func(ctx context.Context) error {
-				download, err = command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), resolvedAsset.Pin)
-				return err
+			reported, err := command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.ResolvedFile, resolvedAsset.ResolvedURL, func(ctx context.Context) error {
+				var downloadErr error
+				download, downloadErr = command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), resolvedAsset.Pin)
+				return downloadErr
 			})
 			if err != nil {
 				return err
 			}
+			announced[resolvedAsset.Name] = reported
 			transaction.Add(resolvedAsset.Name, download)
 			next.Files[resolvedAsset.Name] = lockfile.Asset{
 				ResolvedURL: resolvedAsset.ResolvedURL, ResolvedFile: resolvedAsset.ResolvedFile,
@@ -116,10 +119,10 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		results := make([]output.Result, 0, len(selected))
 		for _, resolvedAsset := range resolved.All() {
 			if file, ok := next.Files[resolvedAsset.Name]; ok && selected[resolvedAsset.Name] {
-				results = append(results, output.Result{Name: resolvedAsset.Name, Status: "locked", File: file.ResolvedFile, Digest: file.Digest, Size: file.Size})
+				results = append(results, output.Result{Name: resolvedAsset.Name, Status: "locked", File: file.ResolvedFile, Digest: file.Digest, Size: file.Size, Reported: announced[resolvedAsset.Name]})
 			}
 		}
-		return command.runtime.Output.Success("lock", paths, results, warnings)
+		return command.runtime.Output.Success("lock", paths.Root, results, warnings)
 	})
 }
 

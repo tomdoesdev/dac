@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/fault"
-	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/cli"
 )
@@ -41,6 +40,11 @@ type Result struct {
 	Digest string `json:"digest,omitempty"`
 	Size   int64  `json:"size,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Reported records that progress output already announced this asset, so
+	// the summary does not repeat it. WithDownloadProgress reports whether it
+	// printed; carrying the answer here keeps Success a function of its
+	// arguments rather than of what the writer happens to remember.
+	Reported bool `json:"-"`
 }
 
 // Orphan describes lock metadata or a download entry outside desired state.
@@ -72,28 +76,46 @@ type errorOutput struct {
 
 // Writer applies one invocation's output mode to command results.
 type Writer struct {
-	options           *Options
-	stdout            io.Writer
-	stderr            io.Writer
-	stdoutStyler      *cli.Styler
-	stderrStyler      *cli.Styler
-	throbberMode      cli.ThrobberMode
-	throbberInterval  time.Duration
-	reportedDownloads map[string]bool
+	options          *Options
+	stdout           io.Writer
+	stderr           io.Writer
+	stdoutStyler     *cli.Styler
+	stderrStyler     *cli.Styler
+	throbberMode     cli.ThrobberMode
+	throbberInterval time.Duration
+}
+
+// defaultThrobberInterval paces the progress animation fast enough to look
+// live without redrawing more often than a terminal can usefully show.
+const defaultThrobberInterval = 100 * time.Millisecond
+
+// Option adjusts a Writer at construction.
+type Option func(*Writer)
+
+// WithThrobber overrides the progress animation, which tests pin so their
+// output does not depend on wall-clock timing or on an attached terminal.
+func WithThrobber(mode cli.ThrobberMode, interval time.Duration) Option {
+	return func(writer *Writer) {
+		writer.throbberMode = mode
+		writer.throbberInterval = interval
+	}
 }
 
 // New creates an output writer bound to the invocation's global options.
-func New(options *Options, stdout, stderr io.Writer) *Writer {
-	return &Writer{
-		options:           options,
-		stdout:            stdout,
-		stderr:            stderr,
-		stdoutStyler:      cli.NewStyler(stdout, cli.ColorAuto),
-		stderrStyler:      cli.NewStyler(stderr, cli.ColorAuto),
-		throbberMode:      cli.ThrobberAuto,
-		throbberInterval:  100 * time.Millisecond,
-		reportedDownloads: make(map[string]bool),
+func New(options *Options, stdout, stderr io.Writer, opts ...Option) *Writer {
+	writer := &Writer{
+		options:          options,
+		stdout:           stdout,
+		stderr:           stderr,
+		stdoutStyler:     cli.NewStyler(stdout, cli.ColorAuto),
+		stderrStyler:     cli.NewStyler(stderr, cli.ColorAuto),
+		throbberMode:     cli.ThrobberAuto,
+		throbberInterval: defaultThrobberInterval,
 	}
+	for _, option := range opts {
+		option(writer)
+	}
+	return writer
 }
 
 // ValidateOptions lets each command participate in cli's normal validation
@@ -101,17 +123,17 @@ func New(options *Options, stdout, stderr io.Writer) *Writer {
 func (writer *Writer) ValidateOptions() error { return writer.options.Validate() }
 
 // Success writes a successful command result in the selected output mode.
-func (writer *Writer) Success(command string, paths project.Paths, assets []Result, warnings []string) error {
+func (writer *Writer) Success(command, root string, assets []Result, warnings []string) error {
 	safeWarnings := make([]string, len(warnings))
 	for index, warning := range warnings {
 		safeWarnings[index] = redact.URLs(warning)
 	}
 	if writer.options.JSON {
-		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: command, Project: paths.Root, Assets: assets, Warnings: safeWarnings})
+		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: command, Project: root, Assets: assets, Warnings: safeWarnings})
 	}
 	if !writer.options.Quiet {
 		for _, asset := range assets {
-			if asset.Status == "downloaded" && writer.reportedDownloads[asset.Name] {
+			if asset.Reported {
 				continue
 			}
 			if _, err := fmt.Fprintf(writer.stdout, "%s %s\n", writer.stdoutStyler.Success(asset.Status), asset.Name); err != nil {
@@ -128,14 +150,17 @@ func (writer *Writer) Success(command string, paths project.Paths, assets []Resu
 }
 
 // WithDownloadProgress runs operation with DAC's human download presentation.
-// Non-interactive, structured, and quiet invocations fall back to Success output.
-func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filename, sourceURL string, operation func(context.Context) error) error {
+// Non-interactive, structured, and quiet invocations fall back to Success
+// output. It reports whether it announced the completed download, which the
+// caller records on the Result so the summary does not repeat it.
+func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, sourceURL string, operation func(context.Context) error) (bool, error) {
 	mode := writer.throbberMode
 	if writer.options.JSON || writer.options.Quiet {
 		mode = cli.ThrobberNever
 	}
 	source := downloadHostname(sourceURL)
 	message := fmt.Sprintf("Downloading %s from %s…", filename, source)
+	var reported bool
 	throbber := cli.NewThrobber(
 		writer.stderr,
 		message,
@@ -146,7 +171,7 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filen
 			if !end.Animated || end.Err != nil || writer.options.JSON || writer.options.Quiet {
 				return ""
 			}
-			writer.reportedDownloads[assetName] = true
+			reported = true
 			return fmt.Sprintf("%s %s %s from %s (%s)",
 				writer.stderrStyler.Success("✔"),
 				filename,
@@ -155,7 +180,8 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filen
 				formatElapsed(end.Elapsed))
 		}),
 	)
-	return throbber.Run(ctx, operation)
+	err := throbber.Run(ctx, operation)
+	return reported, err
 }
 
 // downloadHostname deliberately retains only the least sensitive useful part
@@ -179,9 +205,9 @@ func formatElapsed(elapsed time.Duration) string {
 
 // Status writes a complete observational report without turning unhealthy
 // states into command failures.
-func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orphan) error {
+func (writer *Writer) Status(root string, assets []Result, orphans []Orphan) error {
 	if writer.options.JSON {
-		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: "status", Project: paths.Root, Assets: assets, Orphans: orphans})
+		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: "status", Project: root, Assets: assets, Orphans: orphans})
 	}
 	if writer.options.Quiet {
 		return nil

@@ -73,7 +73,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 				invalid = append(invalid, resolvedAsset.Name)
 				continue
 			}
-			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
+			reported, err := command.runtime.Output.WithDownloadProgress(ctx, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
 				download, err := command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), locked.Digest)
 				if err != nil {
 					return err
@@ -86,12 +86,12 @@ func (command *pullCommand) Run(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
+			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size, Reported: reported})
 		}
 		if len(invalid) > 0 {
 			return fault.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
 		}
-		return command.runtime.Output.Success("pull", paths, results, nil)
+		return command.runtime.Output.Success("pull", paths.Root, results, nil)
 	})
 }
 

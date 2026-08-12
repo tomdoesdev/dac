@@ -57,7 +57,7 @@ func (command *statusCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return command.runtime.Output.Status(paths, results, orphans)
+		return command.runtime.Output.Status(paths.Root, results, orphans)
 	})
 }
 

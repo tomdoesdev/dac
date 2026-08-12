@@ -111,6 +111,6 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		result := output.Result{Name: command.Name, Status: "added", File: resolvedAsset.ResolvedFile, Digest: candidate.Pin}
-		return command.runtime.Output.Success("add", paths, []output.Result{result}, nil)
+		return command.runtime.Output.Success("add", paths.Root, []output.Result{result}, nil)
 	})
 }
