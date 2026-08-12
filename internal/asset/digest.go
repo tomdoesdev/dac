@@ -1,7 +1,10 @@
 package asset
 
 import (
+	"encoding/hex"
 	"errors"
+	"hash"
+
 	"regexp"
 	"strings"
 )
@@ -16,4 +19,8 @@ func NormalizeDigest(value string) (string, error) {
 		return "", errors.New("expected sha256 followed by 64 hexadecimal characters")
 	}
 	return "sha256:" + strings.ToLower(matches[1]), nil
+}
+
+func DigestFromHash(h hash.Hash) string {
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }

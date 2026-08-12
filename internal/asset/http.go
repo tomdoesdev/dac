@@ -16,32 +16,100 @@ import (
 
 var environmentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+var (
+	// ErrInvalidHeader marks a header name or value that cannot be sent safely.
+	ErrInvalidHeader = errors.New("invalid HTTP header")
+	// ErrDisallowedHeader marks a transport-controlled header supplied by configuration.
+	ErrDisallowedHeader = errors.New("disallowed HTTP header")
+	// ErrMissingHeaderEnvironment marks a configured environment value that is unavailable.
+	ErrMissingHeaderEnvironment = errors.New("missing HTTP header environment variable")
+	// ErrTooManyRedirects marks a request that exceeded dac's redirect limit.
+	ErrTooManyRedirects = errors.New("too many redirects")
+)
+
+// headerError preserves the affected header and a human-readable explanation
+// while allowing callers to classify it with errors.Is.
+type headerError struct {
+	kind   error
+	name   string
+	detail string
+}
+
+func (err *headerError) Error() string {
+	return fmt.Sprintf("%v %q: %s", err.kind, err.name, err.detail)
+}
+
+func (err *headerError) Unwrap() error {
+	return err.kind
+}
+
+// newHeaderError consistently attaches context to a classifiable header error.
+func newHeaderError(kind error, name, detail string) error {
+	return &headerError{kind: kind, name: name, detail: detail}
+}
+
+var headerNamePattern = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+
+var transportManagedHeaderNames = map[string]struct{}{
+	"connection":          {},
+	"content-length":      {},
+	"host":                {},
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"te":                  {},
+	"trailer":             {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+	"user-agent":          {},
+}
+
 // ValidateHeaders rejects request forms that would interfere with the HTTP
 // transport or make secrets harder to keep out of persistent state.
 func ValidateHeaders(headers map[string]string) error {
 	seen := make(map[string]struct{}, len(headers))
 	for name, value := range headers {
-		if !validHeaderName(name) {
-			return fmt.Errorf("invalid header name %q", name)
+		if err := validateHeader(name, value, seen); err != nil {
+			return err
 		}
-		canonical := strings.ToLower(name)
-		if _, exists := seen[canonical]; exists {
-			return fmt.Errorf("duplicate header name %q", name)
+	}
+	return nil
+}
+
+// validateHeader checks one configured header while tracking names that are
+// equivalent under HTTP's case-insensitive matching rules.
+func validateHeader(name, value string, seen map[string]struct{}) error {
+	if !validHeaderName(name) {
+		return newHeaderError(ErrInvalidHeader, name, "name is invalid")
+	}
+
+	canonicalName := strings.ToLower(name)
+	if _, exists := seen[canonicalName]; exists {
+		return newHeaderError(ErrInvalidHeader, name, "duplicates another header name")
+	}
+	seen[canonicalName] = struct{}{}
+
+	if !utf8.ValidString(value) {
+		return newHeaderError(ErrInvalidHeader, name, "value must be valid UTF-8")
+	}
+	if _, managed := transportManagedHeaderNames[canonicalName]; managed {
+		return newHeaderError(ErrDisallowedHeader, name, "managed by the HTTP transport")
+	}
+
+	return validateHeaderValue(name, value)
+}
+
+// validateHeaderValue distinguishes environment references from literal
+// values because the two forms have different valid character sets.
+func validateHeaderValue(name, value string) error {
+	if environment, found := strings.CutPrefix(value, "env:"); found {
+		if !environmentPattern.MatchString(environment) {
+			return newHeaderError(ErrInvalidHeader, name, "environment variable reference is invalid")
 		}
-		seen[canonical] = struct{}{}
-		if !utf8.ValidString(value) {
-			return fmt.Errorf("header %q must be valid UTF-8", name)
-		}
-		switch canonical {
-		case "host", "content-length", "transfer-encoding", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade", "user-agent":
-			return fmt.Errorf("header %q is not allowed", name)
-		}
-		if strings.HasPrefix(value, "env:") && !environmentPattern.MatchString(strings.TrimPrefix(value, "env:")) {
-			return fmt.Errorf("header %q has an invalid environment variable reference", name)
-		}
-		if !strings.HasPrefix(value, "env:") && strings.ContainsAny(value, "\r\n") {
-			return fmt.Errorf("header %q contains an invalid line break", name)
-		}
+		return nil
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return newHeaderError(ErrInvalidHeader, name, "value contains an invalid line break")
 	}
 	return nil
 }
@@ -50,13 +118,7 @@ func validHeaderName(value string) bool {
 	if value == "" {
 		return false
 	}
-	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
-			continue
-		}
-		return false
-	}
-	return true
+	return headerNamePattern.MatchString(value)
 }
 
 // requestHeaders resolves environment indirections immediately before a
@@ -70,7 +132,7 @@ func requestHeaders(headers map[string]string) (http.Header, error) {
 		if environment, found := strings.CutPrefix(value, "env:"); found {
 			resolved, exists := os.LookupEnv(environment)
 			if !exists {
-				return nil, fmt.Errorf("requires environment variable %s", environment)
+				return nil, fmt.Errorf("%w: %s", ErrMissingHeaderEnvironment, environment)
 			}
 			value = resolved
 		}
@@ -102,7 +164,7 @@ func (dialer *netDialer) DialContext(ctx context.Context, network, address strin
 
 func redirectPolicy(request *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
-		return errors.New("too many redirects")
+		return ErrTooManyRedirects
 	}
 	if len(via) == 0 {
 		return nil

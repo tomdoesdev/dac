@@ -54,6 +54,22 @@ func (download *StagedDownload) CommitReversible() (*atomic.Commit, error) {
 // Download streams one artifact into a temporary file and verifies an optional
 // expected digest before anything reaches the managed destination.
 func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, request Request, expected string) (*StagedDownload, error) {
+	httpRequest, err := downloader.newRequest(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	response, err := downloader.doRequest(ctx, request.Name, httpRequest)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	return stageResponse(downloads, request, response.Body, expected)
+}
+
+// newRequest resolves configured headers at the last possible moment so
+// environment-backed secrets exist only for the lifetime of the HTTP request.
+func (downloader *Downloader) newRequest(ctx context.Context, request Request) (*http.Request, error) {
 	headers, err := requestHeaders(request.Headers)
 	if err != nil {
 		return nil, &project.Error{Kind: "configuration", Asset: request.Name, Err: err}
@@ -64,36 +80,68 @@ func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, 
 	}
 	httpRequest.Header = headers
 	httpRequest.Header.Set("User-Agent", downloader.userAgent)
-	response, err := downloader.client.Do(httpRequest)
+	return httpRequest, nil
+}
+
+// doRequest owns transport-specific failure classification and rejects error
+// responses before their bodies can be mistaken for downloaded artifacts.
+func (downloader *Downloader) doRequest(ctx context.Context, assetName string, request *http.Request) (*http.Response, error) {
+	response, err := downloader.client.Do(request)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return nil, &project.Error{Kind: "cancelled", Asset: request.Name, Err: context.Canceled}
+			return nil, &project.Error{Kind: "cancelled", Asset: assetName, Err: context.Canceled}
 		}
-		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: errors.New("failed to download from remote host")}
+		return nil, &project.Error{Kind: "network", Asset: assetName, Err: errors.New("failed to download from remote host")}
 	}
-	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: fmt.Errorf("server returned HTTP %d", response.StatusCode)}
+		_ = response.Body.Close()
+		return nil, &project.Error{Kind: "network", Asset: assetName, Err: fmt.Errorf("server returned HTTP %d", response.StatusCode)}
 	}
+	return response, nil
+}
+
+// stageResponse streams and hashes a successful response into an atomic file.
+// Any failure discards partial bytes before returning the original error.
+func stageResponse(downloads *os.Root, request Request, body io.Reader, expected string) (_ *StagedDownload, err error) {
 	temporary, err := atomic.CreateRoot(downloads, request.File, 0o644)
 	if err != nil {
 		return nil, project.NewError("filesystem", err)
 	}
-	hash := sha256.New()
-	size, copyErr := io.Copy(io.MultiWriter(temporary, hash), response.Body)
-	if copyErr != nil {
-		cleanupErr := temporary.Discard()
-		return nil, errors.Join(&project.Error{Kind: "network", Asset: request.Name, Err: errors.New("failed while downloading response body")}, project.NewError("filesystem", cleanupErr))
-	}
-	digest := "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	if expected != "" {
-		normalized, _ := NormalizeDigest(expected)
-		if digest != normalized {
-			cleanupErr := temporary.Discard()
-			return nil, errors.Join(&project.Error{Kind: "integrity", Asset: request.Name, Expected: normalized, Received: digest, Err: errors.New("downloaded bytes do not match expected digest")}, project.NewError("filesystem", cleanupErr))
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, project.NewError("filesystem", temporary.Discard()))
 		}
+	}()
+
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(temporary, hash), body)
+	if err != nil {
+		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: errors.New("failed while downloading response body")}
+	}
+	digest := DigestFromHash(hash)
+	if err := verifyExpectedDigest(request.Name, expected, digest); err != nil {
+		return nil, err
 	}
 	return &StagedDownload{file: temporary, Digest: digest, Size: size}, nil
+}
+
+// verifyExpectedDigest keeps integrity policy separate from byte transfer and
+// reports canonical digest values when an expectation is present.
+func verifyExpectedDigest(assetName, expected, received string) error {
+	if expected == "" {
+		return nil
+	}
+	normalized, _ := NormalizeDigest(expected)
+	if received == normalized {
+		return nil
+	}
+	return &project.Error{
+		Kind:     "integrity",
+		Asset:    assetName,
+		Expected: normalized,
+		Received: received,
+		Err:      errors.New("downloaded bytes do not match expected digest"),
+	}
 }
 
 // VerifyLocal hashes a regular managed file only when its size can match. A
