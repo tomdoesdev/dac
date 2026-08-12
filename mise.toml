@@ -1,0 +1,8 @@
+[tools]
+go = "1.26"
+
+[tasks.rr]
+run = "go run ./cmd/dac/main.go"
+
+[tasks.build]
+run = "go build -o ./bin/dac ./cmd/dac/main.go"
