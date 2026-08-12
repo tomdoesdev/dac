@@ -21,6 +21,10 @@ var (
 	ErrInvalidVariableName = errors.New("invalid variable name")
 	// ErrInvalidVariableValue marks a variable value that is not valid UTF-8.
 	ErrInvalidVariableValue = errors.New("invalid variable value")
+	// ErrInvalidGlobalName marks a global key outside dac's identifier grammar.
+	ErrInvalidGlobalName = errors.New("invalid global variable name")
+	// ErrInvalidGlobalValue marks a global value that is not valid UTF-8.
+	ErrInvalidGlobalValue = errors.New("invalid global variable value")
 	// ErrUnsafeResolvedFile marks a rendered destination that is not one filename.
 	ErrUnsafeResolvedFile = errors.New("rendered file must be one safe filename")
 	// ErrResolvedFileConflict marks two assets that resolve to the same destination.

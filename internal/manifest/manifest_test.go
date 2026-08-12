@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -158,5 +159,106 @@ func TestValidateRejectsMalformedTransferLimits(t *testing.T) {
 				t.Fatalf("Resolve error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+// TestGlobalsResolveThroughTheirOwnNamespace covers dac's two variable scopes
+// at once. A global is shared by every asset and is addressed only as
+// {{ .global.KEY }}, while an asset's own variables keep the flat spelling, so
+// a template always states which scope a value came from even when the two
+// scopes use the same key.
+func TestGlobalsResolveThroughTheirOwnNamespace(t *testing.T) {
+	value := Manifest{
+		Version: Version,
+		Globals: map[string]string{"VERSION": "3.9.0"},
+		Files: map[string]Asset{
+			"shared": {URL: "https://example.com/shared-{{.global.VERSION}}.bin", File: "shared-{{.global.VERSION}}.bin"},
+			"both": {
+				URL:       "https://example.com/both-{{.global.VERSION}}-{{.VERSION}}.bin",
+				File:      "both.bin",
+				Variables: map[string]string{"VERSION": "local"},
+			},
+		},
+	}
+	resolved, err := Resolve(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, ok := resolved.Get("shared")
+	if !ok {
+		t.Fatal("Resolve dropped the shared asset")
+	}
+	if shared.ResolvedURL != "https://example.com/shared-3.9.0.bin" || shared.ResolvedFile != "shared-3.9.0.bin" {
+		t.Errorf("shared resolved to %q and %q", shared.ResolvedURL, shared.ResolvedFile)
+	}
+	both, _ := resolved.Get("both")
+	if want := "https://example.com/both-3.9.0-local.bin"; both.ResolvedURL != want {
+		t.Errorf("both ResolvedURL = %q, want %q", both.ResolvedURL, want)
+	}
+}
+
+// TestGlobalsAreNotAddressableAsAssetVariables keeps the two scopes separate in
+// both directions. Merging globals into the flat namespace would let a newly
+// defined global silently change what an existing asset resolves to, so an
+// unqualified reference must fail exactly as an undefined variable does.
+func TestGlobalsAreNotAddressableAsAssetVariables(t *testing.T) {
+	tests := []struct {
+		name  string
+		value Manifest
+	}{
+		{
+			name: "global referenced without its namespace",
+			value: Manifest{Version: Version, Globals: map[string]string{"VERSION": "3.9.0"}, Files: map[string]Asset{
+				"only": {URL: "https://example.com/a-{{.VERSION}}.bin", File: "a.bin"},
+			}},
+		},
+		{
+			name: "asset variable referenced as a global",
+			value: Manifest{Version: Version, Files: map[string]Asset{
+				"only": {URL: "https://example.com/a-{{.global.VERSION}}.bin", File: "a.bin", Variables: map[string]string{"VERSION": "3.9.0"}},
+			}},
+		},
+		{
+			name: "undefined global with no globals declared",
+			value: Manifest{Version: Version, Files: map[string]Asset{
+				"only": {URL: "https://example.com/a-{{.global.VERSION}}.bin", File: "a.bin"},
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Resolve(test.value); !errors.Is(err, ErrRenderTemplate) {
+				t.Fatalf("Resolve error = %v, want ErrRenderTemplate", err)
+			}
+		})
+	}
+}
+
+// TestGlobalsRoundTripAndAreValidated keeps project-wide variables a first
+// class part of the persisted manifest: they survive a canonical rewrite, and
+// a key outside the identifier grammar is rejected before any template can
+// depend on it.
+func TestGlobalsRoundTripAndAreValidated(t *testing.T) {
+	path := t.TempDir() + "/dac.toml"
+	want := Manifest{
+		Version: Version,
+		Globals: map[string]string{"VERSION": "3.9.0", "CHANNEL": "stable"},
+		Files: map[string]Asset{
+			"artifact": {URL: "https://example.com/artifact-{{.global.VERSION}}.bin", File: "artifact.bin"},
+		},
+	}
+	if err := Write(path, want); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(loaded.Globals, want.Globals) {
+		t.Fatalf("loaded globals = %#v, want %#v", loaded.Globals, want.Globals)
+	}
+	invalid := Manifest{Version: Version, Globals: map[string]string{"lower": "value"}, Files: map[string]Asset{}}
+	if err := Validate(invalid); !errors.Is(err, ErrInvalidGlobalName) {
+		t.Fatalf("Validate error = %v, want ErrInvalidGlobalName", err)
 	}
 }

@@ -12,6 +12,14 @@ import (
 func encode(value Manifest) []byte {
 	var result strings.Builder
 	fmt.Fprintf(&result, "version = %d\n", value.Version)
+	// Globals precede the file tables because TOML binds every following
+	// key to the table it was written under.
+	if len(value.Globals) > 0 {
+		result.WriteString("\n[globals]\n")
+		for _, key := range sortedKeys(value.Globals) {
+			fmt.Fprintf(&result, "%s = %s\n", tomlQuote(key), tomlQuote(value.Globals[key]))
+		}
+	}
 	for _, name := range sortedKeys(value.Files) {
 		file := value.Files[name]
 		fmt.Fprintf(&result, "\n[files.%s]\nurl = %s\nfile = %s\n", tomlQuote(name), tomlQuote(file.URL), tomlQuote(file.File))

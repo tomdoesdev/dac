@@ -3,6 +3,8 @@ package command
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
@@ -106,16 +108,48 @@ func exactly(name string) string { return name }
 // parseSets validates repeated KEY=VALUE flags without allowing a later flag
 // to silently override an earlier one.
 func parseSets(values []string) (map[string]string, error) {
-	result, err := assignments(values, exactly, ErrInvalidSet, ErrDuplicateSet)
+	return parseVariableAssignments(values, ErrInvalidSet, ErrDuplicateSet, manifest.ErrInvalidVariableName)
+}
+
+// parseGlobalSets validates --gset with the same grammar as --set; only the
+// scope the assignments land in differs.
+func parseGlobalSets(values []string) (map[string]string, error) {
+	return parseVariableAssignments(values, ErrInvalidGset, ErrDuplicateGset, manifest.ErrInvalidGlobalName)
+}
+
+func parseVariableAssignments(values []string, malformed, duplicate, invalidName error) (map[string]string, error) {
+	result, err := assignments(values, exactly, malformed, duplicate)
 	if err != nil {
 		return nil, err
 	}
 	for key := range result {
 		if !manifest.ValidVariableName(key) {
-			return nil, fmt.Errorf("invalid variable name %q", key)
+			return nil, fmt.Errorf("%w %q", invalidName, key)
 		}
 	}
 	return result, nil
+}
+
+// applyGlobals adds project-wide variables to the manifest. Globals are
+// define-once from the command line: silently rebinding one would change what
+// every asset referencing it resolves to, so a redefinition is rejected and the
+// operator edits dac.toml deliberately instead.
+func applyGlobals(value *manifest.Manifest, globals map[string]string) error {
+	if len(globals) == 0 {
+		return nil
+	}
+	if value.Globals == nil {
+		value.Globals = make(map[string]string, len(globals))
+	}
+	// Sorted so one command defining several conflicting globals always names
+	// the same key back to the operator.
+	for _, key := range slices.Sorted(maps.Keys(globals)) {
+		if _, exists := value.Globals[key]; exists {
+			return fault.NewConfigurationError(fmt.Errorf("%w %q", ErrGlobalAlreadyExists, key))
+		}
+		value.Globals[key] = globals[key]
+	}
+	return nil
 }
 
 // parseHeaders preserves user-facing spelling while enforcing HTTP's
@@ -139,7 +173,7 @@ func parseVariableNames(values []string) (map[string]string, error) {
 	}
 	for key := range result {
 		if !manifest.ValidVariableName(key) {
-			return nil, fmt.Errorf("invalid variable name %q", key)
+			return nil, fmt.Errorf("%w %q", manifest.ErrInvalidVariableName, key)
 		}
 	}
 	return result, nil

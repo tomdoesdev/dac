@@ -40,6 +40,27 @@ dac add --set VERSION=3.9.0 --file artifact.ear artifact \
 dac lock
 ```
 
+A variable declared with `--set` belongs to one asset. A value several assets
+share — a release train, a mirror host — is a global variable instead, declared
+once with `--gset` and referenced through its own namespace:
+
+```sh
+dac add --gset VERSION=3.9.0 --file 'artifact-{{.global.VERSION}}.ear' artifact \
+  'https://example.com/artifact-{{.global.VERSION}}.ear'
+dac add --file 'plugin-{{.global.VERSION}}.jar' plugin \
+  'https://example.com/plugin-{{.global.VERSION}}.jar'
+```
+
+The two scopes never merge. `{{.VERSION}}` reads the asset's own variables and
+`{{.global.VERSION}}` reads the project's globals, so a template always states
+where its value came from and one asset may use both keys at once. Referencing
+an undefined global fails to resolve rather than rendering an empty string.
+
+Because a global is shared, `--gset` defines it and nothing more: redefining an
+existing global is an error on both `add` and `update`, since a silent rebind
+would move every asset that references it. Change one by editing `dac.toml`,
+which makes the affected assets' locks stale like any other source change.
+
 Changing a URL, filename, variable, header, pin, or transfer policy makes the
 lock stale. Follow with `dac lock <asset>` before `dac pull` can run again. A
 bare `dac lock` creates the initial lock from every manifest asset and fails if
@@ -85,8 +106,11 @@ are rejected so automation cannot silently hide a typo.
 ```toml
 version = 1
 
+[globals]
+CHANNEL = "stable"
+
 [files.artifact]
-url = "https://internal.example/artifact-{{.VERSION}}.ear"
+url = "https://internal.example/{{.global.CHANNEL}}/artifact-{{.VERSION}}.ear"
 file = "artifact.ear"
 pin = "sha256:..."
 max_size = "4GiB"

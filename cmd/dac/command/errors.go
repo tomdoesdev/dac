@@ -32,6 +32,12 @@ var (
 	ErrInvalidSet = errors.New("--set must be KEY=VALUE")
 	// ErrDuplicateSet marks a repeated key in --set options.
 	ErrDuplicateSet = errors.New("--set repeats key")
+	// ErrInvalidGset marks a --gset value without the required key/value form.
+	ErrInvalidGset = errors.New("--gset must be KEY=VALUE")
+	// ErrDuplicateGset marks a repeated key in --gset options.
+	ErrDuplicateGset = errors.New("--gset repeats key")
+	// ErrGlobalAlreadyExists marks a --gset that would rebind a global variable.
+	ErrGlobalAlreadyExists = errors.New("global variable already exists")
 	// ErrPinUnpinConflict marks mutually exclusive update modes.
 	ErrPinUnpinConflict = errors.New("--pin and --unpin cannot be combined")
 	// ErrOptionRepeated marks a singleton option supplied more than once.

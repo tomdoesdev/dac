@@ -14,6 +14,7 @@ type addCommand struct {
 	URL         string       `arg:"url"`
 	File        *singleValue `flag:"file" help:"local filename template"`
 	Set         []string     `flag:"set" help:"set an artifact variable (KEY=VALUE)"`
+	Gset        []string     `flag:"gset" help:"define a new global variable (KEY=VALUE)"`
 	Header      []string     `flag:"header" help:"set an HTTP header (NAME=VALUE)"`
 	Pin         pinValue     `flag:"pin" help:"calculate or require a SHA-256 pin"`
 	MaxSize     *singleValue `flag:"max-size" help:"maximum response body size"`
@@ -22,6 +23,7 @@ type addCommand struct {
 	// Validate runs immediately before Run on the same instance, so it parses
 	// each repeated option once and Run consumes the result.
 	variables map[string]string
+	globals   map[string]string
 	headers   map[string]string
 }
 
@@ -43,11 +45,15 @@ func (command *addCommand) Validate() error {
 	if err != nil {
 		return err
 	}
+	globals, err := parseGlobalSets(command.Gset)
+	if err != nil {
+		return err
+	}
 	headers, err := parseHeaders(command.Header)
 	if err != nil {
 		return err
 	}
-	command.variables, command.headers = variables, headers
+	command.variables, command.globals, command.headers = variables, globals, headers
 	if command.MaxSize.set {
 		if _, err := manifest.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
@@ -73,6 +79,11 @@ func (command *addCommand) Run(ctx context.Context) error {
 		}
 		if _, exists := value.Files[command.Name]; exists {
 			return fault.NewConfigurationError(ErrAssetAlreadyExists, fault.WithAsset(command.Name))
+		}
+		// Globals are defined before the asset resolves so one command can
+		// introduce a global and the artifact that references it.
+		if err := applyGlobals(&value, command.globals); err != nil {
+			return err
 		}
 		fileName := command.File.value
 		if !command.File.set {
