@@ -1,5 +1,14 @@
 # dac: duplication & misplaced-responsibility review + refactor plan
 
+> **Status: all six stages executed.** Part 1 is the original review, kept as
+> the record of what was found. Part 2 is the plan that was carried out, one
+> commit per stage. Two findings changed on contact with the code and are noted
+> inline: **B10** was withdrawn (prose quoting and shell quoting are different
+> jobs), and the `_`-discarded parse in **B3** proved latent rather than live,
+> since `Validate` always ran first. A pre-existing failing test on `main`,
+> unrelated to the review, was fixed first so the suite could serve as the
+> baseline.
+
 ## Context
 
 `dac` is ~2,600 lines of non-test Go outside `kit/`, split into `cmd/dac/command`
