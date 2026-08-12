@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type updateCommand struct {
@@ -125,11 +125,11 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		}
 		current, exists := value.Files[command.Name]
 		if !exists {
-			return project.NewConfigurationError(ErrAssetNotFound, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
 		}
 		candidate := cloneAsset(current)
 		if err := command.apply(&candidate); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(err, fault.WithAsset(command.Name))
 		}
 		value.Files[command.Name] = candidate
 		resolved, err := manifest.Resolve(value)
@@ -148,7 +148,7 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		normalizeAssetMaps(&current)
 		normalizeAssetMaps(&candidate)
 		if reflect.DeepEqual(current, candidate) {
-			return project.NewConfigurationError(ErrNoUpdate, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(ErrNoUpdate, fault.WithAsset(command.Name))
 		}
 		value.Files[command.Name] = candidate
 		if err := manifest.Write(paths.Manifest(), value); err != nil {

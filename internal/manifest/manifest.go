@@ -12,7 +12,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tomdoesdev/dac/internal/asset"
-	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
@@ -43,13 +43,13 @@ type Asset struct {
 func Load(path string) (Manifest, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return Manifest{}, project.NewFilesystemError(err)
+		return Manifest{}, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Close() }()
 	var value Manifest
 	decoder := toml.NewDecoder(file).DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
-		return Manifest{}, project.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
+		return Manifest{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
 	if value.Files == nil {
 		// A freshly initialized manifest contains only its version. Treat that as
@@ -68,7 +68,7 @@ func Write(path string, value Manifest) error {
 		return err
 	}
 	if err := atomic.WriteFile(path, encode(value), 0o644); err != nil {
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	return nil
 }
@@ -81,11 +81,11 @@ func Create(path string, value Manifest) error {
 	}
 	file, err := atomic.Create(path, 0o644)
 	if err != nil {
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Discard() }()
 	if _, err := file.Write(encode(value)); err != nil {
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	commit, err := file.CommitNoReplace()
 	if err != nil {
@@ -93,12 +93,12 @@ func Create(path string, value Manifest) error {
 			err = errors.Join(err, commit.Rollback())
 		}
 		if errors.Is(err, fs.ErrExist) {
-			return project.NewConfigurationError(ErrAlreadyExists)
+			return fault.NewConfigurationError(ErrAlreadyExists)
 		}
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	if err := commit.Complete(); err != nil {
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	return nil
 }
@@ -107,42 +107,42 @@ func Create(path string, value Manifest) error {
 // afterwards because template output may introduce a collision.
 func Validate(value Manifest) error {
 	if value.Version != Version {
-		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
+		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	for name, file := range value.Files {
 		if !ValidAssetName(name) {
-			return project.NewConfigurationError(ErrInvalidAssetName, project.WithAsset(name))
+			return fault.NewConfigurationError(ErrInvalidAssetName, fault.WithAsset(name))
 		}
 		if !utf8.ValidString(file.URL) || !utf8.ValidString(file.File) || !utf8.ValidString(file.Pin) || !utf8.ValidString(file.MaxSize) || !utf8.ValidString(file.IdleTimeout) {
-			return project.NewConfigurationError(ErrInvalidAssetEncoding, project.WithAsset(name))
+			return fault.NewConfigurationError(ErrInvalidAssetEncoding, fault.WithAsset(name))
 		}
 		if strings.TrimSpace(file.URL) == "" || strings.TrimSpace(file.File) == "" {
-			return project.NewConfigurationError(ErrMissingAssetLocation, project.WithAsset(name))
+			return fault.NewConfigurationError(ErrMissingAssetLocation, fault.WithAsset(name))
 		}
 		if _, err := parseTemplate("url", file.URL); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(name))
+			return fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if _, err := parseTemplate("file", file.File); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(name))
+			return fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if file.Pin != "" {
 			if _, err := asset.NormalizeDigest(file.Pin); err != nil {
-				return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidPin, err), project.WithAsset(name))
+				return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidPin, err), fault.WithAsset(name))
 			}
 		}
 		if _, err := parseTransfer(file); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(name))
+			return fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		for key, item := range file.Variables {
 			if !variableNamePattern.MatchString(key) {
-				return project.NewConfigurationError(fmt.Errorf("%w %q", ErrInvalidVariableName, key), project.WithAsset(name))
+				return fault.NewConfigurationError(fmt.Errorf("%w %q", ErrInvalidVariableName, key), fault.WithAsset(name))
 			}
 			if !utf8.ValidString(item) {
-				return project.NewConfigurationError(fmt.Errorf("%w %q: must be valid UTF-8", ErrInvalidVariableValue, key), project.WithAsset(name))
+				return fault.NewConfigurationError(fmt.Errorf("%w %q: must be valid UTF-8", ErrInvalidVariableValue, key), fault.WithAsset(name))
 			}
 		}
 		if err := asset.ValidateHeaders(file.Headers); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(name))
+			return fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 	}
 	return nil

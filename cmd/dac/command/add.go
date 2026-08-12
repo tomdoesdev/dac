@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type addCommand struct {
@@ -73,13 +73,13 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		if _, exists := value.Files[command.Name]; exists {
-			return project.NewConfigurationError(ErrAssetAlreadyExists, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(ErrAssetAlreadyExists, fault.WithAsset(command.Name))
 		}
 		fileName := command.File.value
 		if !command.File.set {
 			fileName, err = manifest.InferFile(command.URL)
 			if err != nil {
-				return project.NewConfigurationError(err, project.WithAsset(command.Name))
+				return fault.NewConfigurationError(err, fault.WithAsset(command.Name))
 			}
 		}
 		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: command.variables, Headers: command.headers}

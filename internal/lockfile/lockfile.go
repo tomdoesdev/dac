@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
-	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/util/filename"
 	"github.com/tomdoesdev/kit/strictjson"
@@ -38,14 +38,14 @@ type Asset struct {
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, project.NewConfigurationError(ErrNotFound, project.WithHint("run `dac lock --all`"))
+		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithHint("run `dac lock --all`"))
 	}
 	if err != nil {
-		return Lockfile{}, project.NewFilesystemError(err)
+		return Lockfile{}, fault.NewFilesystemError(err)
 	}
 	var value Lockfile
 	if err := strictjson.Unmarshal(data, &value); err != nil {
-		return Lockfile{}, project.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
+		return Lockfile{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
 	if err := Validate(value); err != nil {
 		return Lockfile{}, err
@@ -59,7 +59,7 @@ func LoadOptional(path string) (Lockfile, bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return Lockfile{}, false, nil
 	} else if err != nil {
-		return Lockfile{}, false, project.NewFilesystemError(err)
+		return Lockfile{}, false, fault.NewFilesystemError(err)
 	}
 	value, err := Load(path)
 	return value, true, err
@@ -73,15 +73,15 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	file, err := atomic.Create(path, 0o644)
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
 		cleanupErr := file.Discard()
-		return nil, project.NewFilesystemError(errors.Join(err, cleanupErr))
+		return nil, fault.NewFilesystemError(errors.Join(err, cleanupErr))
 	}
 	return file, nil
 }
@@ -90,26 +90,26 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 // verification ambiguous.
 func Validate(value Lockfile) error {
 	if value.Version != Version {
-		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), project.WithHint("run `dac lock --all`"))
+		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithHint("run `dac lock --all`"))
 	}
 	if value.Files == nil {
-		return project.NewConfigurationError(ErrMissingFiles)
+		return fault.NewConfigurationError(ErrMissingFiles)
 	}
 	for name, file := range value.Files {
 		if !manifest.ValidAssetName(name) || file.ResolvedURL == "" || filename.Clean(file.ResolvedFile) != file.ResolvedFile || file.Size < 0 {
-			return project.NewConfigurationError(ErrInvalidEntry, project.WithAsset(name))
+			return fault.NewConfigurationError(ErrInvalidEntry, fault.WithAsset(name))
 		}
 		if err := manifest.ValidateResolvedURL(file.ResolvedURL); err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), project.WithAsset(name))
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), fault.WithAsset(name))
 		}
 		digest, err := asset.NormalizeDigest(file.Digest)
 		if err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), project.WithAsset(name))
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), fault.WithAsset(name))
 		}
 		file.Digest = digest
 		configurationDigest, err := asset.NormalizeDigest(file.ConfigurationDigest)
 		if err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), project.WithAsset(name))
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), fault.WithAsset(name))
 		}
 		file.ConfigurationDigest = configurationDigest
 		value.Files[name] = file

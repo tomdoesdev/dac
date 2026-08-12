@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/cli"
 )
@@ -223,9 +224,9 @@ func (writer *Writer) Error(stderr io.Writer, err error) int {
 		}
 		return 2
 	}
-	var operation *project.Error
+	var operation *fault.Error
 	if !errors.As(err, &operation) {
-		wrapped := project.NewFilesystemError(err)
+		wrapped := fault.NewFilesystemError(err)
 		if !errors.As(wrapped, &operation) {
 			return 1
 		}
@@ -238,7 +239,7 @@ func (writer *Writer) Error(stderr io.Writer, err error) int {
 			_, _ = fmt.Fprintln(stderr, operation.Hint())
 		}
 	}
-	if operation.Kind() == project.ErrorKindConfiguration {
+	if operation.Kind() == fault.ErrorKindConfiguration {
 		return 2
 	}
 	return 1

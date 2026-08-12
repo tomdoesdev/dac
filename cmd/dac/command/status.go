@@ -6,10 +6,10 @@ import (
 	"os"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type statusCommand struct{ runtime *runtime }
@@ -105,7 +105,7 @@ func statusOrphans(downloads *os.Root, hasDownloads bool, locked lockfile.Lockfi
 	}
 	entries, err := fs.ReadDir(downloads.FS(), ".")
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	for _, entry := range entries {
 		if referenced[entry.Name()] {

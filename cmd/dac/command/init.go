@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -18,7 +19,7 @@ func (command *initCommand) Validate() error {
 func (command *initCommand) Run(ctx context.Context) error {
 	directory, err := command.runtime.CWD()
 	if err != nil {
-		return project.NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	paths := project.Paths{Root: directory}
 	return paths.WithLock(ctx, func(context.Context) error {

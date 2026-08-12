@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
@@ -112,11 +112,11 @@ func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, 
 func (downloader *Downloader) newRequest(ctx context.Context, request Request) (*http.Request, error) {
 	headers, err := requestHeaders(request.Headers)
 	if err != nil {
-		return nil, project.NewConfigurationError(err, project.WithAsset(request.Name))
+		return nil, fault.NewConfigurationError(err, fault.WithAsset(request.Name))
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.URL, nil)
 	if err != nil {
-		return nil, project.NewConfigurationError(ErrInvalidDownloadRequest, project.WithAsset(request.Name))
+		return nil, fault.NewConfigurationError(ErrInvalidDownloadRequest, fault.WithAsset(request.Name))
 	}
 	httpRequest.Header = headers
 	httpRequest.Header.Set("User-Agent", downloader.userAgent)
@@ -129,13 +129,13 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 	response, err := downloader.client.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, project.NewCancelledError(context.Cause(ctx), project.WithAsset(assetName))
+			return nil, fault.NewCancelledError(context.Cause(ctx), fault.WithAsset(assetName))
 		}
-		return nil, project.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, err), project.WithAsset(assetName))
+		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, err), fault.WithAsset(assetName))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()
-		return nil, project.NewNetworkError(&downloadStatusError{statusCode: response.StatusCode}, project.WithAsset(assetName))
+		return nil, fault.NewNetworkError(&downloadStatusError{statusCode: response.StatusCode}, fault.WithAsset(assetName))
 	}
 	return response, nil
 }
@@ -148,26 +148,26 @@ func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader
 	}
 	temporary, err := atomic.CreateRoot(downloads, request.File, 0o644)
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, project.NewFilesystemError(temporary.Discard()))
+			err = errors.Join(err, fault.NewFilesystemError(temporary.Discard()))
 		}
 	}()
 
 	size, digest, writeErr, err := copyResponseWithDigest(temporary, body, request.Policy.MaxSize)
 	if err != nil {
 		if writeErr != nil {
-			return nil, project.NewFilesystemError(writeErr, project.WithAsset(request.Name))
+			return nil, fault.NewFilesystemError(writeErr, fault.WithAsset(request.Name))
 		}
 		if errors.Is(context.Cause(ctx), ErrDownloadIdleTimeout) || errors.Is(err, ErrDownloadIdleTimeout) {
-			return nil, project.NewNetworkError(ErrDownloadIdleTimeout, project.WithAsset(request.Name))
+			return nil, fault.NewNetworkError(ErrDownloadIdleTimeout, fault.WithAsset(request.Name))
 		}
 		if ctx.Err() != nil {
-			return nil, project.NewCancelledError(context.Cause(ctx), project.WithAsset(request.Name))
+			return nil, fault.NewCancelledError(context.Cause(ctx), fault.WithAsset(request.Name))
 		}
-		return nil, project.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadBody, err), project.WithAsset(request.Name))
+		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadBody, err), fault.WithAsset(request.Name))
 	}
 	if err := verifyMaximumSize(request.Name, request.Policy.MaxSize, size, true); err != nil {
 		return nil, err
@@ -208,10 +208,10 @@ func verifyMaximumSize(assetName string, maximum, received int64, streamed bool)
 	if streamed {
 		receivedValue = "at least " + receivedValue
 	}
-	return project.NewIntegrityError(
+	return fault.NewIntegrityError(
 		ErrDownloadTooLarge,
-		project.WithAsset(assetName),
-		project.WithIntegrity("at most "+strconv.FormatInt(maximum, 10)+" bytes", receivedValue+" bytes"),
+		fault.WithAsset(assetName),
+		fault.WithIntegrity("at most "+strconv.FormatInt(maximum, 10)+" bytes", receivedValue+" bytes"),
 	)
 }
 
@@ -264,10 +264,10 @@ func verifyExpectedDigest(assetName, expected, received string) error {
 	if received == normalized {
 		return nil
 	}
-	return project.NewIntegrityError(
+	return fault.NewIntegrityError(
 		ErrDigestMismatch,
-		project.WithAsset(assetName),
-		project.WithIntegrity(normalized, received),
+		fault.WithAsset(assetName),
+		fault.WithIntegrity(normalized, received),
 	)
 }
 
@@ -302,7 +302,7 @@ func InspectLocal(downloads *os.Root, name, expected string, size int64) (LocalI
 		return LocalInspection{State: LocalMissing, Reason: "download is missing"}, nil
 	}
 	if err != nil {
-		return LocalInspection{}, project.NewFilesystemError(err)
+		return LocalInspection{}, fault.NewFilesystemError(err)
 	}
 	if !info.Mode().IsRegular() {
 		return LocalInspection{State: LocalInvalid, Reason: "download is not a regular file"}, nil
@@ -312,12 +312,12 @@ func InspectLocal(downloads *os.Root, name, expected string, size int64) (LocalI
 	}
 	file, err := downloads.Open(name)
 	if err != nil {
-		return LocalInspection{}, project.NewFilesystemError(err)
+		return LocalInspection{}, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Close() }()
 	digest, err := computeDigest(file)
 	if err != nil {
-		return LocalInspection{}, project.NewFilesystemError(err)
+		return LocalInspection{}, fault.NewFilesystemError(err)
 	}
 	if digest != expected {
 		return LocalInspection{State: LocalInvalid, Reason: "download digest does not match dac.lock"}, nil

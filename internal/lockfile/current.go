@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // CurrentState is the manifest-to-lock state used by pull, lock, and status.
@@ -115,7 +115,7 @@ func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 }
 
 func staleError(name string) error {
-	return project.NewConfigurationError(ErrStale, project.WithAsset(name), project.WithHint(hint(name)))
+	return fault.NewConfigurationError(ErrStale, fault.WithAsset(name), fault.WithHint(hint(name)))
 }
 
 // hint formats a command that safely selects one opaque asset name.

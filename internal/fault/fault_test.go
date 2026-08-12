@@ -1,4 +1,4 @@
-package project
+package fault
 
 import (
 	"errors"

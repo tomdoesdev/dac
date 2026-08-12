@@ -11,7 +11,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // roundTripFunc makes transport outcomes deterministic without opening a
@@ -82,8 +82,8 @@ func TestDownloaderClassifiesIdleBodyRead(t *testing.T) {
 	if !errors.Is(err, ErrDownloadIdleTimeout) {
 		t.Fatalf("Download error = %v, want ErrDownloadIdleTimeout", err)
 	}
-	var operation *project.Error
-	if !errors.As(err, &operation) || operation.Kind() != project.ErrorKindNetwork {
+	var operation *fault.Error
+	if !errors.As(err, &operation) || operation.Kind() != fault.ErrorKindNetwork {
 		t.Fatalf("Download error kind = %v, want network", err)
 	}
 }
@@ -120,7 +120,7 @@ type failingWriter struct{ err error }
 func (writer failingWriter) Write([]byte) (int, error) { return 0, writer.err }
 
 // TestDownloadErrorsAreClassifiable protects the sentinels exposed for each
-// distinct download failure while project.Error adds user-facing context.
+// distinct download failure while fault.Error adds user-facing context.
 func TestDownloadErrorsAreClassifiable(t *testing.T) {
 	downloads, err := os.OpenRoot(t.TempDir())
 	if err != nil {

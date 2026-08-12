@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/kit/fs/flock"
 )
 
@@ -28,16 +29,16 @@ func (paths Paths) LockPath() string { return flock.HiddenPath(paths.Manifest())
 func (paths Paths) OpenDownloads() (*os.Root, error) {
 	root, err := os.OpenRoot(paths.Root)
 	if err != nil {
-		return nil, NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = root.Close() }()
 	managed := filepath.Join(".dac", "downloads")
 	if err := root.MkdirAll(managed, 0o755); err != nil {
-		return nil, NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	downloads, err := root.OpenRoot(managed)
 	if err != nil {
-		return nil, NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	return downloads, nil
 }
@@ -47,7 +48,7 @@ func (paths Paths) OpenDownloads() (*os.Root, error) {
 func (paths Paths) OpenDownloadsOptional() (*os.Root, bool, error) {
 	root, err := os.OpenRoot(paths.Root)
 	if err != nil {
-		return nil, false, NewFilesystemError(err)
+		return nil, false, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = root.Close() }()
 	downloads, err := root.OpenRoot(filepath.Join(".dac", "downloads"))
@@ -55,7 +56,7 @@ func (paths Paths) OpenDownloadsOptional() (*os.Root, bool, error) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, NewFilesystemError(err)
+		return nil, false, fault.NewFilesystemError(err)
 	}
 	return downloads, true, nil
 }
@@ -65,7 +66,7 @@ func (paths Paths) OpenDownloadsOptional() (*os.Root, bool, error) {
 func Discover(start string) (Paths, error) {
 	directory, err := filepath.Abs(start)
 	if err != nil {
-		return Paths{}, NewFilesystemError(err)
+		return Paths{}, fault.NewFilesystemError(err)
 	}
 	if info, statErr := os.Stat(directory); statErr == nil && !info.IsDir() {
 		directory = filepath.Dir(directory)
@@ -75,11 +76,11 @@ func Discover(start string) (Paths, error) {
 		if _, err := os.Stat(candidate); err == nil {
 			return Paths{Root: directory}, nil
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return Paths{}, NewFilesystemError(err)
+			return Paths{}, fault.NewFilesystemError(err)
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return Paths{}, NewConfigurationError(ErrProjectNotFound, WithHint("run `dac init`"))
+			return Paths{}, fault.NewConfigurationError(ErrProjectNotFound, fault.WithHint("run `dac init`"))
 		}
 		directory = parent
 	}
@@ -90,19 +91,19 @@ func Discover(start string) (Paths, error) {
 func (paths Paths) WithLock(ctx context.Context, work func(context.Context) error) error {
 	err := flock.Hold(ctx, paths.LockPath(), work, flock.RemoveOnRelease())
 	if errors.Is(err, errors.ErrUnsupported) {
-		return NewUnsupportedError(ErrFlockUnsupported)
+		return fault.NewUnsupportedError(ErrFlockUnsupported)
 	}
-	var operation *Error
+	var operation *fault.Error
 	if errors.As(err, &operation) {
 		// Preserve the command's category after the lock releases so callers see
 		// the actual configuration, integrity, or network failure.
 		return err
 	}
 	if errors.Is(err, context.Canceled) {
-		return NewCancelledError(err)
+		return fault.NewCancelledError(err)
 	}
 	if err != nil {
-		return NewFilesystemError(err)
+		return fault.NewFilesystemError(err)
 	}
 	return nil
 }

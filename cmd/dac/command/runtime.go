@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/dac/internal/project"
@@ -35,7 +36,7 @@ func Register(app *cli.App, dependencies Dependencies) {
 func (runtime *runtime) project() (project.Paths, error) {
 	directory, err := runtime.CWD()
 	if err != nil {
-		return project.Paths{}, project.NewFilesystemError(err)
+		return project.Paths{}, fault.NewFilesystemError(err)
 	}
 	return project.Discover(directory)
 }
@@ -58,7 +59,7 @@ func (runtime *runtime) calculatePin(ctx context.Context, paths project.Paths, r
 	}
 	digest := download.Digest
 	if err := download.Discard(); err != nil {
-		return "", project.NewFilesystemError(err)
+		return "", fault.NewFilesystemError(err)
 	}
 	return digest, nil
 }

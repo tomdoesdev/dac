@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type pullCommand struct {
@@ -79,7 +79,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 					return err
 				}
 				if err := download.Commit(); err != nil {
-					return project.NewFilesystemError(errors.Join(err, download.Discard()))
+					return fault.NewFilesystemError(errors.Join(err, download.Discard()))
 				}
 				return nil
 			})
@@ -89,7 +89,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
 		}
 		if len(invalid) > 0 {
-			return project.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
+			return fault.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
 		}
 		return command.runtime.Output.Success("pull", paths, results, nil)
 	})

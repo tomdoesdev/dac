@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -62,7 +63,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		}
 		if !command.All && !initial {
 			if !hasLock {
-				return project.NewConfigurationError(ErrTargetedLockNeedsExisting, project.WithHint("run `dac lock --all`"))
+				return fault.NewConfigurationError(ErrTargetedLockNeedsExisting, fault.WithHint("run `dac lock --all`"))
 			}
 			if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
 				return err
@@ -135,11 +136,11 @@ func (command *lockCommand) Run(ctx context.Context) error {
 func (command *lockCommand) loadCurrent(paths project.Paths) (lockfile.Lockfile, bool, string, error) {
 	if !command.All && len(command.Names) == 0 {
 		if _, err := os.Lstat(paths.Lockfile()); err == nil {
-			return lockfile.Lockfile{}, false, "", project.NewConfigurationError(ErrLockAlreadyExists)
+			return lockfile.Lockfile{}, false, "", fault.NewConfigurationError(ErrLockAlreadyExists)
 		} else if errors.Is(err, fs.ErrNotExist) {
 			return lockfile.Lockfile{}, false, "", nil
 		} else {
-			return lockfile.Lockfile{}, false, "", project.NewFilesystemError(err)
+			return lockfile.Lockfile{}, false, "", fault.NewFilesystemError(err)
 		}
 	}
 	current, exists, err := lockfile.LoadOptional(paths.Lockfile())
@@ -215,10 +216,10 @@ func selectedNames(names []string, values []manifest.ResolvedAsset) (map[string]
 	}
 	for _, name := range names {
 		if !known[name] {
-			return nil, project.NewConfigurationError(ErrAssetNotFound, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(name))
 		}
 		if result[name] {
-			return nil, project.NewConfigurationError(ErrAssetSelectedMultipleTimes, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(ErrAssetSelectedMultipleTimes, fault.WithAsset(name))
 		}
 		result[name] = true
 	}
@@ -259,7 +260,7 @@ func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset, creat
 			commits = append(commits, commit)
 		}
 		if err != nil {
-			return nil, rollback(commits, project.NewFilesystemError(err))
+			return nil, rollback(commits, fault.NewFilesystemError(err))
 		}
 	}
 	var commit *atomic.Commit
@@ -276,9 +277,9 @@ func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset, creat
 	}
 	if err != nil {
 		if createOnly && errors.Is(err, fs.ErrExist) {
-			return nil, rollback(commits, project.NewConfigurationError(ErrLockAlreadyExists))
+			return nil, rollback(commits, fault.NewConfigurationError(ErrLockAlreadyExists))
 		}
-		return nil, rollback(commits, project.NewFilesystemError(err))
+		return nil, rollback(commits, fault.NewFilesystemError(err))
 	}
 	warnings := make([]string, 0)
 	for _, commit := range commits {

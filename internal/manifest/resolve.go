@@ -7,7 +7,7 @@ import (
 	"text/template"
 
 	"github.com/tomdoesdev/dac/internal/asset"
-	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/kit/fs/util/filename"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -35,26 +35,26 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 		file := value.Files[name]
 		resolvedURL, err := renderTemplate("url", file.URL, file.Variables)
 		if err != nil {
-			return nil, project.NewConfigurationError(err, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if err := ValidateResolvedURL(resolvedURL); err != nil {
-			return nil, project.NewConfigurationError(err, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		resolvedFile, err := renderTemplate("file", file.File, file.Variables)
 		if err != nil {
-			return nil, project.NewConfigurationError(err, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if filename.Clean(resolvedFile) != resolvedFile {
-			return nil, project.NewConfigurationError(ErrUnsafeResolvedFile, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
 		}
 		key := filenameCollisionKey(resolvedFile)
 		if existing, exists := seen[key]; exists {
-			return nil, project.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), project.WithAsset(name))
+			return nil, fault.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), fault.WithAsset(name))
 		}
 		seen[key] = name
 		transfer, err := parseTransfer(file)
 		if err != nil {
-			return nil, project.NewConfigurationError(err, project.WithAsset(name))
+			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile, Transfer: transfer})
 	}
