@@ -42,9 +42,34 @@ fmt.Fprintf(os.Stdout, "%s %s\n", styler.Success("created"), filename)
 fmt.Fprintf(os.Stderr, "%s %s\n", styler.Warning("Warning:"), message)
 ```
 
-`Styler` also provides `Heading`, `Command`, `Flag`, `Argument`, and `Error`.
+`Styler` also provides `Heading`, `Command`, `Flag`, `Argument`, `Progress`, and `Error`.
 It returns formatted strings rather than owning writes, so handlers retain
 normal control over destinations and write-error handling.
+
+## Throbbers
+
+`Throbber.Run` scopes a ping-pong progress animation to an operation and always
+stops its rendering worker before returning. Auto mode animates only on an
+interactive terminal, so redirected output remains clean.
+
+```go
+styler := cli.NewStyler(os.Stderr, cli.ColorAuto)
+throbber := cli.NewThrobber(os.Stderr, "Downloading asset.zip…",
+    cli.WithThrobberGlyphs("·", "✢", "✳", "∗", "✻", "✽"),
+    cli.WithThrobberInterval(100*time.Millisecond),
+    cli.WithThrobberStyle(styler.Progress),
+    cli.WithThrobberOnEnd(func(end cli.ThrobberEnd) string {
+        if end.Err != nil || !end.Animated {
+            return ""
+        }
+        return "✅ asset.zip downloaded"
+    }),
+)
+err := throbber.Run(ctx, downloadAsset)
+```
+
+Use `ThrobberAlways` for deterministic rendering tests and `ThrobberNever`
+when a caller's output mode prohibits transient terminal output.
 
 ## Patterns and binding
 

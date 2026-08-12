@@ -1,12 +1,14 @@
 package output
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"regexp"
+	"time"
 
 	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/cli"
@@ -70,21 +72,27 @@ type errorOutput struct {
 
 // Writer applies one invocation's output mode to command results.
 type Writer struct {
-	options      *Options
-	stdout       io.Writer
-	stderr       io.Writer
-	stdoutStyler *cli.Styler
-	stderrStyler *cli.Styler
+	options           *Options
+	stdout            io.Writer
+	stderr            io.Writer
+	stdoutStyler      *cli.Styler
+	stderrStyler      *cli.Styler
+	throbberMode      cli.ThrobberMode
+	throbberInterval  time.Duration
+	reportedDownloads map[string]bool
 }
 
 // New creates an output writer bound to the invocation's global options.
 func New(options *Options, stdout, stderr io.Writer) *Writer {
 	return &Writer{
-		options:      options,
-		stdout:       stdout,
-		stderr:       stderr,
-		stdoutStyler: cli.NewStyler(stdout, cli.ColorAuto),
-		stderrStyler: cli.NewStyler(stderr, cli.ColorAuto),
+		options:           options,
+		stdout:            stdout,
+		stderr:            stderr,
+		stdoutStyler:      cli.NewStyler(stdout, cli.ColorAuto),
+		stderrStyler:      cli.NewStyler(stderr, cli.ColorAuto),
+		throbberMode:      cli.ThrobberAuto,
+		throbberInterval:  100 * time.Millisecond,
+		reportedDownloads: make(map[string]bool),
 	}
 }
 
@@ -103,6 +111,9 @@ func (writer *Writer) Success(command string, paths project.Paths, assets []Resu
 	}
 	if !writer.options.Quiet {
 		for _, asset := range assets {
+			if asset.Status == "downloaded" && writer.reportedDownloads[asset.Name] {
+				continue
+			}
 			if _, err := fmt.Fprintf(writer.stdout, "%s %s\n", writer.stdoutStyler.Success(asset.Status), asset.Name); err != nil {
 				return err
 			}
@@ -114,6 +125,51 @@ func (writer *Writer) Success(command string, paths project.Paths, assets []Resu
 		}
 	}
 	return nil
+}
+
+// WithDownloadProgress runs operation with DAC's human download presentation.
+// Non-interactive, structured, and quiet invocations fall back to Success output.
+func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filename, sourceURL string, operation func(context.Context) error) error {
+	mode := writer.throbberMode
+	if writer.options.JSON || writer.options.Quiet {
+		mode = cli.ThrobberNever
+	}
+	source := downloadHostname(sourceURL)
+	message := fmt.Sprintf("Downloading %s from %s…", filename, source)
+	throbber := cli.NewThrobber(
+		writer.stderr,
+		message,
+		cli.WithThrobberMode(mode),
+		cli.WithThrobberInterval(writer.throbberInterval),
+		cli.WithThrobberStyle(writer.stderrStyler.Progress),
+		cli.WithThrobberOnEnd(func(end cli.ThrobberEnd) string {
+			if !end.Animated || end.Err != nil || writer.options.JSON || writer.options.Quiet {
+				return ""
+			}
+			writer.reportedDownloads[assetName] = true
+			return fmt.Sprintf("✅ %s %s from %s (%s)", filename, writer.stderrStyler.Success("downloaded"), source, formatElapsed(end.Elapsed))
+		}),
+	)
+	return throbber.Run(ctx, operation)
+}
+
+// downloadHostname deliberately retains only the least sensitive useful part
+// of a validated asset URL for transient terminal output.
+func downloadHostname(sourceURL string) string {
+	parsed, err := url.Parse(sourceURL)
+	if err != nil || parsed.Hostname() == "" {
+		return "remote host"
+	}
+	return parsed.Hostname()
+}
+
+// formatElapsed keeps permanent download records consistent with the transient
+// throbber without exposing the cli package's private rendering helper.
+func formatElapsed(elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed.Truncate(time.Second).String()
 }
 
 // Status writes a complete observational report without turning unhealthy

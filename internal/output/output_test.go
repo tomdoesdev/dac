@@ -2,12 +2,15 @@ package output
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/kit/cli"
 )
 
 // TestSanitizeErrorRemovesURLSecrets keeps diagnostics from becoming a secret
@@ -87,6 +90,66 @@ func TestHumanOutputUsesSemanticColors(t *testing.T) {
 	}
 }
 
+// TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout verifies the
+// interactive contract while ensuring URL paths and query secrets stay hidden.
+func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	writer := New(&Options{}, stdout, stderr)
+	writer.throbberMode = cli.ThrobberAlways
+	writer.throbberInterval = time.Hour
+
+	err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/private/asset.zip?token=secret", func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Success("pull", project.Paths{}, []Result{
+		{Name: "artifact", Status: "downloaded"},
+		{Name: "cached", Status: "verified"},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "verified cached\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	progress := stderr.String()
+	if !strings.Contains(progress, "Downloading asset.zip from example.com… (0s)") || !strings.Contains(progress, "✅ asset.zip downloaded from example.com (0s)") {
+		t.Fatalf("stderr = %q", progress)
+	}
+	if strings.Contains(progress, "private") || strings.Contains(progress, "secret") {
+		t.Fatalf("progress leaked source details: %q", progress)
+	}
+}
+
+// TestRedirectedDownloadProgressFallsBackToSuccess keeps ordinary human output
+// useful in logs and pipelines where rewriting a terminal line is unavailable.
+func TestRedirectedDownloadProgressFallsBackToSuccess(t *testing.T) {
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	writer := New(&Options{}, stdout, stderr)
+	if err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "artifact", Status: "downloaded"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "downloaded artifact\n"; got != want || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want %q and empty", got, stderr.String(), want)
+	}
+}
+
+// TestFailedDownloadProgressClearsWithoutSuccess prevents a failed transfer
+// from leaving a misleading completion record before the normal error output.
+func TestFailedDownloadProgressClearsWithoutSuccess(t *testing.T) {
+	stderr := &bytes.Buffer{}
+	writer := New(&Options{}, &bytes.Buffer{}, stderr)
+	writer.throbberMode = cli.ThrobberAlways
+	writer.throbberInterval = time.Hour
+	want := errors.New("download failed")
+	err := writer.WithDownloadProgress(context.Background(), "artifact", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return want })
+	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✅") || !strings.HasSuffix(stderr.String(), "\r\x1b[2K") {
+		t.Fatalf("error=%v stderr=%q", err, stderr.String())
+	}
+}
+
 // TestStructuredAndQuietOutputNeverUseColor protects machine output even when
 // the environment asks terminal-oriented code to force ANSI sequences.
 func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
@@ -94,20 +157,30 @@ func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
 	t.Setenv("CLICOLOR_FORCE", "1")
 
 	jsonOutput := &bytes.Buffer{}
-	writer := New(&Options{JSON: true}, jsonOutput, &bytes.Buffer{})
+	jsonError := &bytes.Buffer{}
+	writer := New(&Options{JSON: true}, jsonOutput, jsonError)
+	writer.throbberMode = cli.ThrobberAlways
+	if err := writer.WithDownloadProgress(context.Background(), "asset", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(jsonOutput.String(), "\x1b[") || !json.Valid(jsonOutput.Bytes()) {
-		t.Fatalf("JSON output = %q", jsonOutput.String())
+	if strings.Contains(jsonOutput.String(), "\x1b[") || !json.Valid(jsonOutput.Bytes()) || jsonError.Len() != 0 {
+		t.Fatalf("JSON output=%q stderr=%q", jsonOutput.String(), jsonError.String())
 	}
 
 	quietOutput := &bytes.Buffer{}
-	writer = New(&Options{Quiet: true}, quietOutput, &bytes.Buffer{})
+	quietError := &bytes.Buffer{}
+	writer = New(&Options{Quiet: true}, quietOutput, quietError)
+	writer.throbberMode = cli.ThrobberAlways
+	if err := writer.WithDownloadProgress(context.Background(), "asset", "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if err := writer.Success("pull", project.Paths{}, []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if quietOutput.Len() != 0 {
-		t.Fatalf("quiet output = %q", quietOutput.String())
+	if quietOutput.Len() != 0 || quietError.Len() != 0 {
+		t.Fatalf("quiet stdout=%q stderr=%q", quietOutput.String(), quietError.String())
 	}
 }

@@ -10,4 +10,6 @@
 // validation failures so the executable can choose presentation and exit codes.
 // Generated documentation uses auto-detected semantic color; NewStyler exposes
 // the same cli-owned roles to command handlers without exposing its renderer.
+// NewThrobber provides scoped terminal animation that automatically stays silent
+// for redirected output and cleans up before operation errors are returned.
 package cli

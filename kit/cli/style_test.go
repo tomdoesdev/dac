@@ -27,6 +27,7 @@ func TestStylerColorModes(t *testing.T) {
 		{name: "command", ansi: "\x1b[36mvalue\x1b[0m", format: (*Styler).Command},
 		{name: "flag", ansi: "\x1b[33mvalue\x1b[0m", format: (*Styler).Flag},
 		{name: "argument", ansi: "\x1b[35mvalue\x1b[0m", format: (*Styler).Argument},
+		{name: "progress", ansi: "\x1b[36mvalue\x1b[0m", format: (*Styler).Progress},
 		{name: "success", ansi: "\x1b[32mvalue\x1b[0m", format: (*Styler).Success},
 		{name: "warning", ansi: "\x1b[33mvalue\x1b[0m", format: (*Styler).Warning},
 		{name: "error", ansi: "\x1b[31mvalue\x1b[0m", format: (*Styler).Error},

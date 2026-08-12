@@ -73,12 +73,18 @@ func (command *pullCommand) Run(ctx context.Context) error {
 				invalid = append(invalid, resolvedAsset.Name)
 				continue
 			}
-			download, err := command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), locked.Digest)
+			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
+				download, err := command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), locked.Digest)
+				if err != nil {
+					return err
+				}
+				if err := download.Commit(); err != nil {
+					return project.NewFilesystemError(errors.Join(err, download.Discard()))
+				}
+				return nil
+			})
 			if err != nil {
 				return err
-			}
-			if err := download.Commit(); err != nil {
-				return project.NewFilesystemError(errors.Join(err, download.Discard()))
 			}
 			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
 		}

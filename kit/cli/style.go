@@ -72,6 +72,11 @@ func (styler *Styler) Argument(value string) string {
 	return styler.foreground(value, "5")
 }
 
+// Progress identifies transient activity such as a throbber glyph.
+func (styler *Styler) Progress(value string) string {
+	return styler.foreground(value, "6")
+}
+
 // Success identifies a successful action or healthy status.
 func (styler *Styler) Success(value string) string {
 	return styler.foreground(value, "2")

@@ -1,6 +1,13 @@
 {
   "version": 2,
   "files": {
+    "slow": {
+      "resolved_url": "http://127.0.0.1:8080/drifting.bin",
+      "resolved_file": "drifting.bin",
+      "configuration_digest": "sha256:045b60b3b7dd791cddae6dc291bcabc24c71ab40022e2ca91bd7020ee9da1ebb",
+      "digest": "sha256:113738b4c6c95ea86332c5341d7e4ab59c702d6e27f577f007be72b4953cf3b7",
+      "size": 4194304
+    },
     "test": {
       "resolved_url": "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore",
       "resolved_file": "Go.gitignore",
