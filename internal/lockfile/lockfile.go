@@ -34,6 +34,17 @@ type Asset struct {
 	Size                int64  `json:"size"`
 }
 
+// ResolvedFiles lists every managed filename this accepted state claims.
+// Callers use it to decide which directory entries dac still owns instead of
+// each rebuilding the same set from Files.
+func (value Lockfile) ResolvedFiles() []string {
+	result := make([]string, 0, len(value.Files))
+	for _, file := range value.Files {
+		result = append(result, file.ResolvedFile)
+	}
+	return result
+}
+
 // Load reads and validates a strict machine-authored lock file.
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
@@ -115,4 +126,17 @@ func Validate(value Lockfile) error {
 		value.Files[name] = file
 	}
 	return nil
+}
+
+// Exists reports whether a lock file is present without reading or validating
+// it. It does not follow symlinks, so a link standing in for dac.lock counts
+// as present and a create-only lock will refuse to replace it.
+func Exists(path string) (bool, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, fault.NewFilesystemError(err)
+	}
 }

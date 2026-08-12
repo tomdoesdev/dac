@@ -7,8 +7,6 @@ var (
 	ErrAssetAlreadyExists = errors.New("asset already exists")
 	// ErrTargetedLockNeedsExisting marks an incomplete initial targeted lock.
 	ErrTargetedLockNeedsExisting = errors.New("targeted lock requires a complete existing dac.lock")
-	// ErrLockAlreadyExists prevents a bare initial lock from replacing accepted state.
-	ErrLockAlreadyExists = errors.New("dac.lock already exists")
 	// ErrAllLockConflict marks --all combined with explicit asset names.
 	ErrAllLockConflict = errors.New("--all cannot be combined with asset names")
 	// ErrAssetNotFound marks a command selection absent from the manifest.

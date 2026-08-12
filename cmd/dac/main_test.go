@@ -392,7 +392,7 @@ func TestStatusReportsAssetAndOrphanStates(t *testing.T) {
 			t.Fatal(err)
 		}
 		locked := lockfile.Lockfile{Version: lockfile.Version, Files: map[string]lockfile.Asset{}}
-		for _, item := range resolved {
+		for _, item := range resolved.All() {
 			content := []byte(item.Name)
 			locked.Files[item.Name] = lockfile.Asset{
 				ResolvedURL: item.ResolvedURL, ResolvedFile: item.ResolvedFile,

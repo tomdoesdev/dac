@@ -31,7 +31,12 @@ func TestRelockRecoveryCarriesNameStructurally(t *testing.T) {
 // to a new URL makes the lock stale even when the asset name and output file
 // have not changed.
 func TestValidateCurrentRejectsChangedResolution(t *testing.T) {
-	resolved := []manifest.ResolvedAsset{{Name: "artifact", ResolvedURL: "https://example.com/new", ResolvedFile: "artifact.bin"}}
+	resolved, err := manifest.Resolve(manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{
+		"artifact": {URL: "https://example.com/new", File: "artifact.bin"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	lock := Lockfile{Version: Version, Files: map[string]Asset{
 		"artifact": {
 			ResolvedURL: "https://example.com/old", ResolvedFile: "artifact.bin",
@@ -56,19 +61,19 @@ func TestValidateCurrentRejectsPolicyChangeAndPinMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	locked := Asset{
-		ResolvedURL: resolved[0].ResolvedURL, ResolvedFile: resolved[0].ResolvedFile,
-		ConfigurationDigest: ConfigurationDigest(resolved[0]), Digest: "sha256:" + strings.Repeat("b", 64),
+		ResolvedURL: first(t, resolved).ResolvedURL, ResolvedFile: first(t, resolved).ResolvedFile,
+		ConfigurationDigest: ConfigurationDigest(first(t, resolved)), Digest: "sha256:" + strings.Repeat("b", 64),
 	}
 	lock := Lockfile{Version: Version, Files: map[string]Asset{"artifact": locked}}
 	if err := ValidateCurrent(resolved, lock); !errors.Is(err, ErrStale) {
 		t.Fatalf("pin mismatch error = %v, want ErrStale", err)
 	}
 
-	locked.Digest = resolved[0].Pin
+	locked.Digest = first(t, resolved).Pin
 	lock.Files["artifact"] = locked
 	value.Files["artifact"] = manifest.Asset{
 		URL: "https://example.com/artifact", File: "artifact.bin",
-		Pin: resolved[0].Pin, Variables: map[string]string{"UNUSED": "two"},
+		Pin: first(t, resolved).Pin, Variables: map[string]string{"UNUSED": "two"},
 	}
 	changed, err := manifest.Resolve(value)
 	if err != nil {
@@ -77,4 +82,14 @@ func TestValidateCurrentRejectsPolicyChangeAndPinMismatch(t *testing.T) {
 	if err := ValidateCurrent(changed, lock); !errors.Is(err, ErrStale) {
 		t.Fatalf("unused-variable change error = %v, want ErrStale", err)
 	}
+}
+
+// first returns the single resolved asset a fixture declares.
+func first(t *testing.T, resolution manifest.Resolution) manifest.ResolvedAsset {
+	t.Helper()
+	assets := resolution.All()
+	if len(assets) == 0 {
+		t.Fatal("resolution is empty")
+	}
+	return assets[0]
 }

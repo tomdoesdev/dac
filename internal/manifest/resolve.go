@@ -22,11 +22,42 @@ type ResolvedAsset struct {
 	Transfer     asset.TransferPolicy
 }
 
+// Resolution is every resolved manifest asset in a stable order, with lookup
+// by name. Callers previously rebuilt their own name index over a slice; the
+// index is built once here so every workflow agrees on what the manifest
+// declares.
+type Resolution struct {
+	assets []ResolvedAsset
+	index  map[string]int
+}
+
+// All returns the resolved assets in sorted name order.
+func (resolution Resolution) All() []ResolvedAsset { return resolution.assets }
+
+// Len reports how many assets the manifest declares.
+func (resolution Resolution) Len() int { return len(resolution.assets) }
+
+// Get returns one resolved asset. The boolean distinguishes an absent name
+// from an asset that happens to hold zero values.
+func (resolution Resolution) Get(name string) (ResolvedAsset, bool) {
+	index, exists := resolution.index[name]
+	if !exists {
+		return ResolvedAsset{}, false
+	}
+	return resolution.assets[index], true
+}
+
+// Has reports whether the manifest declares name.
+func (resolution Resolution) Has(name string) bool {
+	_, exists := resolution.index[name]
+	return exists
+}
+
 // Resolve renders and validates every entry together, including destination
 // uniqueness. Callers use the sorted result before network or state changes.
-func Resolve(value Manifest) ([]ResolvedAsset, error) {
+func Resolve(value Manifest) (Resolution, error) {
 	if err := Validate(value); err != nil {
-		return nil, err
+		return Resolution{}, err
 	}
 	names := sortedKeys(value.Files)
 	result := make([]ResolvedAsset, 0, len(names))
@@ -35,30 +66,34 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 		file := value.Files[name]
 		resolvedURL, err := renderTemplate("url", file.URL, file.Variables)
 		if err != nil {
-			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if err := ValidateResolvedURL(resolvedURL); err != nil {
-			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		resolvedFile, err := renderTemplate("file", file.File, file.Variables)
 		if err != nil {
-			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if filename.Clean(resolvedFile) != resolvedFile {
-			return nil, fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
 		}
 		key := filenameCollisionKey(resolvedFile)
 		if existing, exists := seen[key]; exists {
-			return nil, fault.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), fault.WithAsset(name))
 		}
 		seen[key] = name
 		transfer, err := parseTransfer(file)
 		if err != nil {
-			return nil, fault.NewConfigurationError(err, fault.WithAsset(name))
+			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile, Transfer: transfer})
 	}
-	return result, nil
+	index := make(map[string]int, len(result))
+	for position, item := range result {
+		index[item.Name] = position
+	}
+	return Resolution{assets: result, index: index}, nil
 }
 
 func parseTemplate(kind, value string) (*template.Template, error) {

@@ -23,44 +23,6 @@ func (paths Paths) Manifest() string { return filepath.Join(paths.Root, manifest
 func (paths Paths) Lockfile() string { return filepath.Join(paths.Root, lockName) }
 func (paths Paths) LockPath() string { return flock.HiddenPath(paths.Manifest()) }
 
-// OpenDownloads returns a traversal-safe handle to the managed download
-// directory. Opening it through the project root prevents a committed symlink
-// from redirecting downloads outside the project.
-func (paths Paths) OpenDownloads() (*os.Root, error) {
-	root, err := os.OpenRoot(paths.Root)
-	if err != nil {
-		return nil, fault.NewFilesystemError(err)
-	}
-	defer func() { _ = root.Close() }()
-	managed := filepath.Join(".dac", "downloads")
-	if err := root.MkdirAll(managed, 0o755); err != nil {
-		return nil, fault.NewFilesystemError(err)
-	}
-	downloads, err := root.OpenRoot(managed)
-	if err != nil {
-		return nil, fault.NewFilesystemError(err)
-	}
-	return downloads, nil
-}
-
-// OpenDownloadsOptional opens the managed directory without creating it. This
-// keeps observational commands free of persistent filesystem side effects.
-func (paths Paths) OpenDownloadsOptional() (*os.Root, bool, error) {
-	root, err := os.OpenRoot(paths.Root)
-	if err != nil {
-		return nil, false, fault.NewFilesystemError(err)
-	}
-	defer func() { _ = root.Close() }()
-	downloads, err := root.OpenRoot(filepath.Join(".dac", "downloads"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fault.NewFilesystemError(err)
-	}
-	return downloads, true, nil
-}
-
 // Discover walks up from start to the project root. It returns a configuration
 // error rather than silently operating in a nearby unrelated directory.
 func Discover(start string) (Paths, error) {

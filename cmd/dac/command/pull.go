@@ -59,9 +59,9 @@ func (command *pullCommand) Run(ctx context.Context) error {
 		defer func() { _ = downloads.Close() }()
 		var results []output.Result
 		var invalid []string
-		for _, resolvedAsset := range resolved {
+		for _, resolvedAsset := range resolved.All() {
 			locked := lock.Files[resolvedAsset.Name]
-			valid, err := asset.VerifyLocal(downloads, locked.ResolvedFile, locked.Digest, locked.Size)
+			valid, err := asset.VerifyLocal(downloads.Root(), locked.ResolvedFile, locked.Digest, locked.Size)
 			if err != nil {
 				return err
 			}
@@ -74,7 +74,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 				continue
 			}
 			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
-				download, err := command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), locked.Digest)
+				download, err := command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), locked.Digest)
 				if err != nil {
 					return err
 				}

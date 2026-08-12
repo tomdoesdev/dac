@@ -108,6 +108,23 @@ func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, 
 	return stageResponseWithPolicy(downloads, request, body, expected, response.ContentLength, requestContext)
 }
 
+// CalculateDigest retrieves an asset and returns the digest of the bytes the
+// remote host served, without installing them or accepting them as trusted.
+// This is dac's trust-on-first-use step: the caller records the digest as a
+// limit that a later download must satisfy, so the bytes measured here are
+// deliberately discarded rather than reused.
+func (downloader *Downloader) CalculateDigest(ctx context.Context, downloads *os.Root, request Request) (string, error) {
+	download, err := downloader.Download(ctx, downloads, request, "")
+	if err != nil {
+		return "", err
+	}
+	digest := download.Digest
+	if err := download.Discard(); err != nil {
+		return "", fault.NewFilesystemError(err)
+	}
+	return digest, nil
+}
+
 // newRequest resolves configured headers at the last possible moment so
 // environment-backed secrets exist only for the lifetime of the HTTP request.
 func (downloader *Downloader) newRequest(ctx context.Context, request Request) (*http.Request, error) {

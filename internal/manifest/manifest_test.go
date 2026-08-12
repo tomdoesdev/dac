@@ -121,17 +121,18 @@ func TestResolveCarriesParsedTransferLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byName := make(map[string]ResolvedAsset, len(resolved))
-	for _, item := range resolved {
-		byName[item.Name] = item
+	declared, ok := resolved.Get("declared")
+	if !ok {
+		t.Fatal("Resolve dropped the declared asset")
 	}
-	if got, want := byName["declared"].Transfer.MaxSize, int64(2<<20); got != want {
+	if got, want := declared.Transfer.MaxSize, int64(2<<20); got != want {
 		t.Errorf("declared MaxSize = %d, want %d", got, want)
 	}
-	if got, want := byName["declared"].Transfer.IdleTimeout, 45*time.Second; got != want {
+	if got, want := declared.Transfer.IdleTimeout, 45*time.Second; got != want {
 		t.Errorf("declared IdleTimeout = %v, want %v", got, want)
 	}
-	if got, want := byName["default"].Transfer, asset.DefaultTransferPolicy(); got != want {
+	fallback, _ := resolved.Get("default")
+	if got, want := fallback.Transfer, asset.DefaultTransferPolicy(); got != want {
 		t.Errorf("default Transfer = %+v, want %+v", got, want)
 	}
 }

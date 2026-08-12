@@ -32,14 +32,12 @@ type Evaluation struct {
 
 // Evaluate computes lock currentness once so all workflows enforce identical
 // configuration, resolution, and pin policy.
-func Evaluate(resolved []manifest.ResolvedAsset, lock Lockfile) (Evaluation, error) {
+func Evaluate(resolved manifest.Resolution, lock Lockfile) (Evaluation, error) {
 	if err := Validate(lock); err != nil {
 		return Evaluation{}, err
 	}
-	result := Evaluation{Entries: make([]EntryState, 0, len(resolved))}
-	manifestNames := make(map[string]bool, len(resolved))
-	for _, file := range resolved {
-		manifestNames[file.Name] = true
+	result := Evaluation{Entries: make([]EntryState, 0, resolved.Len())}
+	for _, file := range resolved.All() {
 		locked, exists := lock.Files[file.Name]
 		entry := EntryState{Resolved: file, Locked: locked, State: StateCurrent}
 		if !exists {
@@ -50,7 +48,7 @@ func Evaluate(resolved []manifest.ResolvedAsset, lock Lockfile) (Evaluation, err
 		result.Entries = append(result.Entries, entry)
 	}
 	for name := range lock.Files {
-		if !manifestNames[name] {
+		if !resolved.Has(name) {
 			result.Orphans = append(result.Orphans, name)
 		}
 	}
@@ -60,7 +58,7 @@ func Evaluate(resolved []manifest.ResolvedAsset, lock Lockfile) (Evaluation, err
 
 // ValidateCurrent confirms that a complete lock describes exactly the resolved
 // desired state. A matching pin is required because a pin is a trust limit.
-func ValidateCurrent(resolved []manifest.ResolvedAsset, lock Lockfile) error {
+func ValidateCurrent(resolved manifest.Resolution, lock Lockfile) error {
 	evaluation, err := Evaluate(resolved, lock)
 	if err != nil {
 		return err
@@ -78,7 +76,7 @@ func ValidateCurrent(resolved []manifest.ResolvedAsset, lock Lockfile) error {
 
 // ValidateRetained ensures entries outside a targeted lock remain current.
 // Entries selected for replacement are intentionally excluded from this check.
-func ValidateRetained(resolved []manifest.ResolvedAsset, lock Lockfile, replacing map[string]bool) error {
+func ValidateRetained(resolved manifest.Resolution, lock Lockfile, replacing map[string]bool) error {
 	evaluation, err := Evaluate(resolved, lock)
 	if err != nil {
 		return err

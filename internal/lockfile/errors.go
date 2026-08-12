@@ -5,6 +5,8 @@ import "errors"
 var (
 	// ErrNotFound marks a required lockfile that does not exist.
 	ErrNotFound = errors.New("dac.lock does not exist")
+	// ErrAlreadyExists prevents a create-only commit from replacing accepted state.
+	ErrAlreadyExists = errors.New("dac.lock already exists")
 	// ErrDecode marks JSON that cannot be decoded as a dac lockfile.
 	ErrDecode = errors.New("decode dac.lock")
 	// ErrUnsupportedVersion marks a lockfile version dac cannot interpret.

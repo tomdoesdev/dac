@@ -41,25 +41,21 @@ func (runtime *runtime) project() (project.Paths, error) {
 	return project.Discover(directory)
 }
 
-// calculatePin retrieves and hashes an asset without installing or accepting
-// its bytes. Both add and update use this trust-on-first-use workflow.
+// calculatePin drives the trust-on-first-use download with dac's progress
+// presentation. The retrieve-and-discard protocol itself belongs to asset.
 func (runtime *runtime) calculatePin(ctx context.Context, paths project.Paths, resolved manifest.ResolvedAsset) (string, error) {
 	downloads, err := paths.OpenDownloads()
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = downloads.Close() }()
-	var download *asset.StagedDownload
+	var digest string
 	err = runtime.Output.WithDownloadProgress(ctx, resolved.Name, resolved.ResolvedFile, resolved.ResolvedURL, func(ctx context.Context) error {
-		download, err = runtime.Downloader.Download(ctx, downloads, assetRequest(resolved), "")
+		digest, err = runtime.Downloader.CalculateDigest(ctx, downloads.Root(), assetRequest(resolved))
 		return err
 	})
 	if err != nil {
 		return "", err
-	}
-	digest := download.Digest
-	if err := download.Discard(); err != nil {
-		return "", fault.NewFilesystemError(err)
 	}
 	return digest, nil
 }
@@ -141,13 +137,4 @@ func parseHeaderNames(values []string) (map[string]string, error) {
 		result[normalized] = value
 	}
 	return result, nil
-}
-
-func findResolved(values []manifest.ResolvedAsset, name string) manifest.ResolvedAsset {
-	for _, value := range values {
-		if value.Name == name {
-			return value
-		}
-	}
-	return manifest.ResolvedAsset{}
 }

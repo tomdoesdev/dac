@@ -97,7 +97,10 @@ func (command *addCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		resolvedAsset := findResolved(resolved, command.Name)
+		resolvedAsset, ok := resolved.Get(command.Name)
+		if !ok {
+			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
+		}
 		if command.Pin.calculate {
 			candidate.Pin, err = command.runtime.calculatePin(ctx, paths, resolvedAsset)
 			if err != nil {
