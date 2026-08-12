@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/cli"
 )
 
@@ -18,9 +20,26 @@ import (
 // credentials, while the scheme, host, and path are still useful for debugging.
 func TestSanitizeErrorRemovesURLSecrets(t *testing.T) {
 	message := "request https://user:password@example.com/artifact?token=secret#fragment failed"
-	got := sanitizeError(message)
+	got := redact.URLs(message)
 	if want := "request https://example.com/artifact failed"; got != want {
-		t.Fatalf("sanitizeError = %q, want %q", got, want)
+		t.Fatalf("redact.URLs = %q, want %q", got, want)
+	}
+}
+
+// TestFormatRecoveryQuotesOpaqueNames ensures recovery instructions remain safe
+// to paste into a POSIX shell. Asset names are deliberately opaque and may begin
+// with a dash or contain shell metacharacters, so the renderer must quote them
+// rather than let a shell reinterpret them as options or syntax.
+func TestFormatRecoveryQuotesOpaqueNames(t *testing.T) {
+	targeted := fault.Recovery{Command: "lock", Assets: []string{"-scope/pkg'$`"}}
+	if got, want := formatRecovery(targeted), `run: dac lock -- '-scope/pkg'"'"'$`+"`'"; got != want {
+		t.Fatalf("formatRecovery = %q, want %q", got, want)
+	}
+	if got, want := formatRecovery(fault.Recovery{Command: "lock", Flags: []string{"--all"}}), "run: dac lock --all"; got != want {
+		t.Fatalf("formatRecovery = %q, want %q", got, want)
+	}
+	if got := formatRecovery(fault.Recovery{}); got != "" {
+		t.Fatalf("formatRecovery(empty) = %q, want empty", got)
 	}
 }
 

@@ -38,7 +38,7 @@ type Asset struct {
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithHint("run `dac lock --all`"))
+		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithRecovery(lockAllRecovery()))
 	}
 	if err != nil {
 		return Lockfile{}, fault.NewFilesystemError(err)
@@ -90,7 +90,7 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 // verification ambiguous.
 func Validate(value Lockfile) error {
 	if value.Version != Version {
-		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithHint("run `dac lock --all`"))
+		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithRecovery(lockAllRecovery()))
 	}
 	if value.Files == nil {
 		return fault.NewConfigurationError(ErrMissingFiles)

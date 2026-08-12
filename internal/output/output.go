@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/cli"
 )
-
-var urlToken = regexp.MustCompile(`https?://[^\s"']+`)
 
 // Version is the current structured output protocol.
 const Version = 1
@@ -105,7 +104,7 @@ func (writer *Writer) ValidateOptions() error { return writer.options.Validate()
 func (writer *Writer) Success(command string, paths project.Paths, assets []Result, warnings []string) error {
 	safeWarnings := make([]string, len(warnings))
 	for index, warning := range warnings {
-		safeWarnings[index] = sanitizeError(warning)
+		safeWarnings[index] = redact.URLs(warning)
 	}
 	if writer.options.JSON {
 		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: command, Project: paths.Root, Assets: assets, Warnings: safeWarnings})
@@ -212,37 +211,59 @@ func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orp
 	return nil
 }
 
-// Error writes an invocation error and returns its conventional CLI exit code.
-func (writer *Writer) Error(stderr io.Writer, err error) int {
-	styler := cli.NewStyler(stderr, cli.ColorAuto)
+// Error writes an invocation error in the selected output mode. Choosing the
+// process exit status from it is the caller's decision, not the writer's.
+func (writer *Writer) Error(err error) {
 	var usage *cli.UsageError
 	if errors.As(err, &usage) {
 		if writer.options.JSON {
-			_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: "usage", Message: sanitizeError(usage.Error())})
+			_ = json.NewEncoder(writer.stderr).Encode(errorOutput{Version: Version, Kind: "usage", Message: redact.URLs(usage.Error())})
 		} else {
-			_, _ = fmt.Fprintf(stderr, "%s %s\n\n%s", styler.Error("Error:"), sanitizeError(usage.Error()), usage.Usage())
+			_, _ = fmt.Fprintf(writer.stderr, "%s %s\n\n%s", writer.stderrStyler.Error("Error:"), redact.URLs(usage.Error()), usage.Usage())
 		}
-		return 2
+		return
 	}
 	var operation *fault.Error
 	if !errors.As(err, &operation) {
-		wrapped := fault.NewFilesystemError(err)
-		if !errors.As(wrapped, &operation) {
-			return 1
+		// An unclassified failure still reached the process boundary, so report
+		// it under the category that assumes the least about its cause.
+		if !errors.As(fault.NewFilesystemError(err), &operation) {
+			return
 		}
 	}
+	recovery := formatRecovery(operation.Recovery())
 	if writer.options.JSON {
-		_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: string(operation.Kind()), Message: sanitizeError(operation.Message()), Asset: operation.Asset(), Hint: operation.Hint(), Expected: operation.Expected(), Received: operation.Received()})
-	} else {
-		_, _ = fmt.Fprintf(stderr, "%s %s\n", styler.Error("Error:"), sanitizeError(operation.Error()))
-		if operation.Hint() != "" {
-			_, _ = fmt.Fprintln(stderr, operation.Hint())
+		_ = json.NewEncoder(writer.stderr).Encode(errorOutput{Version: Version, Kind: string(operation.Kind()), Message: redact.URLs(operation.Message()), Asset: operation.Asset(), Hint: recovery, Expected: operation.Expected(), Received: operation.Received()})
+		return
+	}
+	_, _ = fmt.Fprintf(writer.stderr, "%s %s\n", writer.stderrStyler.Error("Error:"), redact.URLs(operation.Error()))
+	if recovery != "" {
+		_, _ = fmt.Fprintln(writer.stderr, recovery)
+	}
+}
+
+// formatRecovery renders a structured recovery as one command a user can paste
+// into a shell. Asset names are opaque and may contain shell metacharacters or
+// begin with a dash, so they are quoted and follow the option terminator.
+func formatRecovery(recovery fault.Recovery) string {
+	if recovery.Empty() {
+		return ""
+	}
+	words := make([]string, 0, len(recovery.Flags)+len(recovery.Assets)+3)
+	words = append(words, "dac", recovery.Command)
+	words = append(words, recovery.Flags...)
+	if len(recovery.Assets) > 0 {
+		words = append(words, "--")
+		for _, name := range recovery.Assets {
+			words = append(words, shellQuote(name))
 		}
 	}
-	if operation.Kind() == fault.ErrorKindConfiguration {
-		return 2
-	}
-	return 1
+	return "run: " + strings.Join(words, " ")
+}
+
+// shellQuote returns one POSIX shell word that reproduces value exactly.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // status maps DAC's observational states onto cli's semantic roles without
@@ -258,20 +279,4 @@ func (writer *Writer) status(status string) string {
 	default:
 		return status
 	}
-}
-
-// sanitizeError removes URL credentials, query strings, and fragments from
-// third-party parser and transport diagnostics before they reach either mode.
-func sanitizeError(message string) string {
-	return urlToken.ReplaceAllStringFunc(message, func(value string) string {
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Host == "" {
-			return "remote URL"
-		}
-		parsed.User = nil
-		parsed.RawQuery = ""
-		parsed.ForceQuery = false
-		parsed.Fragment = ""
-		return parsed.String()
-	})
 }

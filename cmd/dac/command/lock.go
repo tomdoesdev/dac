@@ -63,7 +63,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		}
 		if !command.All && !initial {
 			if !hasLock {
-				return fault.NewConfigurationError(ErrTargetedLockNeedsExisting, fault.WithHint("run `dac lock --all`"))
+				return fault.NewConfigurationError(ErrTargetedLockNeedsExisting, fault.WithRecovery(fault.Recovery{Command: "lock", Flags: []string{"--all"}}))
 			}
 			if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
 				return err

@@ -8,13 +8,21 @@ import (
 	"github.com/tomdoesdev/dac/internal/manifest"
 )
 
-// TestHintQuotesOpaqueNames ensures recovery instructions remain safe to paste
-// into a POSIX shell. Asset names are deliberately opaque and may begin with a
-// dash or contain shell metacharacters, so the hint must quote rather than
-// reinterpret them as options or shell syntax.
-func TestHintQuotesOpaqueNames(t *testing.T) {
-	if got, want := hint("-scope/pkg'$`"), `run: dac lock -- '-scope/pkg'"'"'$`+"`'"; got != want {
-		t.Fatalf("hint = %q, want %q", got, want)
+// TestRelockRecoveryCarriesNameStructurally keeps an opaque asset name out of
+// any command text this package builds. It names the asset as data so the
+// renderer can quote it; rendering it here would put shell syntax in the
+// package that owns accepted state.
+func TestRelockRecoveryCarriesNameStructurally(t *testing.T) {
+	const name = "-scope/pkg'$`"
+	recovery := relockRecovery(name)
+	if recovery.Command != "lock" || len(recovery.Flags) != 0 {
+		t.Fatalf("targeted recovery = %+v, want a bare lock", recovery)
+	}
+	if len(recovery.Assets) != 1 || recovery.Assets[0] != name {
+		t.Fatalf("recovery assets = %q, want the name verbatim", recovery.Assets)
+	}
+	if whole := relockRecovery(""); whole.Command != "lock" || len(whole.Assets) != 0 || len(whole.Flags) != 1 {
+		t.Fatalf("whole-lock recovery = %+v, want lock --all", whole)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/fs/atomic"
 )
 
@@ -131,7 +132,10 @@ func (downloader *Downloader) doRequest(ctx context.Context, assetName string, r
 		if ctx.Err() != nil {
 			return nil, fault.NewCancelledError(context.Cause(ctx), fault.WithAsset(assetName))
 		}
-		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, err), fault.WithAsset(assetName))
+		// net/http quotes the URL it failed on, which for a dac asset can carry
+		// a token in its query string. Redact as the transport error enters
+		// dac's chain rather than trusting the render boundary to catch it.
+		return nil, fault.NewNetworkError(fmt.Errorf("%w: %w", ErrDownloadTransport, redact.Error(err)), fault.WithAsset(assetName))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_ = response.Body.Close()

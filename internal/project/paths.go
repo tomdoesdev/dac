@@ -80,7 +80,7 @@ func Discover(start string) (Paths, error) {
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return Paths{}, fault.NewConfigurationError(ErrProjectNotFound, fault.WithHint("run `dac init`"))
+			return Paths{}, fault.NewConfigurationError(ErrProjectNotFound, fault.WithRecovery(fault.Recovery{Command: "init"}))
 		}
 		directory = parent
 	}

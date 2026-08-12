@@ -1,9 +1,7 @@
 package lockfile
 
 import (
-	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/fault"
@@ -115,18 +113,20 @@ func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 }
 
 func staleError(name string) error {
-	return fault.NewConfigurationError(ErrStale, fault.WithAsset(name), fault.WithHint(hint(name)))
+	return fault.NewConfigurationError(ErrStale, fault.WithAsset(name), fault.WithRecovery(relockRecovery(name)))
 }
 
-// hint formats a command that safely selects one opaque asset name.
-func hint(name string) string {
+// relockRecovery selects the narrowest lock that restores currentness. The
+// asset name stays structured data; quoting it into a shell word is the
+// renderer's problem, not this package's.
+func relockRecovery(name string) fault.Recovery {
 	if name == "" {
-		return "run `dac lock --all`"
+		return lockAllRecovery()
 	}
-	return fmt.Sprintf("run: dac lock -- %s", shellQuote(name))
+	return fault.Recovery{Command: "lock", Assets: []string{name}}
 }
 
-// shellQuote returns one POSIX shell word that reproduces value exactly.
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+// lockAllRecovery rebuilds accepted state from every manifest asset.
+func lockAllRecovery() fault.Recovery {
+	return fault.Recovery{Command: "lock", Flags: []string{"--all"}}
 }
