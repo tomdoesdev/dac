@@ -37,3 +37,13 @@ func Example() {
 	// Output:
 	// Hello, Codex!
 }
+
+// ExampleNewStyler demonstrates the package-owned semantic vocabulary without
+// exposing the terminal implementation used to render it.
+func ExampleNewStyler() {
+	styler := cli.NewStyler(os.Stdout, cli.ColorNever)
+	fmt.Println(styler.Success("created"), "artifact")
+
+	// Output:
+	// created artifact
+}

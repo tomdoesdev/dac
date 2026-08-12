@@ -70,14 +70,22 @@ type errorOutput struct {
 
 // Writer applies one invocation's output mode to command results.
 type Writer struct {
-	options *Options
-	stdout  io.Writer
-	stderr  io.Writer
+	options      *Options
+	stdout       io.Writer
+	stderr       io.Writer
+	stdoutStyler *cli.Styler
+	stderrStyler *cli.Styler
 }
 
 // New creates an output writer bound to the invocation's global options.
 func New(options *Options, stdout, stderr io.Writer) *Writer {
-	return &Writer{options: options, stdout: stdout, stderr: stderr}
+	return &Writer{
+		options:      options,
+		stdout:       stdout,
+		stderr:       stderr,
+		stdoutStyler: cli.NewStyler(stdout, cli.ColorAuto),
+		stderrStyler: cli.NewStyler(stderr, cli.ColorAuto),
+	}
 }
 
 // ValidateOptions lets each command participate in cli's normal validation
@@ -95,13 +103,13 @@ func (writer *Writer) Success(command string, paths project.Paths, assets []Resu
 	}
 	if !writer.options.Quiet {
 		for _, asset := range assets {
-			if _, err := fmt.Fprintf(writer.stdout, "%s %s\n", asset.Status, asset.Name); err != nil {
+			if _, err := fmt.Fprintf(writer.stdout, "%s %s\n", writer.stdoutStyler.Success(asset.Status), asset.Name); err != nil {
 				return err
 			}
 		}
 	}
 	for _, warning := range safeWarnings {
-		if _, err := fmt.Fprintf(writer.stderr, "Warning: %s\n", warning); err != nil {
+		if _, err := fmt.Fprintf(writer.stderr, "%s %s\n", writer.stderrStyler.Warning("Warning:"), warning); err != nil {
 			return err
 		}
 	}
@@ -118,7 +126,7 @@ func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orp
 		return nil
 	}
 	for _, item := range assets {
-		if _, err := fmt.Fprintf(writer.stdout, "%s %s", item.Status, item.Name); err != nil {
+		if _, err := fmt.Fprintf(writer.stdout, "%s %s", writer.status(item.Status), item.Name); err != nil {
 			return err
 		}
 		if item.Reason != "" {
@@ -135,7 +143,7 @@ func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orp
 		if orphan.Kind == "file" {
 			label = fmt.Sprintf("file %q", orphan.File)
 		}
-		if _, err := fmt.Fprintf(writer.stdout, "orphaned %s: %s\n", label, orphan.Reason); err != nil {
+		if _, err := fmt.Fprintf(writer.stdout, "%s %s: %s\n", writer.stdoutStyler.Warning("orphaned"), label, orphan.Reason); err != nil {
 			return err
 		}
 	}
@@ -144,12 +152,13 @@ func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orp
 
 // Error writes an invocation error and returns its conventional CLI exit code.
 func (writer *Writer) Error(stderr io.Writer, err error) int {
+	styler := cli.NewStyler(stderr, cli.ColorAuto)
 	var usage *cli.UsageError
 	if errors.As(err, &usage) {
 		if writer.options.JSON {
 			_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: "usage", Message: sanitizeError(usage.Error())})
 		} else {
-			_, _ = fmt.Fprintf(stderr, "Error: %s\n\n%s", sanitizeError(usage.Error()), usage.Usage())
+			_, _ = fmt.Fprintf(stderr, "%s %s\n\n%s", styler.Error("Error:"), sanitizeError(usage.Error()), usage.Usage())
 		}
 		return 2
 	}
@@ -163,7 +172,7 @@ func (writer *Writer) Error(stderr io.Writer, err error) int {
 	if writer.options.JSON {
 		_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: string(operation.Kind()), Message: sanitizeError(operation.Message()), Asset: operation.Asset(), Hint: operation.Hint(), Expected: operation.Expected(), Received: operation.Received()})
 	} else {
-		_, _ = fmt.Fprintf(stderr, "Error: %s\n", sanitizeError(operation.Error()))
+		_, _ = fmt.Fprintf(stderr, "%s %s\n", styler.Error("Error:"), sanitizeError(operation.Error()))
 		if operation.Hint() != "" {
 			_, _ = fmt.Fprintln(stderr, operation.Hint())
 		}
@@ -172,6 +181,21 @@ func (writer *Writer) Error(stderr io.Writer, err error) int {
 		return 2
 	}
 	return 1
+}
+
+// status maps DAC's observational states onto cli's semantic roles without
+// changing the stable status strings used by JSON and command logic.
+func (writer *Writer) status(status string) string {
+	switch status {
+	case "verified":
+		return writer.stdoutStyler.Success(status)
+	case "invalid":
+		return writer.stdoutStyler.Error(status)
+	case "missing", "stale":
+		return writer.stdoutStyler.Warning(status)
+	default:
+		return status
+	}
 }
 
 // sanitizeError removes URL credentials, query strings, and fragments from

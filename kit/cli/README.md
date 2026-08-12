@@ -25,6 +25,27 @@ app.MustAddCommand("repository clone <repository>", &cloneCommand{},
 err := app.Run(os.Args[1:])
 ```
 
+## Semantic color
+
+Generated help and warnings use semantic color automatically when their output
+writer is a capable terminal. Redirected output stays plain, and the standard
+`NO_COLOR`, `CLICOLOR`, and `CLICOLOR_FORCE` environment conventions are
+honored. Use `WithColor(cli.ColorAlways)` or `WithColor(cli.ColorNever)` when an
+application needs an explicit policy.
+
+Command handlers can use the same fixed semantic vocabulary without depending
+on the underlying terminal implementation:
+
+```go
+styler := cli.NewStyler(os.Stdout, cli.ColorAuto)
+fmt.Fprintf(os.Stdout, "%s %s\n", styler.Success("created"), filename)
+fmt.Fprintf(os.Stderr, "%s %s\n", styler.Warning("Warning:"), message)
+```
+
+`Styler` also provides `Heading`, `Command`, `Flag`, `Argument`, and `Error`.
+It returns formatted strings rather than owning writes, so handlers retain
+normal control over destinations and write-error handling.
+
 ## Patterns and binding
 
 - Plain words form the command path: `remote add`.

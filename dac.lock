@@ -1,11 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "files": {
-    "roadmap": {
-      "resolved_url": "https://gist.githubusercontent.com/tomdoesdev/f08b7739bcfeccf60de8faafe914d100/raw/8f0ca82d54554af597adc6161016b08f68c1625b/andrew.md",
-      "resolved_file": "andrew.md",
-      "digest": "sha256:7041f15cc1b85d5ca91e2517c8207552dfdf9a85ea13d0ce9a009da2a1653767",
-      "size": 8248
+    "test": {
+      "resolved_url": "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore",
+      "resolved_file": "Go.gitignore",
+      "configuration_digest": "sha256:19d1360d36e39a1ed32a8b2094d0d9a36a46085176d65756cf4d702329016b10",
+      "digest": "sha256:63a6bdc727e45c5811e6a6d664205d2a07948f03881839831c2fa92434509da2",
+      "size": 559
     }
   }
 }

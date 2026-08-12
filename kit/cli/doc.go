@@ -8,4 +8,6 @@
 //
 // App.Run never terminates the process. It returns UsageError for invocation and
 // validation failures so the executable can choose presentation and exit codes.
+// Generated documentation uses auto-detected semantic color; NewStyler exposes
+// the same cli-owned roles to command handlers without exposing its renderer.
 package cli
