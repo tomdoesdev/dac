@@ -130,7 +130,7 @@ func parseVariableNames(values []string) (map[string]bool, error) {
 func parseHeaderNames(values []string) (map[string]string, error) {
 	result := make(map[string]string, len(values))
 	for _, value := range values {
-		if err := asset.ValidateHeaders(map[string]string{value: ""}); err != nil {
+		if err := asset.ValidateHeaderName(value); err != nil {
 			return nil, err
 		}
 		normalized := strings.ToLower(value)

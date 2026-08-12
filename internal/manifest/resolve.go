@@ -52,12 +52,9 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 			return nil, project.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), project.WithAsset(name))
 		}
 		seen[key] = name
-		transfer := asset.DefaultTransferPolicy()
-		if file.MaxSize != "" {
-			transfer.MaxSize, _ = asset.ParseMaxSize(file.MaxSize)
-		}
-		if file.IdleTimeout != "" {
-			transfer.IdleTimeout, _ = asset.ParseIdleTimeout(file.IdleTimeout)
+		transfer, err := parseTransfer(file)
+		if err != nil {
+			return nil, project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile, Transfer: transfer})
 	}

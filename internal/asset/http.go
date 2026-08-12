@@ -76,11 +76,24 @@ func ValidateHeaders(headers map[string]string) error {
 	return nil
 }
 
+// ValidateHeaderName applies the grammar and transport-ownership rules to one
+// header name. Callers that edit headers by name only, such as a removal flag,
+// use it instead of validating a synthetic single-entry map.
+func ValidateHeaderName(name string) error {
+	if !validHeaderName(name) {
+		return newHeaderError(ErrInvalidHeader, name, "name is invalid")
+	}
+	if _, managed := transportManagedHeaderNames[strings.ToLower(name)]; managed {
+		return newHeaderError(ErrDisallowedHeader, name, "managed by the HTTP transport")
+	}
+	return nil
+}
+
 // validateHeader checks one configured header while tracking names that are
 // equivalent under HTTP's case-insensitive matching rules.
 func validateHeader(name, value string, seen map[string]struct{}) error {
-	if !validHeaderName(name) {
-		return newHeaderError(ErrInvalidHeader, name, "name is invalid")
+	if err := ValidateHeaderName(name); err != nil {
+		return err
 	}
 
 	canonicalName := strings.ToLower(name)
@@ -91,9 +104,6 @@ func validateHeader(name, value string, seen map[string]struct{}) error {
 
 	if !utf8.ValidString(value) {
 		return newHeaderError(ErrInvalidHeader, name, "value must be valid UTF-8")
-	}
-	if _, managed := transportManagedHeaderNames[canonicalName]; managed {
-		return newHeaderError(ErrDisallowedHeader, name, "managed by the HTTP transport")
 	}
 
 	return validateHeaderValue(name, value)

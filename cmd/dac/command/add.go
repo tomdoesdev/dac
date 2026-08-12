@@ -19,6 +19,11 @@ type addCommand struct {
 	Pin         pinValue     `flag:"pin" help:"calculate or require a SHA-256 pin"`
 	MaxSize     *singleValue `flag:"max-size" help:"maximum response body size"`
 	IdleTimeout *singleValue `flag:"idle-timeout" help:"maximum idle body-read duration"`
+
+	// Validate runs immediately before Run on the same instance, so it parses
+	// each repeated option once and Run consumes the result.
+	variables map[string]string
+	headers   map[string]string
 }
 
 func newAddCommand(runtime *runtime) *addCommand {
@@ -35,12 +40,15 @@ func (command *addCommand) Validate() error {
 	if err := command.runtime.Output.ValidateOptions(); err != nil {
 		return err
 	}
-	if _, err := parseSets(command.Set); err != nil {
+	variables, err := parseSets(command.Set)
+	if err != nil {
 		return err
 	}
-	if _, err := parseHeaders(command.Header); err != nil {
+	headers, err := parseHeaders(command.Header)
+	if err != nil {
 		return err
 	}
+	command.variables, command.headers = variables, headers
 	if command.MaxSize.set {
 		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
@@ -67,14 +75,6 @@ func (command *addCommand) Run(ctx context.Context) error {
 		if _, exists := value.Files[command.Name]; exists {
 			return project.NewConfigurationError(ErrAssetAlreadyExists, project.WithAsset(command.Name))
 		}
-		variables, err := parseSets(command.Set)
-		if err != nil {
-			return project.NewConfigurationError(err)
-		}
-		headers, err := parseHeaders(command.Header)
-		if err != nil {
-			return project.NewConfigurationError(err)
-		}
 		fileName := command.File.value
 		if !command.File.set {
 			fileName, err = manifest.InferFile(command.URL)
@@ -82,7 +82,7 @@ func (command *addCommand) Run(ctx context.Context) error {
 				return project.NewConfigurationError(err, project.WithAsset(command.Name))
 			}
 		}
-		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: variables, Headers: headers}
+		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: command.variables, Headers: command.headers}
 		if command.MaxSize.set {
 			candidate.MaxSize = command.MaxSize.value
 		}

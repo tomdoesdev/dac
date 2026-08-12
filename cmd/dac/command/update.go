@@ -28,6 +28,18 @@ type updateCommand struct {
 	UnsetMaxSize     bool         `flag:"unset-max-size" help:"restore the default maximum response body size"`
 	IdleTimeout      *singleValue `flag:"idle-timeout" help:"set the maximum idle body-read duration"`
 	UnsetIdleTimeout bool         `flag:"unset-idle-timeout" help:"restore the default idle body-read duration"`
+
+	// Validate runs immediately before Run on the same instance, so it parses
+	// each repeated option once and apply consumes the result.
+	edits assetEdits
+}
+
+// assetEdits is one update's parsed set algebra over variables and headers.
+type assetEdits struct {
+	variables      map[string]string
+	unsetVariables map[string]bool
+	headers        map[string]string
+	removedHeaders map[string]string
 }
 
 func newUpdateCommand(runtime *runtime) *updateCommand {
@@ -78,6 +90,7 @@ func (command *updateCommand) Validate() error {
 			return fmt.Errorf("%w: header %q", ErrEditConflict, key)
 		}
 	}
+	command.edits = assetEdits{variables: sets, unsetVariables: unsets, headers: headers, removedHeaders: removedHeaders}
 	if command.MaxSize.set {
 		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
@@ -153,30 +166,20 @@ func (command *updateCommand) apply(file *manifest.Asset) error {
 	if command.File.set {
 		file.File = command.File.value
 	}
-	sets, err := parseSets(command.Set)
-	if err != nil {
-		return err
-	}
+	sets := command.edits.variables
 	if len(sets) > 0 && file.Variables == nil {
 		file.Variables = make(map[string]string)
 	}
 	for key, value := range sets {
 		file.Variables[key] = value
 	}
-	unsets, err := parseVariableNames(command.Unset)
-	if err != nil {
-		return err
-	}
-	for key := range unsets {
+	for key := range command.edits.unsetVariables {
 		if _, exists := file.Variables[key]; !exists {
 			return fmt.Errorf("%w %q", ErrUnknownUnset, key)
 		}
 		delete(file.Variables, key)
 	}
-	headers, err := parseHeaders(command.Header)
-	if err != nil {
-		return err
-	}
+	headers := command.edits.headers
 	if len(headers) > 0 && file.Headers == nil {
 		file.Headers = make(map[string]string)
 	}
@@ -186,11 +189,7 @@ func (command *updateCommand) apply(file *manifest.Asset) error {
 		}
 		file.Headers[name] = value
 	}
-	removedHeaders, err := parseHeaderNames(command.RemoveHeader)
-	if err != nil {
-		return err
-	}
-	for normalized, requested := range removedHeaders {
+	for normalized, requested := range command.edits.removedHeaders {
 		existing, exists := headerKey(file.Headers, normalized)
 		if !exists {
 			return fmt.Errorf("%w %q", ErrUnknownHeaderRemoval, requested)

@@ -130,15 +130,8 @@ func Validate(value Manifest) error {
 				return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidPin, err), project.WithAsset(name))
 			}
 		}
-		if file.MaxSize != "" {
-			if _, err := asset.ParseMaxSize(file.MaxSize); err != nil {
-				return project.NewConfigurationError(err, project.WithAsset(name))
-			}
-		}
-		if file.IdleTimeout != "" {
-			if _, err := asset.ParseIdleTimeout(file.IdleTimeout); err != nil {
-				return project.NewConfigurationError(err, project.WithAsset(name))
-			}
+		if _, err := parseTransfer(file); err != nil {
+			return project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		for key, item := range file.Variables {
 			if !variableNamePattern.MatchString(key) {
@@ -153,6 +146,28 @@ func Validate(value Manifest) error {
 		}
 	}
 	return nil
+}
+
+// parseTransfer converts an asset's human-authored limits into the effective
+// policy. Validation and resolution share it so the manifest's transfer
+// grammar is interpreted in exactly one place and never parsed twice.
+func parseTransfer(file Asset) (asset.TransferPolicy, error) {
+	transfer := asset.DefaultTransferPolicy()
+	if file.MaxSize != "" {
+		maxSize, err := asset.ParseMaxSize(file.MaxSize)
+		if err != nil {
+			return asset.TransferPolicy{}, err
+		}
+		transfer.MaxSize = maxSize
+	}
+	if file.IdleTimeout != "" {
+		idleTimeout, err := asset.ParseIdleTimeout(file.IdleTimeout)
+		if err != nil {
+			return asset.TransferPolicy{}, err
+		}
+		transfer.IdleTimeout = idleTimeout
+	}
+	return transfer, nil
 }
 
 // ValidAssetName reports whether a logical asset identifier is printable and
