@@ -158,8 +158,8 @@ func TestRemoveOnReleaseRejectsSharedLocks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".object.lock")
 	_, err := flock.Acquire(context.Background(), path,
 		flock.WithMode(flock.Shared), flock.RemoveOnRelease())
-	if err == nil {
-		t.Fatal("a removable shared lock was accepted")
+	if !errors.Is(err, flock.ErrRemoveOnReleaseShared) {
+		t.Fatalf("Acquire error = %v, want ErrRemoveOnReleaseShared", err)
 	}
 	if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Fatalf("rejected settings created a lock file: %v", statErr)

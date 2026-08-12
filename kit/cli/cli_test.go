@@ -454,8 +454,8 @@ func TestAddCommandRejectsInvalidPatternsAndBindings(t *testing.T) {
 	for _, pattern := range invalidPatterns {
 		t.Run(pattern, func(t *testing.T) {
 			app := New(context.Background(), WithOutput(&bytes.Buffer{}))
-			if err := app.AddCommand(pattern, &simpleHandler{}); err == nil {
-				t.Fatalf("AddCommand(%q) succeeded, want error", pattern)
+			if err := app.AddCommand(pattern, &simpleHandler{}); !errors.Is(err, ErrInvalidCommandDefinition) {
+				t.Fatalf("AddCommand(%q) error = %v, want ErrInvalidCommandDefinition", pattern, err)
 			}
 		})
 	}

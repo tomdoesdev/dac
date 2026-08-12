@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,11 +14,6 @@ import (
 
 	"github.com/spf13/pflag"
 )
-
-// ErrAlreadyRun is returned when an application is invoked more than once.
-// Commands bind directly into their supplied handler, so reusing an App would
-// otherwise retain flag and positional state from the previous invocation.
-var ErrAlreadyRun = errors.New("cli: app has already run")
 
 // CommandHandler defines the minimum behavior required for a command. Optional
 // help and validation behavior are discovered through HelpProvider and Validator.
@@ -104,7 +98,7 @@ type commandConfig struct {
 func WithAliases(patterns ...string) CommandOption {
 	return func(config *commandConfig) error {
 		if len(patterns) == 0 {
-			return errors.New("cli: aliases must not be empty")
+			return newCLIError(ErrInvalidCommandDefinition, "cli: aliases must not be empty")
 		}
 		config.aliases = append(config.aliases, patterns...)
 		return nil
@@ -117,7 +111,7 @@ func WithDeprecated(message string) CommandOption {
 	return func(config *commandConfig) error {
 		message = strings.TrimSpace(message)
 		if message == "" {
-			return errors.New("cli: deprecation message must not be empty")
+			return newCLIError(ErrInvalidCommandDefinition, "cli: deprecation message must not be empty")
 		}
 		config.deprecated = message
 		return nil
@@ -196,12 +190,12 @@ func (app *App) AddCommand(pattern string, handler CommandHandler, options ...Co
 	for _, path := range paths {
 		key := strings.Join(path, " ")
 		if _, exists := seen[key]; exists {
-			return fmt.Errorf("cli: command path %q is declared more than once", key)
+			return newCLIError(ErrInvalidCommandDefinition, "cli: command path %q is declared more than once", key)
 		}
 		seen[key] = struct{}{}
 
 		if node := app.findNode(path); node != nil && node.command != nil {
-			return fmt.Errorf("cli: command path %q is already registered", key)
+			return newCLIError(ErrInvalidCommandDefinition, "cli: command path %q is already registered", key)
 		}
 	}
 
@@ -226,20 +220,20 @@ func (app *App) AddGroup(pathValue, description string, options ...GroupOption) 
 	}
 	description = strings.TrimSpace(description)
 	if description == "" {
-		return fmt.Errorf("cli: group %q must provide a non-empty description", pathValue)
+		return newCLIError(ErrInvalidCommandDefinition, "cli: group %q must provide a non-empty description", pathValue)
 	}
 
 	config := groupConfig{}
 	for _, option := range options {
 		if option == nil {
-			return errors.New("cli: group option must not be nil")
+			return newCLIError(ErrInvalidCommandDefinition, "cli: group option must not be nil")
 		}
 		if err := option(&config); err != nil {
 			return err
 		}
 	}
 	if node := app.findNode(path); node != nil && node.group != nil {
-		return fmt.Errorf("cli: group path %q is already registered", strings.Join(path, " "))
+		return newCLIError(ErrInvalidCommandDefinition, "cli: group path %q is already registered", strings.Join(path, " "))
 	}
 
 	app.ensureNode(path).group = &commandGroup{description: description, help: config.help}
@@ -257,26 +251,26 @@ func (app *App) MustAddGroup(path, description string, options ...GroupOption) {
 // after every command path. Only one global target may be registered.
 func (app *App) AddGlobalFlags(target any) error {
 	if app.globals != nil {
-		return errors.New("cli: global flags are already registered")
+		return newCLIError(ErrInvalidCommandDefinition, "cli: global flags are already registered")
 	}
 
 	value := reflect.ValueOf(target)
 	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() || value.Elem().Kind() != reflect.Struct {
-		return errors.New("cli: global flags target must be a non-nil pointer to a struct")
+		return newCLIError(ErrInvalidCommandDefinition, "cli: global flags target must be a non-nil pointer to a struct")
 	}
 	arguments, bindings, err := inspectHandlerFields(value.Elem().Type())
 	if err != nil {
 		return err
 	}
 	if len(arguments) != 0 {
-		return errors.New("cli: global flags target must not contain arg-tagged fields")
+		return newCLIError(ErrInvalidCommandDefinition, "cli: global flags target must not contain arg-tagged fields")
 	}
 
 	flags := pflag.NewFlagSet(app.name, pflag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	for _, binding := range bindings {
 		if binding.name == "version" {
-			return fmt.Errorf("cli: global flag %q conflicts with built-in version flag", binding.name)
+			return newCLIError(ErrInvalidCommandDefinition, "cli: global flag %q conflicts with built-in version flag", binding.name)
 		}
 		if err := addFlag(flags, value.Elem().Field(binding.fieldIndex), binding); err != nil {
 			return err
@@ -313,7 +307,7 @@ func (app *App) Run(args []string) error {
 	}
 	if remaining[0] == "--version" && app.version != "" {
 		if len(remaining) != 1 {
-			return app.usageError(app.root, errors.New("--version does not accept arguments"))
+			return app.usageError(app.root, newCLIError(ErrInvalidInvocation, "--version does not accept arguments"))
 		}
 		return app.writeVersion()
 	}
@@ -331,7 +325,7 @@ func (app *App) Run(args []string) error {
 	commandArgs := remaining[consumed:]
 	if node == app.root {
 		if strings.HasPrefix(remaining[0], "-") {
-			return app.usageError(node, app.suggestFlagError(node, fmt.Errorf("unknown flag %q", remaining[0])))
+			return app.usageError(node, app.suggestFlagError(node, newCLIError(ErrInvalidInvocation, "unknown flag %q", remaining[0])))
 		}
 		return app.usageError(node, app.unknownCommandError(node, remaining[0]))
 	}
@@ -340,7 +334,7 @@ func (app *App) Run(args []string) error {
 			return app.writeHelp(node)
 		}
 		if strings.HasPrefix(commandArgs[0], "-") {
-			return app.usageError(node, errors.New("flags must follow a complete command path"))
+			return app.usageError(node, newCLIError(ErrInvalidInvocation, "flags must follow a complete command path"))
 		}
 		return app.usageError(node, app.unknownCommandError(node, commandArgs[0]))
 	}
@@ -439,7 +433,7 @@ func (app *App) runHelp(path []string) error {
 	node := app.root
 	for _, segment := range path {
 		if isHelpFlag(segment) {
-			return app.usageError(node, fmt.Errorf("help accepts a command path, not flag %q", segment))
+			return app.usageError(node, newCLIError(ErrInvalidInvocation, "help accepts a command path, not flag %q", segment))
 		}
 		child := node.children[segment]
 		if child == nil {
@@ -465,12 +459,12 @@ func (app *App) runCommand(node *commandNode, args []string) error {
 	}
 	if validator, ok := command.handler.(Validator); ok {
 		if err := validator.Validate(); err != nil {
-			return app.usageError(node, fmt.Errorf("validate command: %w", err))
+			return app.usageError(node, wrapCLIError(ErrInvalidInvocation, err, "validate command: %v", err))
 		}
 	}
 	if command.deprecated != "" {
 		if _, err := fmt.Fprintf(app.errorOutput, "Warning: command %q is deprecated: %s\n", strings.Join(node.path(), " "), command.deprecated); err != nil {
-			return fmt.Errorf("write deprecation warning: %w", err)
+			return wrapCLIError(ErrOutput, err, "write deprecation warning: %v", err)
 		}
 	}
 	return command.handler.Run(app.ctx)

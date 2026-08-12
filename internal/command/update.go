@@ -2,7 +2,6 @@ package command
 
 import (
 	"context"
-	"errors"
 
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -23,7 +22,7 @@ func (command *updateCommand) Validate() error {
 		return err
 	}
 	if command.Pin.set && command.Unpin {
-		return errors.New("--pin and --unpin cannot be combined")
+		return ErrPinUnpinConflict
 	}
 	_, err := parseSets(command.Set)
 	return err
@@ -41,7 +40,7 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		}
 		file, exists := value.Files[command.Name]
 		if !exists {
-			return project.NewConfigurationError(errors.New("asset does not exist"), project.WithAsset(command.Name))
+			return project.NewConfigurationError(ErrAssetNotFound, project.WithAsset(command.Name))
 		}
 		sets, err := parseSets(command.Set)
 		if err != nil {

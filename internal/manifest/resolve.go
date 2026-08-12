@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"net/url"
 	"text/template"
@@ -44,11 +43,11 @@ func Resolve(value Manifest) ([]ResolvedAsset, error) {
 			return nil, project.NewConfigurationError(err, project.WithAsset(name))
 		}
 		if filename.Clean(resolvedFile) != resolvedFile {
-			return nil, project.NewConfigurationError(errors.New("rendered file must be one safe filename"), project.WithAsset(name))
+			return nil, project.NewConfigurationError(ErrUnsafeResolvedFile, project.WithAsset(name))
 		}
 		key := filenameCollisionKey(resolvedFile)
 		if existing, exists := seen[key]; exists {
-			return nil, project.NewConfigurationError(fmt.Errorf("file %q conflicts with asset %q", resolvedFile, existing), project.WithAsset(name))
+			return nil, project.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), project.WithAsset(name))
 		}
 		seen[key] = name
 		result = append(result, ResolvedAsset{Name: name, Asset: file, ResolvedURL: resolvedURL, ResolvedFile: resolvedFile})
@@ -67,7 +66,7 @@ func renderTemplate(kind, value string, variables map[string]string) (string, er
 	}
 	var result bytes.Buffer
 	if err := templateValue.Execute(&result, variables); err != nil {
-		return "", fmt.Errorf("render %s template: %w", kind, err)
+		return "", fmt.Errorf("%w %q: %w", ErrRenderTemplate, kind, err)
 	}
 	return result.String(), nil
 }
@@ -77,7 +76,7 @@ func renderTemplate(kind, value string, variables map[string]string) (string, er
 func ValidateResolvedURL(value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
-		return errors.New("rendered URL must be an absolute HTTP(S) URL without userinfo or fragment")
+		return ErrInvalidResolvedURL
 	}
 	return nil
 }
@@ -86,7 +85,7 @@ func ValidateResolvedURL(value string) error {
 func InferFile(rawURL string) (string, error) {
 	result := filename.FromURL(rawURL)
 	if result == "" {
-		return "", errors.New("cannot infer a safe filename from URL; pass --file")
+		return "", ErrCannotInferFile
 	}
 	return result, nil
 }

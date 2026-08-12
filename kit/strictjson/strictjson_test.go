@@ -2,6 +2,7 @@ package strictjson
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,8 +90,8 @@ func TestUnmarshalHasNoArbitraryNestingLimit(t *testing.T) {
 func TestUnmarshalReportsCaseInsensitiveStructFieldNames(t *testing.T) {
 	var value document
 	err := Unmarshal([]byte(`{"Name":"a"}`), &value)
-	if err == nil || !strings.Contains(err.Error(), "does not match a field name exactly") {
-		t.Fatalf("case-insensitive name returned %v", err)
+	if !errors.Is(err, ErrFieldNameCaseMismatch) {
+		t.Fatalf("case-insensitive name error = %v, want ErrFieldNameCaseMismatch", err)
 	}
 	if !strings.Contains(err.Error(), "1:") {
 		t.Fatalf("case error does not carry a position: %v", err)

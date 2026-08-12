@@ -1,7 +1,6 @@
 package lockfile
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -44,20 +43,20 @@ func ValidateRetained(resolved []manifest.ResolvedAsset, lock Lockfile, replacin
 
 func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 	if locked.ResolvedURL != file.ResolvedURL || locked.ResolvedFile != file.ResolvedFile {
-		return errors.New("resolution changed")
+		return ErrResolutionChanged
 	}
 	if file.Pin != "" {
 		pin, _ := asset.NormalizeDigest(file.Pin)
 		digest, _ := asset.NormalizeDigest(locked.Digest)
 		if pin != digest {
-			return errors.New("pin changed")
+			return ErrPinChanged
 		}
 	}
 	return nil
 }
 
 func staleError(name string) error {
-	return project.NewConfigurationError(errors.New("dac.lock is stale"), project.WithAsset(name), project.WithHint(Hint(name)))
+	return project.NewConfigurationError(ErrStale, project.WithAsset(name), project.WithHint(Hint(name)))
 }
 
 // Hint formats a command that safely selects one opaque asset name.

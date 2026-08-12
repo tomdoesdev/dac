@@ -44,7 +44,7 @@ func Load(path string) (Manifest, error) {
 	var value Manifest
 	decoder := toml.NewDecoder(file).DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
-		return Manifest{}, project.NewConfigurationError(fmt.Errorf("decode dac.toml: %w", err))
+		return Manifest{}, project.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
 	if value.Files == nil {
 		// A freshly initialized manifest contains only its version. Treat that as
@@ -88,7 +88,7 @@ func Create(path string, value Manifest) error {
 			err = errors.Join(err, commit.Rollback())
 		}
 		if errors.Is(err, fs.ErrExist) {
-			return project.NewConfigurationError(errors.New("dac.toml already exists"))
+			return project.NewConfigurationError(ErrAlreadyExists)
 		}
 		return project.NewFilesystemError(err)
 	}
@@ -102,17 +102,17 @@ func Create(path string, value Manifest) error {
 // afterwards because template output may introduce a collision.
 func Validate(value Manifest) error {
 	if value.Version != project.Version {
-		return project.NewConfigurationError(fmt.Errorf("unsupported dac.toml version %d", value.Version))
+		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	for name, file := range value.Files {
 		if !ValidAssetName(name) {
-			return project.NewConfigurationError(errors.New("invalid asset name"), project.WithAsset(name))
+			return project.NewConfigurationError(ErrInvalidAssetName, project.WithAsset(name))
 		}
 		if !utf8.ValidString(file.URL) || !utf8.ValidString(file.File) || !utf8.ValidString(file.Pin) {
-			return project.NewConfigurationError(errors.New("url, file, and pin must be valid UTF-8"), project.WithAsset(name))
+			return project.NewConfigurationError(ErrInvalidAssetEncoding, project.WithAsset(name))
 		}
 		if strings.TrimSpace(file.URL) == "" || strings.TrimSpace(file.File) == "" {
-			return project.NewConfigurationError(errors.New("url and file are required"), project.WithAsset(name))
+			return project.NewConfigurationError(ErrMissingAssetLocation, project.WithAsset(name))
 		}
 		if _, err := parseTemplate("url", file.URL); err != nil {
 			return project.NewConfigurationError(err, project.WithAsset(name))
@@ -122,15 +122,15 @@ func Validate(value Manifest) error {
 		}
 		if file.Pin != "" {
 			if _, err := asset.NormalizeDigest(file.Pin); err != nil {
-				return project.NewConfigurationError(fmt.Errorf("invalid pin: %w", err), project.WithAsset(name))
+				return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidPin, err), project.WithAsset(name))
 			}
 		}
 		for key, item := range file.Variables {
 			if !variableNamePattern.MatchString(key) {
-				return project.NewConfigurationError(fmt.Errorf("invalid variable name %q", key), project.WithAsset(name))
+				return project.NewConfigurationError(fmt.Errorf("%w %q", ErrInvalidVariableName, key), project.WithAsset(name))
 			}
 			if !utf8.ValidString(item) {
-				return project.NewConfigurationError(fmt.Errorf("variable %q must be valid UTF-8", key), project.WithAsset(name))
+				return project.NewConfigurationError(fmt.Errorf("%w %q: must be valid UTF-8", ErrInvalidVariableValue, key), project.WithAsset(name))
 			}
 		}
 		if err := asset.ValidateHeaders(file.Headers); err != nil {

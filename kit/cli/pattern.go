@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -35,7 +34,7 @@ func (argument patternArgument) syntax() string {
 func parsePattern(value string) (commandPattern, error) {
 	tokens := strings.Fields(value)
 	if len(tokens) == 0 {
-		return commandPattern{}, fmt.Errorf("cli: command pattern must not be empty")
+		return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: command pattern must not be empty")
 	}
 
 	pattern := commandPattern{}
@@ -45,18 +44,18 @@ func parsePattern(value string) (commandPattern, error) {
 
 	for index, token := range tokens {
 		if token == "%flags%" || strings.Contains(token, "%") {
-			return commandPattern{}, fmt.Errorf("cli: %%flags%% is not supported; tagged flags are parsed automatically")
+			return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: %%flags%% is not supported; tagged flags are parsed automatically")
 		}
 
 		if token[0] != '<' && token[0] != '[' {
 			if seenArgument {
-				return commandPattern{}, fmt.Errorf("cli: command literal %q must appear before positional arguments", token)
+				return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: command literal %q must appear before positional arguments", token)
 			}
 			if !isPatternName(token) {
-				return commandPattern{}, fmt.Errorf("cli: invalid command literal %q", token)
+				return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: invalid command literal %q", token)
 			}
 			if len(pattern.path) == 0 && isReservedCommand(token) {
-				return commandPattern{}, fmt.Errorf("cli: top-level command %q is reserved", token)
+				return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: top-level command %q is reserved", token)
 			}
 
 			pattern.path = append(pattern.path, token)
@@ -70,16 +69,16 @@ func parsePattern(value string) (commandPattern, error) {
 		seenArgument = true
 
 		if argument.variadic && index != len(tokens)-1 {
-			return commandPattern{}, fmt.Errorf("cli: variadic argument %q must be last", argument.name)
+			return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: variadic argument %q must be last", argument.name)
 		}
 		if !argument.optional && seenOptional {
-			return commandPattern{}, fmt.Errorf("cli: required argument %q cannot follow an optional argument", argument.name)
+			return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: required argument %q cannot follow an optional argument", argument.name)
 		}
 		if argument.optional {
 			seenOptional = true
 		}
 		if _, exists := argumentNames[argument.name]; exists {
-			return commandPattern{}, fmt.Errorf("cli: positional argument %q is declared more than once", argument.name)
+			return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: positional argument %q is declared more than once", argument.name)
 		}
 
 		argumentNames[argument.name] = struct{}{}
@@ -87,7 +86,7 @@ func parsePattern(value string) (commandPattern, error) {
 	}
 
 	if len(pattern.path) == 0 {
-		return commandPattern{}, fmt.Errorf("cli: command pattern must declare at least one command literal")
+		return commandPattern{}, newCLIError(ErrInvalidCommandDefinition, "cli: command pattern must declare at least one command literal")
 	}
 
 	return pattern, nil
@@ -95,13 +94,13 @@ func parsePattern(value string) (commandPattern, error) {
 
 func parsePatternArgument(token string) (patternArgument, error) {
 	if len(token) < 3 {
-		return patternArgument{}, fmt.Errorf("cli: invalid positional argument %q", token)
+		return patternArgument{}, newCLIError(ErrInvalidCommandDefinition, "cli: invalid positional argument %q", token)
 	}
 
 	optional := token[0] == '['
 	required := token[0] == '<'
 	if !optional && !required {
-		return patternArgument{}, fmt.Errorf("cli: expected command, <argument>, or [argument], got %q", token)
+		return patternArgument{}, newCLIError(ErrInvalidCommandDefinition, "cli: expected command, <argument>, or [argument], got %q", token)
 	}
 
 	closing := byte('>')
@@ -109,7 +108,7 @@ func parsePatternArgument(token string) (patternArgument, error) {
 		closing = ']'
 	}
 	if token[len(token)-1] != closing {
-		return patternArgument{}, fmt.Errorf("cli: invalid positional argument %q", token)
+		return patternArgument{}, newCLIError(ErrInvalidCommandDefinition, "cli: invalid positional argument %q", token)
 	}
 
 	name := token[1 : len(token)-1]
@@ -118,7 +117,7 @@ func parsePatternArgument(token string) (patternArgument, error) {
 		name = strings.TrimSuffix(name, "...")
 	}
 	if strings.Contains(name, "...") || !isPatternName(name) {
-		return patternArgument{}, fmt.Errorf("cli: invalid positional argument %q", token)
+		return patternArgument{}, newCLIError(ErrInvalidCommandDefinition, "cli: invalid positional argument %q", token)
 	}
 
 	return patternArgument{name: name, optional: optional, variadic: variadic}, nil
@@ -147,7 +146,7 @@ func parseCommandPath(value string) ([]string, error) {
 		return nil, err
 	}
 	if len(pattern.arguments) != 0 {
-		return nil, fmt.Errorf("cli: command path %q must not declare positional arguments", value)
+		return nil, newCLIError(ErrInvalidCommandDefinition, "cli: command path %q must not declare positional arguments", value)
 	}
 
 	return pattern.path, nil

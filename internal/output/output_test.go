@@ -1,6 +1,9 @@
 package output
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestSanitizeErrorRemovesURLSecrets keeps diagnostics from becoming a secret
 // exfiltration path. User info, query parameters, and fragments commonly carry
@@ -17,7 +20,7 @@ func TestSanitizeErrorRemovesURLSecrets(t *testing.T) {
 // JSON promises machine-readable output while quiet promises no output. DAC
 // rejects the ambiguous combination instead of choosing one mode implicitly.
 func TestOptionsRejectJSONAndQuiet(t *testing.T) {
-	if err := (Options{JSON: true, Quiet: true}).Validate(); err == nil {
-		t.Fatal("Validate accepted --json with --quiet")
+	if err := (Options{JSON: true, Quiet: true}).Validate(); !errors.Is(err, ErrConflictingModes) {
+		t.Fatalf("Validate error = %v, want ErrConflictingModes", err)
 	}
 }

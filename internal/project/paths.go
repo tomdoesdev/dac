@@ -62,7 +62,7 @@ func Discover(start string) (Paths, error) {
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return Paths{}, NewConfigurationError(errors.New("no dac.toml found in this directory or any parent directory"), WithHint("run `dac init`"))
+			return Paths{}, NewConfigurationError(ErrProjectNotFound, WithHint("run `dac init`"))
 		}
 		directory = parent
 	}
@@ -73,7 +73,7 @@ func Discover(start string) (Paths, error) {
 func (paths Paths) WithLock(ctx context.Context, work func(context.Context) error) error {
 	err := flock.Hold(ctx, paths.LockPath(), work, flock.RemoveOnRelease())
 	if errors.Is(err, errors.ErrUnsupported) {
-		return NewUnsupportedError(errors.New("dac requires flock(2) on this platform"))
+		return NewUnsupportedError(ErrFlockUnsupported)
 	}
 	var operation *Error
 	if errors.As(err, &operation) {

@@ -26,7 +26,7 @@ func (command *pullCommand) Validate() error {
 		return err
 	}
 	if command.Offline && command.Force {
-		return errors.New("--offline and --force cannot be combined")
+		return ErrOfflineForceConflict
 	}
 	return nil
 }
@@ -83,7 +83,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
 		}
 		if len(invalid) > 0 {
-			return project.NewIntegrityError(fmt.Errorf("offline verification failed for %s", quoteAssetNames(invalid)))
+			return project.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
 		}
 		return command.runtime.Output.Success("pull", paths, results, nil)
 	})

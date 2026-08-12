@@ -46,9 +46,17 @@ import (
 	"github.com/tomdoesdev/kit/fs/flock"
 )
 
-// errNoDestination reports a Commit that has no path to commit to.
-// This is a mistake in the calling code rather than a state to recover from.
-var errNoDestination = errors.New("this file has no destination: name one with CommitAs")
+var (
+	// ErrNoDestination marks a Commit that has no path to commit to.
+	// This is a mistake in the calling code rather than a state to recover from.
+	ErrNoDestination = errors.New("this file has no destination: name one with CommitAs")
+	// ErrNilRoot marks rooted staging without an open filesystem root.
+	ErrNilRoot = errors.New("atomic: root must not be nil")
+	// ErrDestinationIsDirectory marks a destination that cannot be moved aside.
+	ErrDestinationIsDirectory = errors.New("destination is a directory")
+	// ErrInvalidTempPattern marks rooted temporary prefixes that contain a separator.
+	ErrInvalidTempPattern = errors.New("pattern contains path separator")
+)
 
 // File is one write in progress.
 // It is not safe for concurrent use, in the way that os.File is not.
@@ -118,7 +126,7 @@ func Create(path string, perm fs.FileMode, options ...Option) (*File, error) {
 // committed or discarded and any reversible Commit has completed or rolled back.
 func CreateRoot(root *os.Root, path string, perm fs.FileMode, options ...Option) (*File, error) {
 	if root == nil {
-		return nil, errors.New("atomic: root must not be nil")
+		return nil, ErrNilRoot
 	}
 	file, err := createIn(rootFilesystem{root: root}, filepath.Dir(path), perm, options...)
 	if err != nil {
@@ -171,7 +179,7 @@ func (file *File) Commit() error {
 		return nil
 	}
 	if file.destination == "" {
-		return errNoDestination
+		return ErrNoDestination
 	}
 	return file.commit(file.destination)
 }
@@ -196,7 +204,7 @@ func (file *File) CommitReversible() (*Commit, error) {
 		return nil, nil
 	}
 	if file.destination == "" {
-		return nil, errNoDestination
+		return nil, ErrNoDestination
 	}
 	return file.commitReversible(file.destination)
 }
@@ -221,7 +229,7 @@ func (file *File) CommitNoReplace() (*Commit, error) {
 		return nil, nil
 	}
 	if file.destination == "" {
-		return nil, errNoDestination
+		return nil, ErrNoDestination
 	}
 	return file.commitNoReplace(file.destination)
 }
@@ -421,7 +429,7 @@ func moveAside(filesystem filesystem, path, prefix string) (string, error) {
 		return "", err
 	}
 	if info.IsDir() {
-		return "", &fs.PathError{Op: "rename", Path: path, Err: errors.New("destination is a directory")}
+		return "", &fs.PathError{Op: "rename", Path: path, Err: ErrDestinationIsDirectory}
 	}
 	reserved, backup, err := filesystem.createTemp(filepath.Dir(path), prefix)
 	if err != nil {

@@ -2,7 +2,6 @@ package command
 
 import (
 	"context"
-	"errors"
 
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -38,7 +37,7 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		if _, exists := value.Files[command.Name]; exists {
-			return project.NewConfigurationError(errors.New("asset already exists"), project.WithAsset(command.Name))
+			return project.NewConfigurationError(ErrAssetAlreadyExists, project.WithAsset(command.Name))
 		}
 		variables, err := parseSets(command.Set)
 		if err != nil {

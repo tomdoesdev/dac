@@ -1,6 +1,7 @@
 package lockfile
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/tomdoesdev/dac/internal/manifest"
@@ -26,7 +27,7 @@ func TestValidateCurrentRejectsChangedResolution(t *testing.T) {
 	lock := Lockfile{Version: project.Version, Files: map[string]Asset{
 		"artifact": {ResolvedURL: "https://example.com/old", ResolvedFile: "artifact.bin", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 	}}
-	if err := ValidateCurrent(resolved, lock); err == nil {
-		t.Fatal("ValidateCurrent accepted a changed URL")
+	if err := ValidateCurrent(resolved, lock); !errors.Is(err, ErrStale) {
+		t.Fatalf("ValidateCurrent error = %v, want ErrStale", err)
 	}
 }

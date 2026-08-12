@@ -1,10 +1,6 @@
 package command
 
-import (
-	"errors"
-
-	"github.com/tomdoesdev/dac/internal/asset"
-)
+import "github.com/tomdoesdev/dac/internal/asset"
 
 // pinValue represents the two legal --pin forms. pflag asks Set("true") for a
 // bare optional flag, which intentionally means calculate rather than a digest.
@@ -19,7 +15,7 @@ func (*pinValue) Type() string         { return "sha256" }
 func (*pinValue) IsBoolFlag() bool     { return true }
 func (value *pinValue) Set(input string) error {
 	if value.set {
-		return errors.New("--pin may be supplied only once")
+		return ErrPinRepeated
 	}
 	value.set = true
 	if input == "true" {

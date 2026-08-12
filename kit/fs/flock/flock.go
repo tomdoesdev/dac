@@ -14,9 +14,13 @@ import (
 	"github.com/tomdoesdev/kit/fs/flock/internal/sys"
 )
 
-// ErrLocked reports that another holder has the lock.
-// TryAcquire returns it. Acquire waits instead of returning it.
-var ErrLocked = errors.New("another process holds the lock")
+var (
+	// ErrLocked reports that another holder has the lock.
+	// TryAcquire returns it. Acquire waits instead of returning it.
+	ErrLocked = errors.New("another process holds the lock")
+	// ErrRemoveOnReleaseShared marks an unsafe shared remove-on-release request.
+	ErrRemoveOnReleaseShared = errors.New("remove-on-release requires an exclusive lock")
+)
 
 // HiddenPath returns a hidden sidecar lock path beside path.
 func HiddenPath(path string) string {
@@ -62,7 +66,7 @@ type Lock struct {
 func Acquire(ctx context.Context, path string, options ...Option) (*Lock, error) {
 	settings := newSettings(options)
 	if settings.remove && settings.mode == Shared {
-		return nil, pathError(path, errors.New("remove-on-release requires an exclusive lock"))
+		return nil, pathError(path, ErrRemoveOnReleaseShared)
 	}
 	for {
 		file, err := open(path, settings)
@@ -99,7 +103,7 @@ func Acquire(ctx context.Context, path string, options ...Option) (*Lock, error)
 func TryAcquire(path string, options ...Option) (*Lock, error) {
 	settings := newSettings(options)
 	if settings.remove && settings.mode == Shared {
-		return nil, pathError(path, errors.New("remove-on-release requires an exclusive lock"))
+		return nil, pathError(path, ErrRemoveOnReleaseShared)
 	}
 	for {
 		file, err := open(path, settings)

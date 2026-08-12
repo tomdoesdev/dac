@@ -380,8 +380,8 @@ func TestCommitWithoutADestinationFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = file.Commit()
-	if err == nil {
-		t.Fatal("a commit with no destination succeeded")
+	if !errors.Is(err, atomic.ErrNoDestination) {
+		t.Fatalf("Commit error = %v, want ErrNoDestination", err)
 	}
 	// The message has to say what to call instead, because this is a mistake
 	// in the calling code rather than a state to recover from.

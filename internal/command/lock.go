@@ -51,7 +51,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		}
 		if len(command.Names) > 0 {
 			if !hasLock && len(selected) != len(resolved) {
-				return project.NewConfigurationError(errors.New("targeted lock requires a complete existing dac.lock"), project.WithHint("run `dac lock`"))
+				return project.NewConfigurationError(ErrTargetedLockNeedsExisting, project.WithHint("run `dac lock`"))
 			}
 			if hasLock {
 				if err := lockfile.ValidateRetained(resolved, current, selected); err != nil {
@@ -122,10 +122,10 @@ func selectedNames(names []string, values []manifest.ResolvedAsset) (map[string]
 	}
 	for _, name := range names {
 		if !known[name] {
-			return nil, project.NewConfigurationError(errors.New("asset does not exist"), project.WithAsset(name))
+			return nil, project.NewConfigurationError(ErrAssetNotFound, project.WithAsset(name))
 		}
 		if result[name] {
-			return nil, project.NewConfigurationError(errors.New("asset selected more than once"), project.WithAsset(name))
+			return nil, project.NewConfigurationError(ErrAssetSelectedMultipleTimes, project.WithAsset(name))
 		}
 		result[name] = true
 	}

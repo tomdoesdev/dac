@@ -23,7 +23,7 @@ type Options struct {
 // Validate rejects output modes whose guarantees cannot both be honored.
 func (options Options) Validate() error {
 	if options.JSON && options.Quiet {
-		return errors.New("--json and --quiet cannot be combined")
+		return ErrConflictingModes
 	}
 	return nil
 }

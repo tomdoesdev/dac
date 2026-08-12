@@ -12,6 +12,21 @@ import (
 	"strings"
 )
 
+var (
+	// ErrMultipleValues marks input containing data after its first JSON value.
+	ErrMultipleValues = errors.New("JSON contains more than one value")
+	// ErrInvalidDelimiter marks a closing delimiter without its matching opener.
+	ErrInvalidDelimiter = errors.New("JSON has an invalid delimiter")
+	// ErrMissingObjectValue marks an object key without a following value.
+	ErrMissingObjectValue = errors.New("JSON object is missing a value")
+	// ErrNonStringObjectKey marks an object token that cannot be a JSON key.
+	ErrNonStringObjectKey = errors.New("JSON object key is not a string")
+	// ErrDuplicateObjectKey marks a repeated key in the same JSON object.
+	ErrDuplicateObjectKey = errors.New("duplicate JSON object key")
+	// ErrFieldNameCaseMismatch marks a struct field matched only by folded case.
+	ErrFieldNameCaseMismatch = errors.New("JSON object key does not match a field name exactly")
+)
+
 // Unmarshal decodes exactly one JSON value into value. It rejects duplicate
 // object keys, unknown struct members, and case-insensitive field matches
 // unless an option explicitly permits those compatibility behaviours.
@@ -30,7 +45,7 @@ func Unmarshal(data []byte, value any, options ...Option) error {
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return errors.New("JSON contains more than one value")
+			return ErrMultipleValues
 		}
 		return err
 	}
@@ -79,10 +94,10 @@ func scan(data []byte, root reflect.Type, settings settings) error {
 
 		if delimiter, ok := token.(json.Delim); ok && (delimiter == '}' || delimiter == ']') {
 			if len(stack) == 0 || stack[len(stack)-1].delimiter != matchingOpen(delimiter) {
-				return errors.New("JSON has an invalid delimiter")
+				return ErrInvalidDelimiter
 			}
 			if delimiter == '}' && !stack[len(stack)-1].expectingKey {
-				return errors.New("JSON object is missing a value")
+				return ErrMissingObjectValue
 			}
 			stack = stack[:len(stack)-1]
 			rootDone = completeValue(stack, rootDone)
@@ -92,11 +107,11 @@ func scan(data []byte, root reflect.Type, settings settings) error {
 		if len(stack) > 0 && stack[len(stack)-1].delimiter == '{' && stack[len(stack)-1].expectingKey {
 			key, ok := token.(string)
 			if !ok {
-				return errors.New("JSON object key is not a string")
+				return ErrNonStringObjectKey
 			}
 			current := &stack[len(stack)-1]
 			if _, exists := current.keys[key]; exists {
-				return positionError(data, decoder.InputOffset(), "duplicate JSON object key %q", key)
+				return positionError(data, decoder.InputOffset(), fmt.Errorf("%w %q", ErrDuplicateObjectKey, key))
 			}
 			current.keys[key] = struct{}{}
 			if current.elementType != nil {
@@ -106,7 +121,7 @@ func scan(data []byte, root reflect.Type, settings settings) error {
 				if type_, ok := current.fields.byName[key]; ok {
 					current.nextType = type_
 				} else if foldedField(current.fields.names, key) {
-					return positionError(data, decoder.InputOffset(), "JSON object key %q does not match a field name exactly", key)
+					return positionError(data, decoder.InputOffset(), fmt.Errorf("%w: %q", ErrFieldNameCaseMismatch, key))
 				}
 			} else {
 				current.nextType = matchingFieldType(current.fields, key)
@@ -116,7 +131,7 @@ func scan(data []byte, root reflect.Type, settings settings) error {
 		}
 
 		if rootDone && len(stack) == 0 {
-			return errors.New("JSON contains more than one value")
+			return ErrMultipleValues
 		}
 		type_ := root
 		if len(stack) > 0 {
@@ -137,7 +152,7 @@ func scan(data []byte, root reflect.Type, settings settings) error {
 				stack = append(stack, newArrayFrame(type_))
 				continue
 			default:
-				return errors.New("JSON has an invalid delimiter")
+				return ErrInvalidDelimiter
 			}
 		}
 		rootDone = completeValue(stack, rootDone)
@@ -225,9 +240,10 @@ func matchingFieldType(fields structFields, key string) reflect.Type {
 	return nil
 }
 
-func positionError(data []byte, offset int64, format string, arguments ...any) error {
+// positionError attaches a source location without hiding the parser sentinel.
+func positionError(data []byte, offset int64, err error) error {
 	line, column := lineColumn(data, offset)
-	return fmt.Errorf(format+" at %d:%d", append(arguments, line, column)...)
+	return fmt.Errorf("%w at %d:%d", err, line, column)
 }
 
 func lineColumn(data []byte, offset int64) (int, int) {

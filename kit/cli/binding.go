@@ -63,18 +63,18 @@ func newCommand(patternValue string, handler CommandHandler, options ...CommandO
 
 	value := reflect.ValueOf(handler)
 	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() || value.Elem().Kind() != reflect.Struct {
-		return nil, fmt.Errorf("cli: command handler must be a non-nil pointer to a struct")
+		return nil, newCLIError(ErrInvalidCommandDefinition, "cli: command handler must be a non-nil pointer to a struct")
 	}
 
 	description := strings.TrimSpace(handler.Description())
 	if description == "" {
-		return nil, fmt.Errorf("cli: command %q must provide a non-empty Description", strings.Join(pattern.path, " "))
+		return nil, newCLIError(ErrInvalidCommandDefinition, "cli: command %q must provide a non-empty Description", strings.Join(pattern.path, " "))
 	}
 
 	config := commandConfig{}
 	for _, option := range options {
 		if option == nil {
-			return nil, fmt.Errorf("cli: command option must not be nil")
+			return nil, newCLIError(ErrInvalidCommandDefinition, "cli: command option must not be nil")
 		}
 		if err := option(&config); err != nil {
 			return nil, err
@@ -94,7 +94,7 @@ func newCommand(patternValue string, handler CommandHandler, options ...CommandO
 	for _, aliasValue := range config.aliases {
 		alias, err := parseCommandPath(aliasValue)
 		if err != nil {
-			return nil, fmt.Errorf("cli: invalid alias %q: %w", aliasValue, err)
+			return nil, wrapCLIError(ErrInvalidCommandDefinition, err, "cli: invalid alias %q: %v", aliasValue, err)
 		}
 		command.aliases = append(command.aliases, alias)
 	}
@@ -107,7 +107,7 @@ func newCommand(patternValue string, handler CommandHandler, options ...CommandO
 	for _, argument := range pattern.arguments {
 		fieldIndex, exists := argumentFields[argument.name]
 		if !exists {
-			return nil, fmt.Errorf("cli: positional argument %q has no matching arg-tagged field", argument.name)
+			return nil, newCLIError(ErrInvalidCommandDefinition, "cli: positional argument %q has no matching arg-tagged field", argument.name)
 		}
 
 		field := command.handlerValue.Type().Field(fieldIndex)
@@ -124,7 +124,7 @@ func newCommand(patternValue string, handler CommandHandler, options ...CommandO
 
 	for name := range argumentFields {
 		if !hasPatternArgument(pattern.arguments, name) {
-			return nil, fmt.Errorf("cli: arg-tagged field %q does not appear in command pattern", name)
+			return nil, newCLIError(ErrInvalidCommandDefinition, "cli: arg-tagged field %q does not appear in command pattern", name)
 		}
 	}
 
@@ -159,18 +159,18 @@ func inspectHandlerFields(handlerType reflect.Type) (map[string]int, []flagBindi
 		}
 
 		if field.PkgPath != "" {
-			return nil, nil, fmt.Errorf("cli: tagged field %s must be exported", field.Name)
+			return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: tagged field %s must be exported", field.Name)
 		}
 		if hasArgument && hasFlag {
-			return nil, nil, fmt.Errorf("cli: field %s cannot have both arg and flag tags", field.Name)
+			return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: field %s cannot have both arg and flag tags", field.Name)
 		}
 
 		if hasArgument {
 			if !isPatternName(argumentName) {
-				return nil, nil, fmt.Errorf("cli: field %s has invalid arg tag %q", field.Name, argumentName)
+				return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: field %s has invalid arg tag %q", field.Name, argumentName)
 			}
 			if _, exists := arguments[argumentName]; exists {
-				return nil, nil, fmt.Errorf("cli: arg tag %q is used more than once", argumentName)
+				return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: arg tag %q is used more than once", argumentName)
 			}
 
 			arguments[argumentName] = index
@@ -179,20 +179,20 @@ func inspectHandlerFields(handlerType reflect.Type) (map[string]int, []flagBindi
 
 		name, shorthand, err := parseFlagTag(flagValue)
 		if err != nil {
-			return nil, nil, fmt.Errorf("cli: field %s: %w", field.Name, err)
+			return nil, nil, wrapCLIError(ErrInvalidCommandDefinition, err, "cli: field %s: %v", field.Name, err)
 		}
 		if name == "help" || shorthand == "h" {
-			return nil, nil, fmt.Errorf("cli: field %s conflicts with built-in help flag", field.Name)
+			return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: field %s conflicts with built-in help flag", field.Name)
 		}
 		if name != "" {
 			if _, exists := flagNames[name]; exists {
-				return nil, nil, fmt.Errorf("cli: flag %q is used more than once", name)
+				return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: flag %q is used more than once", name)
 			}
 			flagNames[name] = struct{}{}
 		}
 		if shorthand != "" {
 			if _, exists := shorthands[shorthand]; exists {
-				return nil, nil, fmt.Errorf("cli: shorthand %q is used more than once", shorthand)
+				return nil, nil, newCLIError(ErrInvalidCommandDefinition, "cli: shorthand %q is used more than once", shorthand)
 			}
 			shorthands[shorthand] = struct{}{}
 		}
@@ -213,13 +213,13 @@ func parseFlagTag(value string) (string, string, error) {
 	// shorthand are all pflag needs, while "-" explicitly omits the long name.
 	parts := strings.Split(value, ",")
 	if len(parts) > 2 {
-		return "", "", fmt.Errorf("flag tag %q must be long-name or long-name,short", value)
+		return "", "", newCLIError(ErrInvalidCommandDefinition, "flag tag %q must be long-name or long-name,short", value)
 	}
 
 	name := strings.TrimSpace(parts[0])
 	shortOnly := name == "-"
 	if !shortOnly && !isFlagName(name) {
-		return "", "", fmt.Errorf("invalid flag name %q", name)
+		return "", "", newCLIError(ErrInvalidCommandDefinition, "invalid flag name %q", name)
 	}
 	if shortOnly {
 		name = ""
@@ -229,11 +229,11 @@ func parseFlagTag(value string) (string, string, error) {
 	if len(parts) == 2 {
 		shorthand = strings.TrimSpace(parts[1])
 		if !isFlagShorthand(shorthand) {
-			return "", "", fmt.Errorf("invalid shorthand %q", shorthand)
+			return "", "", newCLIError(ErrInvalidCommandDefinition, "invalid shorthand %q", shorthand)
 		}
 	}
 	if shortOnly && shorthand == "" {
-		return "", "", fmt.Errorf("short-only flag must provide a shorthand")
+		return "", "", newCLIError(ErrInvalidCommandDefinition, "short-only flag must provide a shorthand")
 	}
 
 	return name, shorthand, nil
@@ -252,17 +252,17 @@ func isFlagShorthand(value string) bool {
 func validateArgumentField(field reflect.StructField, value reflect.Value, argument patternArgument) error {
 	if argument.variadic {
 		if field.Type.Kind() != reflect.Slice {
-			return fmt.Errorf("cli: variadic argument %q requires a slice field", argument.name)
+			return newCLIError(ErrInvalidCommandDefinition, "cli: variadic argument %q requires a slice field", argument.name)
 		}
 		if _, _, err := flagValue(reflect.New(field.Type.Elem()).Elem()); err != nil {
-			return fmt.Errorf("cli: variadic argument %q has unsupported element type %s", argument.name, field.Type.Elem())
+			return newCLIError(ErrInvalidCommandDefinition, "cli: variadic argument %q has unsupported element type %s", argument.name, field.Type.Elem())
 		}
 
 		return nil
 	}
 
 	if _, _, err := flagValue(value); err != nil {
-		return fmt.Errorf("cli: positional argument %q: %w", argument.name, err)
+		return wrapCLIError(ErrInvalidCommandDefinition, err, "cli: positional argument %q: %v", argument.name, err)
 	}
 
 	return nil
@@ -287,7 +287,7 @@ func (command *command) addFlag(binding flagBinding) error {
 func addFlag(flags *pflag.FlagSet, field reflect.Value, binding flagBinding) error {
 	value, isBool, err := flagValue(field)
 	if err != nil {
-		return fmt.Errorf("cli: flag %q: %w", binding.name, err)
+		return wrapCLIError(ErrInvalidCommandDefinition, err, "cli: flag %q: %v", binding.name, err)
 	}
 
 	name := binding.name
@@ -332,13 +332,13 @@ func (command *command) bindArguments(values []string) error {
 				continue
 			}
 			if requiredSeen == len(values) {
-				return fmt.Errorf("missing required positional argument <%s>", argument.name)
+				return newCLIError(ErrInvalidInvocation, "missing required positional argument <%s>", argument.name)
 			}
 			requiredSeen++
 		}
 	}
 	if !variadic && len(values) > len(command.arguments) {
-		return fmt.Errorf("unexpected positional argument %q", values[len(command.arguments)])
+		return newCLIError(ErrInvalidInvocation, "unexpected positional argument %q", values[len(command.arguments)])
 	}
 
 	valueIndex := 0
@@ -348,7 +348,7 @@ func (command *command) bindArguments(values []string) error {
 			field.Set(reflect.MakeSlice(field.Type(), len(values)-valueIndex, len(values)-valueIndex))
 			for index, input := range values[valueIndex:] {
 				if err := setFieldValue(field.Index(index), input); err != nil {
-					return fmt.Errorf("invalid value for <%s>: %w", argument.name, err)
+					return wrapCLIError(ErrInvalidInvocation, err, "invalid value for <%s>: %v", argument.name, err)
 				}
 			}
 			return nil
@@ -360,7 +360,7 @@ func (command *command) bindArguments(values []string) error {
 		}
 
 		if err := setFieldValue(field, values[valueIndex]); err != nil {
-			return fmt.Errorf("invalid value for <%s>: %w", argument.name, err)
+			return wrapCLIError(ErrInvalidInvocation, err, "invalid value for <%s>: %v", argument.name, err)
 		}
 		valueIndex++
 	}
@@ -385,7 +385,7 @@ func flagValue(field reflect.Value) (pflag.Value, bool, error) {
 	if field.CanInterface() {
 		if value, ok := field.Interface().(pflag.Value); ok {
 			if isNilValue(value) {
-				return nil, false, fmt.Errorf("pflag.Value field must not be nil")
+				return nil, false, newCLIError(ErrInvalidCommandDefinition, "pflag.Value field must not be nil")
 			}
 			return value, isOptionalValue(value), nil
 		}
@@ -393,7 +393,7 @@ func flagValue(field reflect.Value) (pflag.Value, bool, error) {
 	if field.CanAddr() && field.Addr().CanInterface() {
 		if value, ok := field.Addr().Interface().(pflag.Value); ok {
 			if isNilValue(value) {
-				return nil, false, fmt.Errorf("pflag.Value field must not be nil")
+				return nil, false, newCLIError(ErrInvalidCommandDefinition, "pflag.Value field must not be nil")
 			}
 			return value, isOptionalValue(value), nil
 		}
@@ -426,7 +426,7 @@ func flagValue(field reflect.Value) (pflag.Value, bool, error) {
 		}
 	}
 
-	return nil, false, fmt.Errorf("unsupported field type %s", field.Type())
+	return nil, false, newCLIError(ErrInvalidCommandDefinition, "unsupported field type %s", field.Type())
 }
 
 // isOptionalValue recognizes pflag's standard optional-value extension
@@ -542,7 +542,7 @@ func (value reflectedValue) Set(input string) error {
 		value.field.SetFloat(parsed)
 		return nil
 	default:
-		return fmt.Errorf("unsupported field type %s", value.field.Type())
+		return newCLIError(ErrInvalidCommandDefinition, "unsupported field type %s", value.field.Type())
 	}
 }
 

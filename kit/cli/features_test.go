@@ -336,8 +336,8 @@ func TestVersionAndCompletion(t *testing.T) {
 			t.Fatalf("%s completion = %q, %v", shell, script, err)
 		}
 	}
-	if _, err := completionApp.Completion("powershell"); err == nil {
-		t.Fatal("unsupported completion shell succeeded")
+	if _, err := completionApp.Completion("powershell"); !errors.Is(err, ErrUnsupportedShell) {
+		t.Fatalf("unsupported completion shell error = %v, want ErrUnsupportedShell", err)
 	}
 	// The visible completion subcommand exposes generators through normal CLI
 	// routing rather than requiring callers to use the Go API.

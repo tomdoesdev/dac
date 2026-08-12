@@ -67,10 +67,10 @@ func parseSets(values []string) (map[string]string, error) {
 	for _, value := range values {
 		key, item, found := strings.Cut(value, "=")
 		if !found || key == "" {
-			return nil, fmt.Errorf("--set must be KEY=VALUE")
+			return nil, ErrInvalidSet
 		}
 		if _, exists := result[key]; exists {
-			return nil, fmt.Errorf("--set repeats key %q", key)
+			return nil, fmt.Errorf("%w %q", ErrDuplicateSet, key)
 		}
 		result[key] = item
 	}

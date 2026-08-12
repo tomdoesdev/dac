@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -33,11 +32,11 @@ func (app *App) validateFlagConflicts(local *pflag.FlagSet) error {
 			return
 		}
 		if app.globals.Lookup(flag.Name) != nil {
-			conflict = fmt.Errorf("cli: command flag %q conflicts with a global flag", flag.Name)
+			conflict = newCLIError(ErrInvalidCommandDefinition, "cli: command flag %q conflicts with a global flag", flag.Name)
 			return
 		}
 		if flag.Shorthand != "" && app.globals.ShorthandLookup(flag.Shorthand) != nil {
-			conflict = fmt.Errorf("cli: command shorthand %q conflicts with a global flag", flag.Shorthand)
+			conflict = newCLIError(ErrInvalidCommandDefinition, "cli: command shorthand %q conflicts with a global flag", flag.Shorthand)
 		}
 	})
 	return conflict
@@ -58,11 +57,11 @@ func (app *App) validateExistingCommandFlags(globals *pflag.FlagSet) error {
 						return
 					}
 					if node.command.flags.Lookup(flag.Name) != nil {
-						conflict = fmt.Errorf("cli: global flag %q conflicts with a command flag", flag.Name)
+						conflict = newCLIError(ErrInvalidCommandDefinition, "cli: global flag %q conflicts with a command flag", flag.Name)
 						return
 					}
 					if flag.Shorthand != "" && node.command.flags.ShorthandLookup(flag.Shorthand) != nil {
-						conflict = fmt.Errorf("cli: global shorthand %q conflicts with a command flag", flag.Shorthand)
+						conflict = newCLIError(ErrInvalidCommandDefinition, "cli: global shorthand %q conflicts with a command flag", flag.Shorthand)
 					}
 				})
 				if conflict != nil {
@@ -123,7 +122,7 @@ func consumeFlag(flags *pflag.FlagSet, args []string) (int, bool, error) {
 			return 1, true, flags.Set(flag.Name, flag.NoOptDefVal)
 		}
 		if len(args) < 2 {
-			return 0, true, fmt.Errorf("flag needs an argument: --%s", flag.Name)
+			return 0, true, newCLIError(ErrInvalidInvocation, "flag needs an argument: --%s", flag.Name)
 		}
 		return 2, true, flags.Set(flag.Name, args[1])
 	}
@@ -150,7 +149,7 @@ func consumeFlag(flags *pflag.FlagSet, args []string) (int, bool, error) {
 			break
 		}
 		if len(args) < 2 {
-			return 0, true, fmt.Errorf("flag needs an argument: -%s", flag.Shorthand)
+			return 0, true, newCLIError(ErrInvalidInvocation, "flag needs an argument: -%s", flag.Shorthand)
 		}
 		assignments = append(assignments, assignment{name: flag.Name, value: args[1]})
 		consumed = 2
@@ -199,9 +198,9 @@ func (app *App) unknownCommandError(node *commandNode, value string) error {
 		}
 	}
 	if candidate := nearest(value, candidates); candidate != "" {
-		return fmt.Errorf("unknown command %q; did you mean %q?", value, candidate)
+		return newCLIError(ErrInvalidInvocation, "unknown command %q; did you mean %q?", value, candidate)
 	}
-	return fmt.Errorf("unknown command %q", value)
+	return newCLIError(ErrInvalidInvocation, "unknown command %q", value)
 }
 
 // suggestFlagError enriches pflag and root-routing errors without replacing the
@@ -322,7 +321,7 @@ func editDistance(left, right string) int {
 // Completion returns a dynamic completion script for a supported shell.
 func (app *App) Completion(shell string) (string, error) {
 	if !app.completion {
-		return "", errors.New("cli: completion is not enabled")
+		return "", ErrCompletionDisabled
 	}
 	identifier := completionIdentifier(app.name)
 	quotedName := shellQuote(app.name)
@@ -354,14 +353,14 @@ end
 complete -c %s -f -a '(__%s_completion)'
 `, identifier, quotedName, identifier), nil
 	default:
-		return "", fmt.Errorf("unsupported shell %q; expected bash, zsh, or fish", shell)
+		return "", newCLIError(ErrUnsupportedShell, "unsupported shell %q; expected bash, zsh, or fish", shell)
 	}
 }
 
 // runCompletion validates the built-in command and writes a generated script.
 func (app *App) runCompletion(args []string) error {
 	if len(args) != 1 {
-		return app.usageError(app.root, errors.New("completion requires exactly one shell: bash, zsh, or fish"))
+		return app.usageError(app.root, newCLIError(ErrInvalidInvocation, "completion requires exactly one shell: bash, zsh, or fish"))
 	}
 	script, err := app.Completion(args[0])
 	if err != nil {

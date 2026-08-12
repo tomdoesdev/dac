@@ -49,7 +49,7 @@ type rootFilesystem struct{ root *os.Root }
 
 func (filesystem rootFilesystem) createTemp(directory, prefix string) (*os.File, string, error) {
 	if containsPathSeparator(prefix) {
-		return nil, "", &fs.PathError{Op: "createtemp", Path: prefix, Err: errors.New("pattern contains path separator")}
+		return nil, "", &fs.PathError{Op: "createtemp", Path: prefix, Err: ErrInvalidTempPattern}
 	}
 	for range 100 {
 		suffix := make([]byte, 16)

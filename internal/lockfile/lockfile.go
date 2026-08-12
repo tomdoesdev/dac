@@ -34,14 +34,14 @@ type Asset struct {
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, project.NewConfigurationError(errors.New("dac.lock does not exist"), project.WithHint("run `dac lock`"))
+		return Lockfile{}, project.NewConfigurationError(ErrNotFound, project.WithHint("run `dac lock`"))
 	}
 	if err != nil {
 		return Lockfile{}, project.NewFilesystemError(err)
 	}
 	var value Lockfile
 	if err := strictjson.Unmarshal(data, &value); err != nil {
-		return Lockfile{}, project.NewConfigurationError(fmt.Errorf("decode dac.lock: %w", err))
+		return Lockfile{}, project.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
 	if err := Validate(value); err != nil {
 		return Lockfile{}, err
@@ -86,21 +86,21 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 // verification ambiguous.
 func Validate(value Lockfile) error {
 	if value.Version != project.Version {
-		return project.NewConfigurationError(fmt.Errorf("unsupported dac.lock version %d", value.Version))
+		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	if value.Files == nil {
-		return project.NewConfigurationError(errors.New("dac.lock must contain files"))
+		return project.NewConfigurationError(ErrMissingFiles)
 	}
 	for name, file := range value.Files {
 		if !manifest.ValidAssetName(name) || file.ResolvedURL == "" || filename.Clean(file.ResolvedFile) != file.ResolvedFile || file.Size < 0 {
-			return project.NewConfigurationError(errors.New("invalid lock entry"), project.WithAsset(name))
+			return project.NewConfigurationError(ErrInvalidEntry, project.WithAsset(name))
 		}
 		if err := manifest.ValidateResolvedURL(file.ResolvedURL); err != nil {
-			return project.NewConfigurationError(fmt.Errorf("invalid resolved_url: %w", err), project.WithAsset(name))
+			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), project.WithAsset(name))
 		}
 		digest, err := asset.NormalizeDigest(file.Digest)
 		if err != nil {
-			return project.NewConfigurationError(fmt.Errorf("invalid digest: %w", err), project.WithAsset(name))
+			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), project.WithAsset(name))
 		}
 		file.Digest = digest
 		value.Files[name] = file

@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -99,8 +100,8 @@ func TestResolveRejectsUnicodeEquivalentFilenames(t *testing.T) {
 				"first":  {URL: "https://example.com/first", File: test.left},
 				"second": {URL: "https://example.com/second", File: test.right},
 			}}
-			if _, err := Resolve(value); err == nil {
-				t.Fatalf("Resolve accepted colliding files %q and %q", test.left, test.right)
+			if _, err := Resolve(value); !errors.Is(err, ErrResolvedFileConflict) {
+				t.Fatalf("Resolve error = %v, want ErrResolvedFileConflict for %q and %q", err, test.left, test.right)
 			}
 		})
 	}

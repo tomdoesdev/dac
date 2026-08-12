@@ -10,6 +10,14 @@ import (
 
 const helloDigest = "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 
+// TestNormalizeDigestClassifiesInvalidInput keeps callers independent from the
+// digest parser's human-readable wording.
+func TestNormalizeDigestClassifiesInvalidInput(t *testing.T) {
+	if _, err := NormalizeDigest("md5:invalid"); !errors.Is(err, ErrInvalidDigest) {
+		t.Fatalf("NormalizeDigest error = %v, want ErrInvalidDigest", err)
+	}
+}
+
 // TestComputeDigest verifies that reader hashing produces dac's canonical
 // digest format and preserves source read failures.
 func TestComputeDigest(t *testing.T) {
