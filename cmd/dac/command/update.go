@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
@@ -92,12 +91,12 @@ func (command *updateCommand) Validate() error {
 	}
 	command.edits = assetEdits{variables: sets, unsetVariables: unsets, headers: headers, removedHeaders: removedHeaders}
 	if command.MaxSize.set {
-		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
+		if _, err := manifest.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
 		}
 	}
 	if command.IdleTimeout.set {
-		if _, err := asset.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
+		if _, err := manifest.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
 			return err
 		}
 	}

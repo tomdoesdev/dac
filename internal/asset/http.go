@@ -7,22 +7,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
-)
 
-var environmentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	"github.com/tomdoesdev/dac/internal/secret"
+)
 
 var (
 	// ErrInvalidHeader marks a header name or value that cannot be sent safely.
 	ErrInvalidHeader = errors.New("invalid HTTP header")
 	// ErrDisallowedHeader marks a transport-controlled header supplied by configuration.
 	ErrDisallowedHeader = errors.New("disallowed HTTP header")
-	// ErrMissingHeaderEnvironment marks a configured environment value that is unavailable.
-	ErrMissingHeaderEnvironment = errors.New("missing HTTP header environment variable")
 	// ErrTooManyRedirects marks a request that exceeded dac's redirect limit.
 	ErrTooManyRedirects = errors.New("too many redirects")
 )
@@ -109,12 +106,13 @@ func validateHeader(name, value string, seen map[string]struct{}) error {
 	return validateHeaderValue(name, value)
 }
 
-// validateHeaderValue distinguishes environment references from literal
-// values because the two forms have different valid character sets.
+// validateHeaderValue distinguishes a secret reference from a literal value
+// because the two forms have different valid character sets. The reference
+// scheme itself belongs to the configuration layer, not to HTTP.
 func validateHeaderValue(name, value string) error {
-	if environment, found := strings.CutPrefix(value, "env:"); found {
-		if !environmentPattern.MatchString(environment) {
-			return newHeaderError(ErrInvalidHeader, name, "environment variable reference is invalid")
+	if secret.IsReference(value) {
+		if err := secret.Validate(value); err != nil {
+			return newHeaderError(ErrInvalidHeader, name, err.Error())
 		}
 		return nil
 	}
@@ -131,22 +129,19 @@ func validHeaderName(value string) bool {
 	return headerNamePattern.MatchString(value)
 }
 
-// requestHeaders resolves environment indirections immediately before a
-// request. The returned map is ephemeral and must never enter errors or output.
+// requestHeaders resolves secret references immediately before a request. The
+// returned map is ephemeral and must never enter errors, output, or state.
 func requestHeaders(headers map[string]string) (http.Header, error) {
 	if err := ValidateHeaders(headers); err != nil {
 		return nil, err
 	}
 	result := make(http.Header, len(headers))
 	for name, value := range headers {
-		if environment, found := strings.CutPrefix(value, "env:"); found {
-			resolved, exists := os.LookupEnv(environment)
-			if !exists {
-				return nil, fmt.Errorf("%w: %s", ErrMissingHeaderEnvironment, environment)
-			}
-			value = resolved
+		resolved, err := secret.Resolve(value)
+		if err != nil {
+			return nil, err
 		}
-		result.Set(name, value)
+		result.Set(name, resolved)
 	}
 	return result, nil
 }

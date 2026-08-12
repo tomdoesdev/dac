@@ -145,8 +145,8 @@ func TestValidateRejectsMalformedTransferLimits(t *testing.T) {
 		asset Asset
 		want  error
 	}{
-		{name: "max size", asset: Asset{URL: "https://example.com/a", File: "a.bin", MaxSize: "2 furlongs"}, want: asset.ErrInvalidMaxSize},
-		{name: "idle timeout", asset: Asset{URL: "https://example.com/a", File: "a.bin", IdleTimeout: "-5s"}, want: asset.ErrInvalidIdleTimeout},
+		{name: "max size", asset: Asset{URL: "https://example.com/a", File: "a.bin", MaxSize: "2 furlongs"}, want: ErrInvalidMaxSize},
+		{name: "idle timeout", asset: Asset{URL: "https://example.com/a", File: "a.bin", IdleTimeout: "-5s"}, want: ErrInvalidIdleTimeout},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

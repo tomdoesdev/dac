@@ -154,14 +154,14 @@ func Validate(value Manifest) error {
 func parseTransfer(file Asset) (asset.TransferPolicy, error) {
 	transfer := asset.DefaultTransferPolicy()
 	if file.MaxSize != "" {
-		maxSize, err := asset.ParseMaxSize(file.MaxSize)
+		maxSize, err := ParseMaxSize(file.MaxSize)
 		if err != nil {
 			return asset.TransferPolicy{}, err
 		}
 		transfer.MaxSize = maxSize
 	}
 	if file.IdleTimeout != "" {
-		idleTimeout, err := asset.ParseIdleTimeout(file.IdleTimeout)
+		idleTimeout, err := ParseIdleTimeout(file.IdleTimeout)
 		if err != nil {
 			return asset.TransferPolicy{}, err
 		}

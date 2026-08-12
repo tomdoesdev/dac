@@ -58,10 +58,7 @@ func Load(path string) (Lockfile, error) {
 	if err := strictjson.Unmarshal(data, &value); err != nil {
 		return Lockfile{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
-	if err := Validate(value); err != nil {
-		return Lockfile{}, err
-	}
-	return value, nil
+	return Normalize(value)
 }
 
 // LoadOptional reads an existing lock file while distinguishing normal absence
@@ -97,8 +94,25 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 	return file, nil
 }
 
+// Normalize validates a lock file and returns it with every digest in dac's
+// canonical spelling, so later comparisons are byte equality. Reading is the
+// only step that needs it; a value dac itself produced is already canonical.
+func Normalize(value Lockfile) (Lockfile, error) {
+	if err := Validate(value); err != nil {
+		return Lockfile{}, err
+	}
+	files := make(map[string]Asset, len(value.Files))
+	for name, file := range value.Files {
+		// Validate has already proved both digests parse.
+		file.Digest, _ = asset.NormalizeDigest(file.Digest)
+		file.ConfigurationDigest, _ = asset.NormalizeDigest(file.ConfigurationDigest)
+		files[name] = file
+	}
+	return Lockfile{Version: value.Version, Files: files}, nil
+}
+
 // Validate rejects values that could evade manifest comparison or make local
-// verification ambiguous.
+// verification ambiguous. It does not modify value.
 func Validate(value Lockfile) error {
 	if value.Version != Version {
 		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithRecovery(lockAllRecovery()))
@@ -113,17 +127,12 @@ func Validate(value Lockfile) error {
 		if err := manifest.ValidateResolvedURL(file.ResolvedURL); err != nil {
 			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), fault.WithAsset(name))
 		}
-		digest, err := asset.NormalizeDigest(file.Digest)
-		if err != nil {
+		if _, err := asset.NormalizeDigest(file.Digest); err != nil {
 			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), fault.WithAsset(name))
 		}
-		file.Digest = digest
-		configurationDigest, err := asset.NormalizeDigest(file.ConfigurationDigest)
-		if err != nil {
+		if _, err := asset.NormalizeDigest(file.ConfigurationDigest); err != nil {
 			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), fault.WithAsset(name))
 		}
-		file.ConfigurationDigest = configurationDigest
-		value.Files[name] = file
 	}
 	return nil
 }
