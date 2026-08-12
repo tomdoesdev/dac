@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/tomdoesdev/dac/internal/secret"
 )
 
 // TestValidateHeadersClassifiesFailures ensures callers can distinguish
@@ -50,8 +52,8 @@ func TestRequestHeadersClassifiesMissingEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := requestHeaders(map[string]string{"Authorization": "env:" + environment})
-	if !errors.Is(err, ErrMissingHeaderEnvironment) {
-		t.Fatalf("requestHeaders() error = %v, want error matching %v", err, ErrMissingHeaderEnvironment)
+	if !errors.Is(err, secret.ErrMissingValue) {
+		t.Fatalf("requestHeaders() error = %v, want error matching %v", err, secret.ErrMissingValue)
 	}
 }
 

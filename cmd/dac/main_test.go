@@ -392,7 +392,7 @@ func TestStatusReportsAssetAndOrphanStates(t *testing.T) {
 			t.Fatal(err)
 		}
 		locked := lockfile.Lockfile{Version: lockfile.Version, Files: map[string]lockfile.Asset{}}
-		for _, item := range resolved {
+		for _, item := range resolved.All() {
 			content := []byte(item.Name)
 			locked.Files[item.Name] = lockfile.Asset{
 				ResolvedURL: item.ResolvedURL, ResolvedFile: item.ResolvedFile,
@@ -535,4 +535,74 @@ func assertFile(t *testing.T, path string, want []byte) {
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
 	}
+}
+
+// TestExitCodeSeparatesCallerFromOperatorFailures pins the process contract now
+// that exit-status policy lives in main rather than in the output writer. A
+// configuration failure is the caller's to fix and exits 2; an integrity
+// failure is not, and exits 1.
+func TestExitCodeSeparatesCallerFromOperatorFailures(t *testing.T) {
+	body := []byte("locked bytes")
+	serve := body
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(serve)
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		runOK(t, "lock", "--all")
+
+		// A stale lock is a configuration failure: the caller edits dac.toml.
+		runOK(t, "update", "artifact", "--set", "VERSION=two")
+		if _, _, code := run("pull"); code != 2 {
+			t.Fatalf("stale pull code=%d, want 2", code)
+		}
+		runOK(t, "lock", "--all")
+
+		// Bytes that no longer match the accepted digest are an integrity
+		// failure: nothing the caller can correct by editing input.
+		serve = []byte("different bytes entirely")
+		if err := os.Remove(filepath.Join(directory, ".dac", "downloads", "artifact.bin")); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, code := run("pull")
+		if code != 1 {
+			t.Fatalf("integrity pull code=%d stderr=%q, want 1", code, stderr)
+		}
+	})
+}
+
+// TestRecoveryHintRendersAsAPasteableCommand proves the structured recovery
+// survives the trip from the library packages to the process boundary. The
+// asset name is opaque and shell-hostile, so it must arrive quoted.
+func TestRecoveryHintRendersAsAPasteableCommand(t *testing.T) {
+	const name = "-scope/pkg'$`"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("locked bytes"))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		runOK(t, "add", "--", name, server.URL+"/artifact.bin")
+		runOK(t, "lock", "--all")
+		runOK(t, "update", "--set", "VERSION=two", "--", name)
+
+		_, stderr, code := run("pull", "--json")
+		if code != 2 {
+			t.Fatalf("stale pull code=%d stderr=%q, want 2", code, stderr)
+		}
+		var output struct {
+			Hint string `json:"hint"`
+		}
+		if err := json.Unmarshal([]byte(stderr), &output); err != nil {
+			t.Fatal(err)
+		}
+		want := `run: dac lock -- '-scope/pkg'"'"'$` + "`'"
+		if output.Hint != want {
+			t.Fatalf("hint = %q, want %q", output.Hint, want)
+		}
+	})
 }

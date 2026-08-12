@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"regexp"
+	"strings"
 	"time"
 
-	"github.com/tomdoesdev/dac/internal/project"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/tomdoesdev/dac/internal/redact"
 	"github.com/tomdoesdev/kit/cli"
 )
-
-var urlToken = regexp.MustCompile(`https?://[^\s"']+`)
 
 // Version is the current structured output protocol.
 const Version = 1
@@ -41,6 +40,11 @@ type Result struct {
 	Digest string `json:"digest,omitempty"`
 	Size   int64  `json:"size,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Reported records that progress output already announced this asset, so
+	// the summary does not repeat it. WithDownloadProgress reports whether it
+	// printed; carrying the answer here keeps Success a function of its
+	// arguments rather than of what the writer happens to remember.
+	Reported bool `json:"-"`
 }
 
 // Orphan describes lock metadata or a download entry outside desired state.
@@ -72,28 +76,46 @@ type errorOutput struct {
 
 // Writer applies one invocation's output mode to command results.
 type Writer struct {
-	options           *Options
-	stdout            io.Writer
-	stderr            io.Writer
-	stdoutStyler      *cli.Styler
-	stderrStyler      *cli.Styler
-	throbberMode      cli.ThrobberMode
-	throbberInterval  time.Duration
-	reportedDownloads map[string]bool
+	options          *Options
+	stdout           io.Writer
+	stderr           io.Writer
+	stdoutStyler     *cli.Styler
+	stderrStyler     *cli.Styler
+	throbberMode     cli.ThrobberMode
+	throbberInterval time.Duration
+}
+
+// defaultThrobberInterval paces the progress animation fast enough to look
+// live without redrawing more often than a terminal can usefully show.
+const defaultThrobberInterval = 100 * time.Millisecond
+
+// Option adjusts a Writer at construction.
+type Option func(*Writer)
+
+// WithThrobber overrides the progress animation, which tests pin so their
+// output does not depend on wall-clock timing or on an attached terminal.
+func WithThrobber(mode cli.ThrobberMode, interval time.Duration) Option {
+	return func(writer *Writer) {
+		writer.throbberMode = mode
+		writer.throbberInterval = interval
+	}
 }
 
 // New creates an output writer bound to the invocation's global options.
-func New(options *Options, stdout, stderr io.Writer) *Writer {
-	return &Writer{
-		options:           options,
-		stdout:            stdout,
-		stderr:            stderr,
-		stdoutStyler:      cli.NewStyler(stdout, cli.ColorAuto),
-		stderrStyler:      cli.NewStyler(stderr, cli.ColorAuto),
-		throbberMode:      cli.ThrobberAuto,
-		throbberInterval:  100 * time.Millisecond,
-		reportedDownloads: make(map[string]bool),
+func New(options *Options, stdout, stderr io.Writer, opts ...Option) *Writer {
+	writer := &Writer{
+		options:          options,
+		stdout:           stdout,
+		stderr:           stderr,
+		stdoutStyler:     cli.NewStyler(stdout, cli.ColorAuto),
+		stderrStyler:     cli.NewStyler(stderr, cli.ColorAuto),
+		throbberMode:     cli.ThrobberAuto,
+		throbberInterval: defaultThrobberInterval,
 	}
+	for _, option := range opts {
+		option(writer)
+	}
+	return writer
 }
 
 // ValidateOptions lets each command participate in cli's normal validation
@@ -101,17 +123,17 @@ func New(options *Options, stdout, stderr io.Writer) *Writer {
 func (writer *Writer) ValidateOptions() error { return writer.options.Validate() }
 
 // Success writes a successful command result in the selected output mode.
-func (writer *Writer) Success(command string, paths project.Paths, assets []Result, warnings []string) error {
+func (writer *Writer) Success(command, root string, assets []Result, warnings []string) error {
 	safeWarnings := make([]string, len(warnings))
 	for index, warning := range warnings {
-		safeWarnings[index] = sanitizeError(warning)
+		safeWarnings[index] = redact.URLs(warning)
 	}
 	if writer.options.JSON {
-		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: command, Project: paths.Root, Assets: assets, Warnings: safeWarnings})
+		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: command, Project: root, Assets: assets, Warnings: safeWarnings})
 	}
 	if !writer.options.Quiet {
 		for _, asset := range assets {
-			if asset.Status == "downloaded" && writer.reportedDownloads[asset.Name] {
+			if asset.Reported {
 				continue
 			}
 			if _, err := fmt.Fprintf(writer.stdout, "%s %s\n", writer.stdoutStyler.Success(asset.Status), asset.Name); err != nil {
@@ -128,14 +150,17 @@ func (writer *Writer) Success(command string, paths project.Paths, assets []Resu
 }
 
 // WithDownloadProgress runs operation with DAC's human download presentation.
-// Non-interactive, structured, and quiet invocations fall back to Success output.
-func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filename, sourceURL string, operation func(context.Context) error) error {
+// Non-interactive, structured, and quiet invocations fall back to Success
+// output. It reports whether it announced the completed download, which the
+// caller records on the Result so the summary does not repeat it.
+func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, sourceURL string, operation func(context.Context) error) (bool, error) {
 	mode := writer.throbberMode
 	if writer.options.JSON || writer.options.Quiet {
 		mode = cli.ThrobberNever
 	}
 	source := downloadHostname(sourceURL)
 	message := fmt.Sprintf("Downloading %s from %s…", filename, source)
+	var reported bool
 	throbber := cli.NewThrobber(
 		writer.stderr,
 		message,
@@ -146,7 +171,7 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filen
 			if !end.Animated || end.Err != nil || writer.options.JSON || writer.options.Quiet {
 				return ""
 			}
-			writer.reportedDownloads[assetName] = true
+			reported = true
 			return fmt.Sprintf("%s %s %s from %s (%s)",
 				writer.stderrStyler.Success("✔"),
 				filename,
@@ -155,7 +180,8 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, assetName, filen
 				formatElapsed(end.Elapsed))
 		}),
 	)
-	return throbber.Run(ctx, operation)
+	err := throbber.Run(ctx, operation)
+	return reported, err
 }
 
 // downloadHostname deliberately retains only the least sensitive useful part
@@ -179,9 +205,9 @@ func formatElapsed(elapsed time.Duration) string {
 
 // Status writes a complete observational report without turning unhealthy
 // states into command failures.
-func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orphan) error {
+func (writer *Writer) Status(root string, assets []Result, orphans []Orphan) error {
 	if writer.options.JSON {
-		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: "status", Project: paths.Root, Assets: assets, Orphans: orphans})
+		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: "status", Project: root, Assets: assets, Orphans: orphans})
 	}
 	if writer.options.Quiet {
 		return nil
@@ -211,37 +237,59 @@ func (writer *Writer) Status(paths project.Paths, assets []Result, orphans []Orp
 	return nil
 }
 
-// Error writes an invocation error and returns its conventional CLI exit code.
-func (writer *Writer) Error(stderr io.Writer, err error) int {
-	styler := cli.NewStyler(stderr, cli.ColorAuto)
+// Error writes an invocation error in the selected output mode. Choosing the
+// process exit status from it is the caller's decision, not the writer's.
+func (writer *Writer) Error(err error) {
 	var usage *cli.UsageError
 	if errors.As(err, &usage) {
 		if writer.options.JSON {
-			_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: "usage", Message: sanitizeError(usage.Error())})
+			_ = json.NewEncoder(writer.stderr).Encode(errorOutput{Version: Version, Kind: "usage", Message: redact.URLs(usage.Error())})
 		} else {
-			_, _ = fmt.Fprintf(stderr, "%s %s\n\n%s", styler.Error("Error:"), sanitizeError(usage.Error()), usage.Usage())
+			_, _ = fmt.Fprintf(writer.stderr, "%s %s\n\n%s", writer.stderrStyler.Error("Error:"), redact.URLs(usage.Error()), usage.Usage())
 		}
-		return 2
+		return
 	}
-	var operation *project.Error
+	var operation *fault.Error
 	if !errors.As(err, &operation) {
-		wrapped := project.NewFilesystemError(err)
-		if !errors.As(wrapped, &operation) {
-			return 1
+		// An unclassified failure still reached the process boundary, so report
+		// it under the category that assumes the least about its cause.
+		if !errors.As(fault.NewFilesystemError(err), &operation) {
+			return
 		}
 	}
+	recovery := formatRecovery(operation.Recovery())
 	if writer.options.JSON {
-		_ = json.NewEncoder(stderr).Encode(errorOutput{Version: Version, Kind: string(operation.Kind()), Message: sanitizeError(operation.Message()), Asset: operation.Asset(), Hint: operation.Hint(), Expected: operation.Expected(), Received: operation.Received()})
-	} else {
-		_, _ = fmt.Fprintf(stderr, "%s %s\n", styler.Error("Error:"), sanitizeError(operation.Error()))
-		if operation.Hint() != "" {
-			_, _ = fmt.Fprintln(stderr, operation.Hint())
+		_ = json.NewEncoder(writer.stderr).Encode(errorOutput{Version: Version, Kind: string(operation.Kind()), Message: redact.URLs(operation.Message()), Asset: operation.Asset(), Hint: recovery, Expected: operation.Expected(), Received: operation.Received()})
+		return
+	}
+	_, _ = fmt.Fprintf(writer.stderr, "%s %s\n", writer.stderrStyler.Error("Error:"), redact.URLs(operation.Error()))
+	if recovery != "" {
+		_, _ = fmt.Fprintln(writer.stderr, recovery)
+	}
+}
+
+// formatRecovery renders a structured recovery as one command a user can paste
+// into a shell. Asset names are opaque and may contain shell metacharacters or
+// begin with a dash, so they are quoted and follow the option terminator.
+func formatRecovery(recovery fault.Recovery) string {
+	if recovery.Empty() {
+		return ""
+	}
+	words := make([]string, 0, len(recovery.Flags)+len(recovery.Assets)+3)
+	words = append(words, "dac", recovery.Command)
+	words = append(words, recovery.Flags...)
+	if len(recovery.Assets) > 0 {
+		words = append(words, "--")
+		for _, name := range recovery.Assets {
+			words = append(words, shellQuote(name))
 		}
 	}
-	if operation.Kind() == project.ErrorKindConfiguration {
-		return 2
-	}
-	return 1
+	return "run: " + strings.Join(words, " ")
+}
+
+// shellQuote returns one POSIX shell word that reproduces value exactly.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // status maps DAC's observational states onto cli's semantic roles without
@@ -257,20 +305,4 @@ func (writer *Writer) status(status string) string {
 	default:
 		return status
 	}
-}
-
-// sanitizeError removes URL credentials, query strings, and fragments from
-// third-party parser and transport diagnostics before they reach either mode.
-func sanitizeError(message string) string {
-	return urlToken.ReplaceAllStringFunc(message, func(value string) string {
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Host == "" {
-			return "remote URL"
-		}
-		parsed.User = nil
-		parsed.RawQuery = ""
-		parsed.ForceQuery = false
-		parsed.Fragment = ""
-		return parsed.String()
-	})
 }

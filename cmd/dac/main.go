@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/tomdoesdev/dac/cmd/dac/command"
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/output"
 	"github.com/tomdoesdev/kit/cli"
 )
@@ -34,7 +36,23 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	app.MustAddGlobalFlags(options)
 	command.Register(app, command.Dependencies{Output: writer, Downloader: downloader, CWD: os.Getwd})
 	if err := app.Run(args); err != nil {
-		return writer.Error(stderr, err)
+		writer.Error(err)
+		return exitCode(err)
 	}
 	return 0
+}
+
+// exitCode maps a classified failure onto the conventional CLI status. Telling
+// a caller apart from an operator is a process-boundary decision, so it lives
+// here rather than in the code that renders the message.
+func exitCode(err error) int {
+	var usage *cli.UsageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	var operation *fault.Error
+	if errors.As(err, &operation) && operation.Kind() == fault.ErrorKindConfiguration {
+		return 2
+	}
+	return 1
 }

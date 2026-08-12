@@ -1,3 +1,4 @@
-// Package project discovers dac projects, owns their persistent path layout,
-// and defines the operation errors shared across dac's internal packages.
+// Package project discovers dac projects and owns their persistent path
+// layout: the manifest, the lock file, the managed downloads directory, and
+// the lock held across a complete command transition.
 package project

@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type updateCommand struct {
@@ -28,6 +27,18 @@ type updateCommand struct {
 	UnsetMaxSize     bool         `flag:"unset-max-size" help:"restore the default maximum response body size"`
 	IdleTimeout      *singleValue `flag:"idle-timeout" help:"set the maximum idle body-read duration"`
 	UnsetIdleTimeout bool         `flag:"unset-idle-timeout" help:"restore the default idle body-read duration"`
+
+	// Validate runs immediately before Run on the same instance, so it parses
+	// each repeated option once and apply consumes the result.
+	edits assetEdits
+}
+
+// assetEdits is one update's parsed set algebra over variables and headers.
+type assetEdits struct {
+	variables      map[string]string
+	unsetVariables map[string]string
+	headers        map[string]string
+	removedHeaders map[string]string
 }
 
 func newUpdateCommand(runtime *runtime) *updateCommand {
@@ -61,7 +72,7 @@ func (command *updateCommand) Validate() error {
 		return err
 	}
 	for key := range sets {
-		if unsets[key] {
+		if _, exists := unsets[key]; exists {
 			return fmt.Errorf("%w: variable %q", ErrEditConflict, key)
 		}
 	}
@@ -74,17 +85,18 @@ func (command *updateCommand) Validate() error {
 		return err
 	}
 	for key := range headers {
-		if _, exists := removedHeaders[strings.ToLower(key)]; exists {
+		if _, exists := removedHeaders[asset.HeaderIdentity(key)]; exists {
 			return fmt.Errorf("%w: header %q", ErrEditConflict, key)
 		}
 	}
+	command.edits = assetEdits{variables: sets, unsetVariables: unsets, headers: headers, removedHeaders: removedHeaders}
 	if command.MaxSize.set {
-		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
+		if _, err := manifest.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
 		}
 	}
 	if command.IdleTimeout.set {
-		if _, err := asset.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
+		if _, err := manifest.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
 			return err
 		}
 	}
@@ -112,18 +124,21 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		}
 		current, exists := value.Files[command.Name]
 		if !exists {
-			return project.NewConfigurationError(ErrAssetNotFound, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
 		}
 		candidate := cloneAsset(current)
 		if err := command.apply(&candidate); err != nil {
-			return project.NewConfigurationError(err, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(err, fault.WithAsset(command.Name))
 		}
 		value.Files[command.Name] = candidate
 		resolved, err := manifest.Resolve(value)
 		if err != nil {
 			return err
 		}
-		resolvedAsset := findResolved(resolved, command.Name)
+		resolvedAsset, ok := resolved.Get(command.Name)
+		if !ok {
+			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
+		}
 		if command.Pin.calculate {
 			candidate.Pin, err = command.runtime.calculatePin(ctx, paths, resolvedAsset)
 			if err != nil {
@@ -135,14 +150,14 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		normalizeAssetMaps(&current)
 		normalizeAssetMaps(&candidate)
 		if reflect.DeepEqual(current, candidate) {
-			return project.NewConfigurationError(ErrNoUpdate, project.WithAsset(command.Name))
+			return fault.NewConfigurationError(ErrNoUpdate, fault.WithAsset(command.Name))
 		}
 		value.Files[command.Name] = candidate
 		if err := manifest.Write(paths.Manifest(), value); err != nil {
 			return err
 		}
 		result := output.Result{Name: command.Name, Status: "updated", File: resolvedAsset.ResolvedFile, Digest: candidate.Pin}
-		return command.runtime.Output.Success("update", paths, []output.Result{result}, nil)
+		return command.runtime.Output.Success("update", paths.Root, []output.Result{result}, nil)
 	})
 }
 
@@ -153,30 +168,20 @@ func (command *updateCommand) apply(file *manifest.Asset) error {
 	if command.File.set {
 		file.File = command.File.value
 	}
-	sets, err := parseSets(command.Set)
-	if err != nil {
-		return err
-	}
+	sets := command.edits.variables
 	if len(sets) > 0 && file.Variables == nil {
 		file.Variables = make(map[string]string)
 	}
 	for key, value := range sets {
 		file.Variables[key] = value
 	}
-	unsets, err := parseVariableNames(command.Unset)
-	if err != nil {
-		return err
-	}
-	for key := range unsets {
+	for key := range command.edits.unsetVariables {
 		if _, exists := file.Variables[key]; !exists {
 			return fmt.Errorf("%w %q", ErrUnknownUnset, key)
 		}
 		delete(file.Variables, key)
 	}
-	headers, err := parseHeaders(command.Header)
-	if err != nil {
-		return err
-	}
+	headers := command.edits.headers
 	if len(headers) > 0 && file.Headers == nil {
 		file.Headers = make(map[string]string)
 	}
@@ -186,11 +191,7 @@ func (command *updateCommand) apply(file *manifest.Asset) error {
 		}
 		file.Headers[name] = value
 	}
-	removedHeaders, err := parseHeaderNames(command.RemoveHeader)
-	if err != nil {
-		return err
-	}
-	for normalized, requested := range removedHeaders {
+	for normalized, requested := range command.edits.removedHeaders {
 		existing, exists := headerKey(file.Headers, normalized)
 		if !exists {
 			return fmt.Errorf("%w %q", ErrUnknownHeaderRemoval, requested)
@@ -236,8 +237,9 @@ func normalizeAssetMaps(value *manifest.Asset) {
 
 // headerKey finds the persisted spelling of a case-insensitive HTTP header.
 func headerKey(headers map[string]string, requested string) (string, bool) {
+	identity := asset.HeaderIdentity(requested)
 	for name := range headers {
-		if strings.EqualFold(name, requested) {
+		if asset.HeaderIdentity(name) == identity {
 			return name, true
 		}
 	}

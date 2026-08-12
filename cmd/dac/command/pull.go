@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type pullCommand struct {
@@ -59,9 +59,9 @@ func (command *pullCommand) Run(ctx context.Context) error {
 		defer func() { _ = downloads.Close() }()
 		var results []output.Result
 		var invalid []string
-		for _, resolvedAsset := range resolved {
+		for _, resolvedAsset := range resolved.All() {
 			locked := lock.Files[resolvedAsset.Name]
-			valid, err := asset.VerifyLocal(downloads, locked.ResolvedFile, locked.Digest, locked.Size)
+			valid, err := asset.VerifyLocal(downloads.Root(), locked.ResolvedFile, locked.Digest, locked.Size)
 			if err != nil {
 				return err
 			}
@@ -73,25 +73,25 @@ func (command *pullCommand) Run(ctx context.Context) error {
 				invalid = append(invalid, resolvedAsset.Name)
 				continue
 			}
-			err = command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.Name, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
-				download, err := command.runtime.Downloader.Download(ctx, downloads, assetRequest(resolvedAsset), locked.Digest)
+			reported, err := command.runtime.Output.WithDownloadProgress(ctx, locked.ResolvedFile, locked.ResolvedURL, func(ctx context.Context) error {
+				download, err := command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), locked.Digest)
 				if err != nil {
 					return err
 				}
 				if err := download.Commit(); err != nil {
-					return project.NewFilesystemError(errors.Join(err, download.Discard()))
+					return fault.NewFilesystemError(errors.Join(err, download.Discard()))
 				}
 				return nil
 			})
 			if err != nil {
 				return err
 			}
-			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size})
+			results = append(results, output.Result{Name: resolvedAsset.Name, Status: "downloaded", File: locked.ResolvedFile, Digest: locked.Digest, Size: locked.Size, Reported: reported})
 		}
 		if len(invalid) > 0 {
-			return project.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
+			return fault.NewIntegrityError(fmt.Errorf("%w for %s", ErrOfflineVerification, quoteAssetNames(invalid)))
 		}
-		return command.runtime.Output.Success("pull", paths, results, nil)
+		return command.runtime.Output.Success("pull", paths.Root, results, nil)
 	})
 }
 

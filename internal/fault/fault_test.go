@@ -1,4 +1,4 @@
-package project
+package fault
 
 import (
 	"errors"
@@ -12,7 +12,7 @@ func TestErrorConstruction(t *testing.T) {
 	err := NewIntegrityError(
 		cause,
 		WithAsset("tool"),
-		WithHint("run `dac lock tool`"),
+		WithRecovery(Recovery{Command: "lock", Assets: []string{"tool"}}),
 		WithIntegrity("expected", "received"),
 	)
 
@@ -32,8 +32,9 @@ func TestErrorConstruction(t *testing.T) {
 	if operation.Asset() != "tool" {
 		t.Errorf("asset = %q, want %q", operation.Asset(), "tool")
 	}
-	if operation.Hint() != "run `dac lock tool`" {
-		t.Errorf("hint = %q, want recovery guidance", operation.Hint())
+	recovery := operation.Recovery()
+	if recovery.Command != "lock" || len(recovery.Assets) != 1 || recovery.Assets[0] != "tool" {
+		t.Errorf("recovery = %+v, want a lock of asset \"tool\"", recovery)
 	}
 	if operation.Expected() != "expected" || operation.Received() != "received" {
 		t.Errorf("integrity values = (%q, %q), want (%q, %q)", operation.Expected(), operation.Received(), "expected", "received")

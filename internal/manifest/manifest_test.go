@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tomdoesdev/dac/internal/asset"
 )
 
 // TestAssetNamesAreOpaquePrintableIdentifiers documents that asset names are
@@ -100,6 +103,59 @@ func TestResolveRejectsUnicodeEquivalentFilenames(t *testing.T) {
 			}}
 			if _, err := Resolve(value); !errors.Is(err, ErrResolvedFileConflict) {
 				t.Fatalf("Resolve error = %v, want ErrResolvedFileConflict for %q and %q", err, test.left, test.right)
+			}
+		})
+	}
+}
+
+// TestResolveCarriesParsedTransferLimits pins the transfer policy to the
+// manifest's declared limits. Resolve once re-parsed these strings and
+// discarded the error, so a grammar the parser rejected silently produced a
+// zero policy, which disables the limit rather than enforcing it.
+func TestResolveCarriesParsedTransferLimits(t *testing.T) {
+	value := Manifest{Version: Version, Files: map[string]Asset{
+		"declared": {URL: "https://example.com/a", File: "a.bin", MaxSize: "2MiB", IdleTimeout: "45s"},
+		"default":  {URL: "https://example.com/b", File: "b.bin"},
+	}}
+	resolved, err := Resolve(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared, ok := resolved.Get("declared")
+	if !ok {
+		t.Fatal("Resolve dropped the declared asset")
+	}
+	if got, want := declared.Transfer.MaxSize, int64(2<<20); got != want {
+		t.Errorf("declared MaxSize = %d, want %d", got, want)
+	}
+	if got, want := declared.Transfer.IdleTimeout, 45*time.Second; got != want {
+		t.Errorf("declared IdleTimeout = %v, want %v", got, want)
+	}
+	fallback, _ := resolved.Get("default")
+	if got, want := fallback.Transfer, asset.DefaultTransferPolicy(); got != want {
+		t.Errorf("default Transfer = %+v, want %+v", got, want)
+	}
+}
+
+// TestValidateRejectsMalformedTransferLimits keeps an unparseable limit a
+// configuration failure rather than a silently unlimited transfer.
+func TestValidateRejectsMalformedTransferLimits(t *testing.T) {
+	tests := []struct {
+		name  string
+		asset Asset
+		want  error
+	}{
+		{name: "max size", asset: Asset{URL: "https://example.com/a", File: "a.bin", MaxSize: "2 furlongs"}, want: ErrInvalidMaxSize},
+		{name: "idle timeout", asset: Asset{URL: "https://example.com/a", File: "a.bin", IdleTimeout: "-5s"}, want: ErrInvalidIdleTimeout},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := Manifest{Version: Version, Files: map[string]Asset{"only": test.asset}}
+			if err := Validate(value); !errors.Is(err, test.want) {
+				t.Fatalf("Validate error = %v, want %v", err, test.want)
+			}
+			if _, err := Resolve(value); !errors.Is(err, test.want) {
+				t.Fatalf("Resolve error = %v, want %v", err, test.want)
 			}
 		})
 	}

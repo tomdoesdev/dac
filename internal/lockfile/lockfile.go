@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
-	"github.com/tomdoesdev/dac/internal/project"
 	"github.com/tomdoesdev/kit/fs/atomic"
 	"github.com/tomdoesdev/kit/fs/util/filename"
 	"github.com/tomdoesdev/kit/strictjson"
@@ -34,23 +34,31 @@ type Asset struct {
 	Size                int64  `json:"size"`
 }
 
+// ResolvedFiles lists every managed filename this accepted state claims.
+// Callers use it to decide which directory entries dac still owns instead of
+// each rebuilding the same set from Files.
+func (value Lockfile) ResolvedFiles() []string {
+	result := make([]string, 0, len(value.Files))
+	for _, file := range value.Files {
+		result = append(result, file.ResolvedFile)
+	}
+	return result
+}
+
 // Load reads and validates a strict machine-authored lock file.
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, project.NewConfigurationError(ErrNotFound, project.WithHint("run `dac lock --all`"))
+		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithRecovery(lockAllRecovery()))
 	}
 	if err != nil {
-		return Lockfile{}, project.NewFilesystemError(err)
+		return Lockfile{}, fault.NewFilesystemError(err)
 	}
 	var value Lockfile
 	if err := strictjson.Unmarshal(data, &value); err != nil {
-		return Lockfile{}, project.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
+		return Lockfile{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrDecode, err))
 	}
-	if err := Validate(value); err != nil {
-		return Lockfile{}, err
-	}
-	return value, nil
+	return Normalize(value)
 }
 
 // LoadOptional reads an existing lock file while distinguishing normal absence
@@ -59,7 +67,7 @@ func LoadOptional(path string) (Lockfile, bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return Lockfile{}, false, nil
 	} else if err != nil {
-		return Lockfile{}, false, project.NewFilesystemError(err)
+		return Lockfile{}, false, fault.NewFilesystemError(err)
 	}
 	value, err := Load(path)
 	return value, true, err
@@ -73,46 +81,71 @@ func Stage(path string, value Lockfile) (*atomic.File, error) {
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	file, err := atomic.Create(path, 0o644)
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
 		cleanupErr := file.Discard()
-		return nil, project.NewFilesystemError(errors.Join(err, cleanupErr))
+		return nil, fault.NewFilesystemError(errors.Join(err, cleanupErr))
 	}
 	return file, nil
 }
 
+// Normalize validates a lock file and returns it with every digest in dac's
+// canonical spelling, so later comparisons are byte equality. Reading is the
+// only step that needs it; a value dac itself produced is already canonical.
+func Normalize(value Lockfile) (Lockfile, error) {
+	if err := Validate(value); err != nil {
+		return Lockfile{}, err
+	}
+	files := make(map[string]Asset, len(value.Files))
+	for name, file := range value.Files {
+		// Validate has already proved both digests parse.
+		file.Digest, _ = asset.NormalizeDigest(file.Digest)
+		file.ConfigurationDigest, _ = asset.NormalizeDigest(file.ConfigurationDigest)
+		files[name] = file
+	}
+	return Lockfile{Version: value.Version, Files: files}, nil
+}
+
 // Validate rejects values that could evade manifest comparison or make local
-// verification ambiguous.
+// verification ambiguous. It does not modify value.
 func Validate(value Lockfile) error {
 	if value.Version != Version {
-		return project.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), project.WithHint("run `dac lock --all`"))
+		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithRecovery(lockAllRecovery()))
 	}
 	if value.Files == nil {
-		return project.NewConfigurationError(ErrMissingFiles)
+		return fault.NewConfigurationError(ErrMissingFiles)
 	}
 	for name, file := range value.Files {
 		if !manifest.ValidAssetName(name) || file.ResolvedURL == "" || filename.Clean(file.ResolvedFile) != file.ResolvedFile || file.Size < 0 {
-			return project.NewConfigurationError(ErrInvalidEntry, project.WithAsset(name))
+			return fault.NewConfigurationError(ErrInvalidEntry, fault.WithAsset(name))
 		}
 		if err := manifest.ValidateResolvedURL(file.ResolvedURL); err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), project.WithAsset(name))
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidResolvedURL, err), fault.WithAsset(name))
 		}
-		digest, err := asset.NormalizeDigest(file.Digest)
-		if err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), project.WithAsset(name))
+		if _, err := asset.NormalizeDigest(file.Digest); err != nil {
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidDigest, err), fault.WithAsset(name))
 		}
-		file.Digest = digest
-		configurationDigest, err := asset.NormalizeDigest(file.ConfigurationDigest)
-		if err != nil {
-			return project.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), project.WithAsset(name))
+		if _, err := asset.NormalizeDigest(file.ConfigurationDigest); err != nil {
+			return fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrInvalidConfigurationDigest, err), fault.WithAsset(name))
 		}
-		file.ConfigurationDigest = configurationDigest
-		value.Files[name] = file
 	}
 	return nil
+}
+
+// Exists reports whether a lock file is present without reading or validating
+// it. It does not follow symlinks, so a link standing in for dac.lock counts
+// as present and a create-only lock will refuse to replace it.
+func Exists(path string) (bool, error) {
+	if _, err := os.Lstat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, fault.NewFilesystemError(err)
+	}
 }

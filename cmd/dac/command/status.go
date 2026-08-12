@@ -2,8 +2,6 @@ package command
 
 import (
 	"context"
-	"io/fs"
-	"os"
 
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/lockfile"
@@ -59,13 +57,13 @@ func (command *statusCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		return command.runtime.Output.Status(paths, results, orphans)
+		return command.runtime.Output.Status(paths.Root, results, orphans)
 	})
 }
 
 // statusResults combines configuration currentness with local byte integrity
 // without making network requests or changing the downloads directory.
-func statusResults(downloads *os.Root, hasDownloads bool, evaluation lockfile.Evaluation) ([]output.Result, error) {
+func statusResults(downloads *project.Downloads, hasDownloads bool, evaluation lockfile.Evaluation) ([]output.Result, error) {
 	results := make([]output.Result, 0, len(evaluation.Entries))
 	for _, entry := range evaluation.Entries {
 		if entry.State == lockfile.StateStale {
@@ -76,7 +74,7 @@ func statusResults(downloads *os.Root, hasDownloads bool, evaluation lockfile.Ev
 			results = append(results, output.Result{Name: entry.Resolved.Name, Status: "missing", File: entry.Locked.ResolvedFile, Digest: entry.Locked.Digest, Size: entry.Locked.Size, Reason: "download is missing"})
 			continue
 		}
-		inspection, err := asset.InspectLocal(downloads, entry.Locked.ResolvedFile, entry.Locked.Digest, entry.Locked.Size)
+		inspection, err := asset.InspectLocal(downloads.Root(), entry.Locked.ResolvedFile, entry.Locked.Digest, entry.Locked.Size)
 		if err != nil {
 			return nil, err
 		}
@@ -89,8 +87,9 @@ func statusResults(downloads *os.Root, hasDownloads bool, evaluation lockfile.Ev
 }
 
 // statusOrphans reports lock-only assets separately from untracked directory
-// entries so callers can decide which kind of cleanup is appropriate.
-func statusOrphans(downloads *os.Root, hasDownloads bool, locked lockfile.Lockfile, evaluation lockfile.Evaluation) ([]output.Orphan, error) {
+// entries so callers can decide which kind of cleanup is appropriate. Reading
+// the directory belongs to the package that owns it.
+func statusOrphans(downloads *project.Downloads, hasDownloads bool, locked lockfile.Lockfile, evaluation lockfile.Evaluation) ([]output.Orphan, error) {
 	orphans := make([]output.Orphan, 0, len(evaluation.Orphans))
 	for _, name := range evaluation.Orphans {
 		file := locked.Files[name]
@@ -99,19 +98,12 @@ func statusOrphans(downloads *os.Root, hasDownloads bool, locked lockfile.Lockfi
 	if !hasDownloads {
 		return orphans, nil
 	}
-	referenced := make(map[string]bool, len(locked.Files))
-	for _, file := range locked.Files {
-		referenced[file.ResolvedFile] = true
-	}
-	entries, err := fs.ReadDir(downloads.FS(), ".")
+	unreferenced, err := downloads.Unreferenced(locked.ResolvedFiles())
 	if err != nil {
-		return nil, project.NewFilesystemError(err)
+		return nil, err
 	}
-	for _, entry := range entries {
-		if referenced[entry.Name()] {
-			continue
-		}
-		orphans = append(orphans, output.Orphan{Kind: "file", File: entry.Name(), Reason: "download entry is not referenced by dac.lock"})
+	for _, name := range unreferenced {
+		orphans = append(orphans, output.Orphan{Kind: "file", File: name, Reason: "download entry is not referenced by dac.lock"})
 	}
 	return orphans, nil
 }

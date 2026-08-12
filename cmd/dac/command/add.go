@@ -3,10 +3,9 @@ package command
 import (
 	"context"
 
-	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/manifest"
 	"github.com/tomdoesdev/dac/internal/output"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 type addCommand struct {
@@ -19,6 +18,11 @@ type addCommand struct {
 	Pin         pinValue     `flag:"pin" help:"calculate or require a SHA-256 pin"`
 	MaxSize     *singleValue `flag:"max-size" help:"maximum response body size"`
 	IdleTimeout *singleValue `flag:"idle-timeout" help:"maximum idle body-read duration"`
+
+	// Validate runs immediately before Run on the same instance, so it parses
+	// each repeated option once and Run consumes the result.
+	variables map[string]string
+	headers   map[string]string
 }
 
 func newAddCommand(runtime *runtime) *addCommand {
@@ -35,19 +39,22 @@ func (command *addCommand) Validate() error {
 	if err := command.runtime.Output.ValidateOptions(); err != nil {
 		return err
 	}
-	if _, err := parseSets(command.Set); err != nil {
+	variables, err := parseSets(command.Set)
+	if err != nil {
 		return err
 	}
-	if _, err := parseHeaders(command.Header); err != nil {
+	headers, err := parseHeaders(command.Header)
+	if err != nil {
 		return err
 	}
+	command.variables, command.headers = variables, headers
 	if command.MaxSize.set {
-		if _, err := asset.ParseMaxSize(command.MaxSize.value); err != nil {
+		if _, err := manifest.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
 		}
 	}
 	if command.IdleTimeout.set {
-		if _, err := asset.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
+		if _, err := manifest.ParseIdleTimeout(command.IdleTimeout.value); err != nil {
 			return err
 		}
 	}
@@ -65,24 +72,16 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		if _, exists := value.Files[command.Name]; exists {
-			return project.NewConfigurationError(ErrAssetAlreadyExists, project.WithAsset(command.Name))
-		}
-		variables, err := parseSets(command.Set)
-		if err != nil {
-			return project.NewConfigurationError(err)
-		}
-		headers, err := parseHeaders(command.Header)
-		if err != nil {
-			return project.NewConfigurationError(err)
+			return fault.NewConfigurationError(ErrAssetAlreadyExists, fault.WithAsset(command.Name))
 		}
 		fileName := command.File.value
 		if !command.File.set {
 			fileName, err = manifest.InferFile(command.URL)
 			if err != nil {
-				return project.NewConfigurationError(err, project.WithAsset(command.Name))
+				return fault.NewConfigurationError(err, fault.WithAsset(command.Name))
 			}
 		}
-		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: variables, Headers: headers}
+		candidate := manifest.Asset{URL: command.URL, File: fileName, Variables: command.variables, Headers: command.headers}
 		if command.MaxSize.set {
 			candidate.MaxSize = command.MaxSize.value
 		}
@@ -97,7 +96,10 @@ func (command *addCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		resolvedAsset := findResolved(resolved, command.Name)
+		resolvedAsset, ok := resolved.Get(command.Name)
+		if !ok {
+			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
+		}
 		if command.Pin.calculate {
 			candidate.Pin, err = command.runtime.calculatePin(ctx, paths, resolvedAsset)
 			if err != nil {
@@ -109,6 +111,6 @@ func (command *addCommand) Run(ctx context.Context) error {
 			return err
 		}
 		result := output.Result{Name: command.Name, Status: "added", File: resolvedAsset.ResolvedFile, Digest: candidate.Pin}
-		return command.runtime.Output.Success("add", paths, []output.Result{result}, nil)
+		return command.runtime.Output.Success("add", paths.Root, []output.Result{result}, nil)
 	})
 }

@@ -1,4 +1,4 @@
-package project
+package fault
 
 import "fmt"
 
@@ -21,11 +21,29 @@ const (
 type Error struct {
 	kind     ErrorKind
 	asset    string
-	hint     string
+	recovery Recovery
 	expected string
 	received string
 	err      error
 }
+
+// Recovery names the dac command that resolves a failure. Packages describe
+// the remedy structurally rather than as text, because turning it into a
+// pasteable command line requires shell quoting that only the process
+// boundary should decide.
+type Recovery struct {
+	// Command is the dac subcommand to run, such as "init" or "lock".
+	Command string
+	// Flags are literal option words, such as "--all".
+	Flags []string
+	// Assets are opaque asset names. They may contain shell metacharacters or
+	// begin with a dash, so a renderer must quote them and place them after
+	// the option terminator.
+	Assets []string
+}
+
+// Empty reports a recovery that names no command to run.
+func (recovery Recovery) Empty() bool { return recovery.Command == "" }
 
 func (err *Error) Error() string {
 	if err.asset != "" {
@@ -46,8 +64,8 @@ func (err *Error) Message() string { return err.err.Error() }
 // Asset returns the logical asset associated with the failure, when present.
 func (err *Error) Asset() string { return err.asset }
 
-// Hint returns optional recovery guidance suitable for presenting to a user.
-func (err *Error) Hint() string { return err.hint }
+// Recovery returns the command that resolves the failure, when one applies.
+func (err *Error) Recovery() Recovery { return err.recovery }
 
 // Expected returns the expected integrity value, when present.
 func (err *Error) Expected() string { return err.expected }
@@ -64,9 +82,9 @@ func WithAsset(asset string) ErrorOption {
 	return func(err *Error) { err.asset = asset }
 }
 
-// WithHint attaches recovery guidance to an error.
-func WithHint(hint string) ErrorOption {
-	return func(err *Error) { err.hint = hint }
+// WithRecovery attaches the command that resolves the failure.
+func WithRecovery(recovery Recovery) ErrorOption {
+	return func(err *Error) { err.recovery = recovery }
 }
 
 // WithIntegrity records the values needed to diagnose an integrity failure.
