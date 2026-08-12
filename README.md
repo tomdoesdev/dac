@@ -9,7 +9,7 @@ installation lifecycle.
 ```sh
 dac init
 dac add artifact https://example.com/releases/artifact.ear
-dac lock --all
+dac lock
 dac pull
 ```
 
@@ -37,14 +37,15 @@ Use variables for versioned URLs and filenames:
 ```sh
 dac add --set VERSION=3.9.0 --file artifact.ear artifact \
   'https://example.com/artifact-{{.VERSION}}.ear'
-dac lock --all
+dac lock
 ```
 
 Changing a URL, filename, variable, header, pin, or transfer policy makes the
-lock stale. Follow with `dac lock <asset>` before `dac pull` can run again.
-Lock always requires an explicit selection: use one or more asset names for a
-targeted update, or `dac lock --all` to replace the entire lock file. A targeted
-lock requires an existing current lock for every asset it retains.
+lock stale. Follow with `dac lock <asset>` before `dac pull` can run again. A
+bare `dac lock` creates the initial lock from every manifest asset and fails if
+`dac.lock` already exists. Use one or more asset names for a targeted update,
+or `dac lock --all` to replace the entire lock file. A targeted lock requires an
+existing current lock for every asset it retains.
 
 An optional manifest pin limits the bytes lock is allowed to accept:
 

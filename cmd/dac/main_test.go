@@ -277,8 +277,10 @@ func TestInitRejectsConflictingOutputModesBeforeCreatingProject(t *testing.T) {
 	})
 }
 
-func TestLockRequiresSelectionAndAllReplacesLegacyLock(t *testing.T) {
+func TestBareLockCreatesOnceAndAllReplacesLegacyLock(t *testing.T) {
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
 		_, _ = writer.Write([]byte("locked bytes"))
 	}))
 	defer server.Close()
@@ -286,14 +288,21 @@ func TestLockRequiresSelectionAndAllReplacesLegacyLock(t *testing.T) {
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
 		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
-		if _, _, code := run("lock"); code != 2 {
-			t.Fatalf("lock without selection code=%d, want 2", code)
-		}
 		if _, _, code := run("lock", "--all", "artifact"); code != 2 {
 			t.Fatalf("lock with --all and names code=%d, want 2", code)
 		}
 		if _, _, code := run("lock", "artifact"); code != 2 {
 			t.Fatalf("initial targeted lock code=%d, want 2", code)
+		}
+		runOK(t, "lock")
+		if requests != 1 {
+			t.Fatalf("bare initial lock requests=%d, want 1", requests)
+		}
+		if _, stderr, code := run("lock"); code != 2 || !strings.Contains(stderr, "dac.lock already exists") {
+			t.Fatalf("repeated bare lock: code=%d stderr=%q", code, stderr)
+		}
+		if requests != 1 {
+			t.Fatalf("repeated bare lock made an HTTP request; requests=%d", requests)
 		}
 		legacy := `{"version":1,"files":{}}` + "\n"
 		if err := os.WriteFile("dac.lock", []byte(legacy), 0o644); err != nil {

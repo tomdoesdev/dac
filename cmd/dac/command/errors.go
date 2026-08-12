@@ -9,7 +9,10 @@ var (
 	ErrManifestAlreadyExists = errors.New("dac.toml already exists")
 	// ErrTargetedLockNeedsExisting marks an incomplete initial targeted lock.
 	ErrTargetedLockNeedsExisting = errors.New("targeted lock requires a complete existing dac.lock")
-	// ErrLockSelectionRequired marks lock without asset names or --all.
+	// ErrLockAlreadyExists prevents a bare initial lock from replacing accepted state.
+	ErrLockAlreadyExists = errors.New("dac.lock already exists")
+	// ErrLockSelectionRequired remains for callers compiled against the previous command contract.
+	// Deprecated: a bare lock now creates dac.lock when it is absent.
 	ErrLockSelectionRequired = errors.New("lock requires one or more asset names or --all")
 	// ErrAllLockConflict marks --all combined with explicit asset names.
 	ErrAllLockConflict = errors.New("--all cannot be combined with asset names")

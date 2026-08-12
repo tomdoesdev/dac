@@ -29,9 +29,6 @@ func (command *lockCommand) Validate() error {
 	if command.All && len(command.Names) > 0 {
 		return ErrAllLockConflict
 	}
-	if !command.All && len(command.Names) == 0 {
-		return ErrLockSelectionRequired
-	}
 	return nil
 }
 
@@ -41,6 +38,11 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		return err
 	}
 	return paths.WithLock(ctx, func(ctx context.Context) error {
+		initial := !command.All && len(command.Names) == 0
+		current, hasLock, loadWarning, err := command.loadCurrent(paths)
+		if err != nil {
+			return err
+		}
 		value, err := manifest.Load(paths.Manifest())
 		if err != nil {
 			return err
@@ -54,15 +56,11 @@ func (command *lockCommand) Run(ctx context.Context) error {
 			return err
 		}
 		defer func() { _ = downloads.Close() }()
-		current, hasLock, loadWarning, err := command.loadCurrent(paths)
-		if err != nil {
-			return err
-		}
 		selected, err := selectedNames(command.Names, resolved)
 		if err != nil {
 			return err
 		}
-		if !command.All {
+		if !command.All && !initial {
 			if !hasLock {
 				return project.NewConfigurationError(ErrTargetedLockNeedsExisting, project.WithHint("run `dac lock --all`"))
 			}
@@ -108,7 +106,7 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		warnings, err := transaction.commit(resolved)
+		warnings, err := transaction.commit(resolved, initial)
 		if err != nil {
 			return err
 		}
@@ -128,9 +126,18 @@ func (command *lockCommand) Run(ctx context.Context) error {
 	})
 }
 
-// loadCurrent permits --all to recover from an unreadable or unsupported lock
-// while retaining valid v2 metadata for safe obsolete-file cleanup.
+// loadCurrent makes a bare lock create-only and permits --all to recover from
+// unreadable or unsupported lock metadata.
 func (command *lockCommand) loadCurrent(paths project.Paths) (lockfile.Lockfile, bool, string, error) {
+	if !command.All && len(command.Names) == 0 {
+		if _, err := os.Lstat(paths.Lockfile()); err == nil {
+			return lockfile.Lockfile{}, false, "", project.NewConfigurationError(ErrLockAlreadyExists)
+		} else if errors.Is(err, fs.ErrNotExist) {
+			return lockfile.Lockfile{}, false, "", nil
+		} else {
+			return lockfile.Lockfile{}, false, "", project.NewFilesystemError(err)
+		}
+	}
 	current, exists, err := lockfile.LoadOptional(paths.Lockfile())
 	if err == nil {
 		return current, exists, "", nil
@@ -234,7 +241,9 @@ func (transaction *lockTransaction) discard() {
 	}
 }
 
-func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset) ([]string, error) {
+// commit installs downloaded assets before atomically installing their lock
+// metadata, rolling the whole operation back when any commit fails.
+func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset, createOnly bool) ([]string, error) {
 	commits := make([]*atomic.Commit, 0, len(transaction.downloads)+1)
 	for _, resolvedAsset := range order {
 		download := transaction.downloads[resolvedAsset.Name]
@@ -249,11 +258,22 @@ func (transaction *lockTransaction) commit(order []manifest.ResolvedAsset) ([]st
 			return nil, rollback(commits, project.NewFilesystemError(err))
 		}
 	}
-	commit, err := transaction.lock.CommitReversible()
+	var commit *atomic.Commit
+	var err error
+	if createOnly {
+		// A no-replace commit closes the race between the initial existence check
+		// and installing accepted metadata after all downloads have completed.
+		commit, err = transaction.lock.CommitNoReplace()
+	} else {
+		commit, err = transaction.lock.CommitReversible()
+	}
 	if commit != nil {
 		commits = append(commits, commit)
 	}
 	if err != nil {
+		if createOnly && errors.Is(err, fs.ErrExist) {
+			return nil, rollback(commits, project.NewConfigurationError(ErrLockAlreadyExists))
+		}
 		return nil, rollback(commits, project.NewFilesystemError(err))
 	}
 	warnings := make([]string, 0)
