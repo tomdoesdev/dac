@@ -1,10 +1,10 @@
 package asset
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"hash"
-
+	"io"
 	"regexp"
 	"strings"
 )
@@ -21,6 +21,27 @@ func NormalizeDigest(value string) (string, error) {
 	return "sha256:" + strings.ToLower(matches[1]), nil
 }
 
-func DigestFromHash(h hash.Hash) string {
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+// computeDigest consumes source and returns its canonical SHA-256 digest.
+func computeDigest(source io.Reader) (string, error) {
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, source); err != nil {
+		return "", err
+	}
+	return formatSHA256Digest(hasher.Sum(nil)), nil
+}
+
+// copyWithDigest streams source to destination while computing the digest in
+// the same pass, avoiding a second read of downloaded content.
+func copyWithDigest(destination io.Writer, source io.Reader) (int64, string, error) {
+	hasher := sha256.New()
+	size, err := io.Copy(io.MultiWriter(destination, hasher), source)
+	if err != nil {
+		return size, "", err
+	}
+	return size, formatSHA256Digest(hasher.Sum(nil)), nil
+}
+
+// formatSHA256Digest gives raw SHA-256 bytes their canonical serialized form.
+func formatSHA256Digest(sum []byte) string {
+	return "sha256:" + hex.EncodeToString(sum)
 }

@@ -2,7 +2,6 @@ package asset
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -139,12 +138,10 @@ func stageResponse(downloads *os.Root, request Request, body io.Reader, expected
 		}
 	}()
 
-	hash := sha256.New()
-	size, err := io.Copy(io.MultiWriter(temporary, hash), body)
+	size, digest, err := copyWithDigest(temporary, body)
 	if err != nil {
 		return nil, &project.Error{Kind: "network", Asset: request.Name, Err: ErrDownloadBody}
 	}
-	digest := DigestFromHash(hash)
 	if err := verifyExpectedDigest(request.Name, expected, digest); err != nil {
 		return nil, err
 	}
@@ -188,9 +185,9 @@ func VerifyLocal(downloads *os.Root, name, expected string, size int64) (bool, e
 		return false, project.NewError("filesystem", err)
 	}
 	defer func() { _ = file.Close() }()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	digest, err := computeDigest(file)
+	if err != nil {
 		return false, project.NewError("filesystem", err)
 	}
-	return DigestFromHash(hash) == expected, nil
+	return digest == expected, nil
 }
