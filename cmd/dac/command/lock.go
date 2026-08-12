@@ -13,8 +13,20 @@ import (
 
 type lockCommand struct {
 	runtime *runtime
-	Names   []string `arg:"names"`
-	All     bool     `flag:"all" help:"replace dac.lock from every manifest asset"`
+	Names   []string  `arg:"names"`
+	All     bool      `flag:"all" help:"replace dac.lock from every manifest asset"`
+	Jobs    jobsValue `flag:"jobs,j" help:"maximum downloads to run at once"`
+}
+
+// pendingLock is one selected asset and the outcome of fetching it. The staged
+// bytes are held per asset rather than added to the transaction as they arrive,
+// so accepted state is assembled in manifest order however the transfers
+// happen to finish.
+type pendingLock struct {
+	asset    manifest.ResolvedAsset
+	source   output.Download
+	download *asset.StagedDownload
+	reported bool
 }
 
 func (*lockCommand) Description() string { return "Accept current upstream bytes into dac.lock" }
@@ -74,27 +86,42 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		transaction := lockfile.NewTransaction()
 		defer transaction.Discard()
 		order := make([]string, 0, resolved.Len())
-		announced := make(map[string]bool, resolved.Len())
+		pending := make([]pendingLock, 0, len(selected))
+		items := make([]output.Download, 0, len(selected))
 		for _, resolvedAsset := range resolved.All() {
 			order = append(order, resolvedAsset.Name)
 			if !selected[resolvedAsset.Name] {
 				continue
 			}
-			var download *asset.StagedDownload
-			reported, err := command.runtime.Output.WithDownloadProgress(ctx, resolvedAsset.ResolvedFile, resolvedAsset.ResolvedURL, func(ctx context.Context) error {
-				var downloadErr error
-				download, downloadErr = command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(resolvedAsset), resolvedAsset.Pin)
-				return downloadErr
-			})
-			if err != nil {
+			source := output.Download{File: resolvedAsset.ResolvedFile, URL: resolvedAsset.ResolvedURL}
+			pending = append(pending, pendingLock{asset: resolvedAsset, source: source})
+			items = append(items, source)
+		}
+		downloadErr := command.runtime.Output.WithDownloads(ctx, items, func(ctx context.Context, group *output.DownloadGroup) error {
+			return downloadEach(ctx, command.Jobs.limit(), pending, func(ctx context.Context, item *pendingLock) error {
+				reported, err := group.Run(ctx, item.source, func(ctx context.Context) error {
+					var downloadErr error
+					item.download, downloadErr = command.runtime.Downloader.Download(ctx, downloads.Root(), assetRequest(item.asset), item.asset.Pin)
+					return downloadErr
+				})
+				item.reported = reported
 				return err
+			})
+		})
+		// Bytes that arrived before a failure are still staged, and enrolling
+		// them is what makes the deferred discard responsible for them.
+		for _, item := range pending {
+			if item.download == nil {
+				continue
 			}
-			announced[resolvedAsset.Name] = reported
-			transaction.Add(resolvedAsset.Name, download)
-			next.Files[resolvedAsset.Name] = lockfile.Asset{
-				ResolvedURL: resolvedAsset.ResolvedURL, ResolvedFile: resolvedAsset.ResolvedFile,
-				ConfigurationDigest: lockfile.ConfigurationDigest(resolvedAsset), Digest: download.Digest, Size: download.Size,
+			transaction.Add(item.asset.Name, item.download)
+			next.Files[item.asset.Name] = lockfile.Asset{
+				ResolvedURL: item.asset.ResolvedURL, ResolvedFile: item.asset.ResolvedFile,
+				ConfigurationDigest: lockfile.ConfigurationDigest(item.asset), Digest: item.download.Digest, Size: item.download.Size,
 			}
+		}
+		if downloadErr != nil {
+			return downloadErr
 		}
 		// The manifest is authoritative even for targeted locks; entries for
 		// deleted assets must not survive in accepted state.
@@ -116,10 +143,10 @@ func (command *lockCommand) Run(ctx context.Context) error {
 		if hasLock {
 			warnings = append(warnings, downloads.Prune(current.ResolvedFiles(), next.ResolvedFiles())...)
 		}
-		results := make([]output.Result, 0, len(selected))
-		for _, resolvedAsset := range resolved.All() {
-			if file, ok := next.Files[resolvedAsset.Name]; ok && selected[resolvedAsset.Name] {
-				results = append(results, output.Result{Name: resolvedAsset.Name, Status: "locked", File: file.ResolvedFile, Digest: file.Digest, Size: file.Size, Reported: announced[resolvedAsset.Name]})
+		results := make([]output.Result, 0, len(pending))
+		for _, item := range pending {
+			if file, ok := next.Files[item.asset.Name]; ok {
+				results = append(results, output.Result{Name: item.asset.Name, Status: "locked", File: file.ResolvedFile, Digest: file.Digest, Size: file.Size, Reported: item.reported})
 			}
 		}
 		return command.runtime.Output.Success("lock", paths.Root, results, warnings)

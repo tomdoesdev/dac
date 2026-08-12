@@ -156,8 +156,11 @@ func requestHeaders(headers map[string]string) (http.Header, error) {
 const (
 	// idleConnections keeps a small pool per host. A chunked download is a
 	// sequence of requests to one host, so reusing its connection saves a TCP
-	// and TLS handshake per chunk.
-	idleConnections = 4
+	// and TLS handshake per chunk. The pool holds one connection per transfer
+	// dac will ever run at once, because concurrent downloads of assets from
+	// the same host would otherwise take turns evicting each other between
+	// chunks and pay those handshakes again.
+	idleConnections = MaxDownloadJobs
 	// socketReadBufferSize replaces net/http's 4 KiB default. Artifacts are
 	// large, so the transport is worth letting read from the socket in pieces
 	// closer to the size the copy loop asks for.
