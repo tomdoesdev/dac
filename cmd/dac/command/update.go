@@ -18,6 +18,7 @@ type updateCommand struct {
 	URL              *singleValue `flag:"url" help:"replace the URL template"`
 	File             *singleValue `flag:"file" help:"replace the filename template"`
 	Set              []string     `flag:"set" help:"set an artifact variable (KEY=VALUE)"`
+	Gset             []string     `flag:"gset" help:"define a new global variable (KEY=VALUE)"`
 	Unset            []string     `flag:"unset" help:"remove an artifact variable"`
 	Header           []string     `flag:"header" help:"set an HTTP header (NAME=VALUE)"`
 	RemoveHeader     []string     `flag:"remove-header" help:"remove an HTTP header"`
@@ -34,8 +35,11 @@ type updateCommand struct {
 }
 
 // assetEdits is one update's parsed set algebra over variables and headers.
+// Globals are project-wide rather than part of the asset, so they are held
+// beside the asset edits and applied to the manifest itself.
 type assetEdits struct {
 	variables      map[string]string
+	globals        map[string]string
 	unsetVariables map[string]string
 	headers        map[string]string
 	removedHeaders map[string]string
@@ -67,6 +71,10 @@ func (command *updateCommand) Validate() error {
 	if err != nil {
 		return err
 	}
+	globals, err := parseGlobalSets(command.Gset)
+	if err != nil {
+		return err
+	}
 	unsets, err := parseVariableNames(command.Unset)
 	if err != nil {
 		return err
@@ -89,7 +97,7 @@ func (command *updateCommand) Validate() error {
 			return fmt.Errorf("%w: header %q", ErrEditConflict, key)
 		}
 	}
-	command.edits = assetEdits{variables: sets, unsetVariables: unsets, headers: headers, removedHeaders: removedHeaders}
+	command.edits = assetEdits{variables: sets, globals: globals, unsetVariables: unsets, headers: headers, removedHeaders: removedHeaders}
 	if command.MaxSize.set {
 		if _, err := manifest.ParseMaxSize(command.MaxSize.value); err != nil {
 			return err
@@ -107,7 +115,7 @@ func (command *updateCommand) Validate() error {
 }
 
 func (command *updateCommand) hasRequestedEdit() bool {
-	return command.URL.set || command.File.set || len(command.Set) > 0 || len(command.Unset) > 0 ||
+	return command.URL.set || command.File.set || len(command.Set) > 0 || len(command.Gset) > 0 || len(command.Unset) > 0 ||
 		len(command.Header) > 0 || len(command.RemoveHeader) > 0 || command.Pin.set || command.Unpin ||
 		command.MaxSize.set || command.UnsetMaxSize || command.IdleTimeout.set || command.UnsetIdleTimeout
 }
@@ -125,6 +133,11 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		current, exists := value.Files[command.Name]
 		if !exists {
 			return fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(command.Name))
+		}
+		// Globals are defined before the asset resolves so one command can
+		// introduce a global and the template that references it.
+		if err := applyGlobals(&value, command.edits.globals); err != nil {
+			return err
 		}
 		candidate := cloneAsset(current)
 		if err := command.apply(&candidate); err != nil {
@@ -149,7 +162,9 @@ func (command *updateCommand) Run(ctx context.Context) error {
 		current = cloneAsset(current)
 		normalizeAssetMaps(&current)
 		normalizeAssetMaps(&candidate)
-		if reflect.DeepEqual(current, candidate) {
+		// A new global always changes the manifest, even when the selected
+		// asset itself is left exactly as it was.
+		if reflect.DeepEqual(current, candidate) && len(command.edits.globals) == 0 {
 			return fault.NewConfigurationError(ErrNoUpdate, fault.WithAsset(command.Name))
 		}
 		value.Files[command.Name] = candidate

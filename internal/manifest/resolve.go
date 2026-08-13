@@ -64,14 +64,15 @@ func Resolve(value Manifest) (Resolution, error) {
 	seen := make(map[string]string, len(names))
 	for _, name := range names {
 		file := value.Files[name]
-		resolvedURL, err := renderTemplate("url", file.URL, file.Variables)
+		data := templateData(value.Globals, file.Variables)
+		resolvedURL, err := renderTemplate("url", file.URL, data)
 		if err != nil {
 			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
 		if err := ValidateResolvedURL(resolvedURL); err != nil {
 			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
-		resolvedFile, err := renderTemplate("file", file.File, file.Variables)
+		resolvedFile, err := renderTemplate("file", file.File, data)
 		if err != nil {
 			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
@@ -100,13 +101,36 @@ func parseTemplate(kind, value string) (*template.Template, error) {
 	return template.New(kind).Option("missingkey=error").Parse(value)
 }
 
-func renderTemplate(kind, value string, variables map[string]string) (string, error) {
+// GlobalNamespace is the template field that addresses project-wide variables,
+// as in {{ .global.VERSION }}. It is deliberately lower case: the variable
+// grammar requires an upper-case initial character, so no asset variable can
+// ever occupy the namespace or be mistaken for one when reading a template.
+const GlobalNamespace = "global"
+
+// templateData exposes an asset's own variables at the top level, for the
+// {{ .VERSION }} form assets already use, and the manifest's globals only
+// under their namespace. Globals are never merged into the top level: a
+// template must name where a value came from, so adding a global cannot
+// silently change what an existing asset resolves to.
+func templateData(globals, variables map[string]string) map[string]any {
+	data := make(map[string]any, len(variables)+1)
+	for key, value := range variables {
+		data[key] = value
+	}
+	// The namespace is always present, even when the manifest declares no
+	// globals, so an undefined reference reports the key the template asked
+	// for rather than a missing namespace.
+	data[GlobalNamespace] = globals
+	return data
+}
+
+func renderTemplate(kind, value string, data map[string]any) (string, error) {
 	templateValue, err := parseTemplate(kind, value)
 	if err != nil {
 		return "", err
 	}
 	var result bytes.Buffer
-	if err := templateValue.Execute(&result, variables); err != nil {
+	if err := templateValue.Execute(&result, data); err != nil {
 		return "", fmt.Errorf("%w %q: %w", ErrRenderTemplate, kind, err)
 	}
 	return result.String(), nil

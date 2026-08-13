@@ -135,6 +135,60 @@ func TestUpdateMakesLockStaleAndJSONDoesNotLeakQuery(t *testing.T) {
 	})
 }
 
+// TestGlobalVariablesAreSharedAndDefinedOnce covers the whole global-variable
+// contract from the command line. One --gset defines a value every asset can
+// render through the .global namespace; redefining it is refused because a
+// rebind would silently move every asset that references it, and changing it in
+// dac.toml deliberately makes those assets' locks stale.
+func TestGlobalVariablesAreSharedAndDefinedOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte(request.URL.Path))
+	}))
+	defer server.Close()
+
+	withinTempDir(t, func(directory string) {
+		runOK(t, "init")
+		// The same command may introduce a global and the artifact using it.
+		runOK(t, "add", "--gset", "VERSION=one", "--file", "first-{{.global.VERSION}}.bin",
+			"first", server.URL+"/first-{{.global.VERSION}}.bin")
+		runOK(t, "add", "--set", "FLAVOUR=beta", "--file", "second-{{.global.VERSION}}-{{.FLAVOUR}}.bin",
+			"second", server.URL+"/second-{{.global.VERSION}}.bin")
+		runOK(t, "lock", "--all")
+		assertFile(t, filepath.Join(directory, ".dac", "downloads", "first-one.bin"), []byte("/first-one.bin"))
+		assertFile(t, filepath.Join(directory, ".dac", "downloads", "second-one-beta.bin"), []byte("/second-one.bin"))
+
+		// A global is define-once from the CLI, on either command that writes
+		// desired state, and the refused edit must leave the manifest alone.
+		for _, args := range [][]string{
+			{"update", "first", "--gset", "VERSION=two"},
+			{"add", "--gset", "VERSION=two", "third", server.URL + "/third.bin"},
+		} {
+			_, stderr, code := run(args...)
+			if code != 2 || !strings.Contains(stderr, "global variable already exists") {
+				t.Fatalf("dac %s: code=%d stderr=%q", strings.Join(args, " "), code, stderr)
+			}
+		}
+		value, err := manifest.Load(filepath.Join(directory, "dac.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value.Globals["VERSION"] != "one" || len(value.Globals) != 1 || len(value.Files) != 2 {
+			t.Fatalf("refused global edits changed the manifest: %#v", value)
+		}
+		runOK(t, "pull")
+
+		// Editing the global is the deliberate path, and it moves both assets,
+		// so the lock recorded for each of them no longer describes desired state.
+		value.Globals["VERSION"] = "two"
+		if err := manifest.Write(filepath.Join(directory, "dac.toml"), value); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, code := run("pull"); code != 2 {
+			t.Fatalf("pull after global change code=%d, want stale configuration", code)
+		}
+	})
+}
+
 // TestCrossOriginRedirectStripsConfiguredHeaders proves the header policy at
 // the application boundary. A token supplied through an environment-backed
 // manifest header may authenticate the origin, but it must not follow a

@@ -24,8 +24,9 @@ const Version = 1
 // Manifest is the human-owned desired state. Maps are used only in memory;
 // writes sort their keys so committed files remain deterministic.
 type Manifest struct {
-	Version int              `toml:"version"`
-	Files   map[string]Asset `toml:"files"`
+	Version int               `toml:"version"`
+	Globals map[string]string `toml:"globals,omitempty"`
+	Files   map[string]Asset  `toml:"files"`
 }
 
 // Asset describes one remote artifact before its templates are rendered.
@@ -108,6 +109,17 @@ func Create(path string, value Manifest) error {
 func Validate(value Manifest) error {
 	if value.Version != Version {
 		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
+	}
+	// Globals are project-wide, so a bad one is not attributable to any single
+	// asset. They share the variable grammar because both are addressed by the
+	// same template identifiers.
+	for key, item := range value.Globals {
+		if !variableNamePattern.MatchString(key) {
+			return fault.NewConfigurationError(fmt.Errorf("%w %q", ErrInvalidGlobalName, key))
+		}
+		if !utf8.ValidString(item) {
+			return fault.NewConfigurationError(fmt.Errorf("%w %q: must be valid UTF-8", ErrInvalidGlobalValue, key))
+		}
 	}
 	for name, file := range value.Files {
 		if !ValidAssetName(name) {
