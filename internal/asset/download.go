@@ -358,53 +358,27 @@ func verifyExpectedDigest(assetName, expected, received string) error {
 // VerifyLocal hashes a regular managed file only when its size can match. A
 // symlink is intentionally untrusted: later replacement must not follow it.
 func VerifyLocal(downloads *os.Root, name, expected string, size int64) (bool, error) {
-	inspection, err := InspectLocal(downloads, name, expected, size)
-	return inspection.State == LocalVerified, err
-}
-
-// LocalState describes the on-disk side of one current lock entry.
-type LocalState string
-
-const (
-	LocalMissing  LocalState = "missing"
-	LocalInvalid  LocalState = "invalid"
-	LocalVerified LocalState = "verified"
-)
-
-// LocalInspection distinguishes absence from invalid bytes while sharing the
-// exact verification path used by pull and status.
-type LocalInspection struct {
-	State  LocalState
-	Reason string
-}
-
-// InspectLocal hashes a regular managed file only when its size can match. A
-// symlink is intentionally invalid because later replacement must not follow it.
-func InspectLocal(downloads *os.Root, name, expected string, size int64) (LocalInspection, error) {
 	info, err := downloads.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
-		return LocalInspection{State: LocalMissing, Reason: "download is missing"}, nil
+		return false, nil
 	}
 	if err != nil {
-		return LocalInspection{}, fault.NewFilesystemError(err)
+		return false, fault.NewFilesystemError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return LocalInspection{State: LocalInvalid, Reason: "download is not a regular file"}, nil
+		return false, nil
 	}
 	if info.Size() != size {
-		return LocalInspection{State: LocalInvalid, Reason: "download size does not match dac.lock"}, nil
+		return false, nil
 	}
 	file, err := downloads.Open(name)
 	if err != nil {
-		return LocalInspection{}, fault.NewFilesystemError(err)
+		return false, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Close() }()
 	digest, err := computeDigest(file)
 	if err != nil {
-		return LocalInspection{}, fault.NewFilesystemError(err)
+		return false, fault.NewFilesystemError(err)
 	}
-	if digest != expected {
-		return LocalInspection{State: LocalInvalid, Reason: "download digest does not match dac.lock"}, nil
-	}
-	return LocalInspection{State: LocalVerified}, nil
+	return digest == expected, nil
 }

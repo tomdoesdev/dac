@@ -29,42 +29,25 @@ func (downloads *Downloads) Close() error { return downloads.root.Close() }
 
 // OpenDownloads returns the managed directory, creating it when absent.
 func (paths Paths) OpenDownloads() (*Downloads, error) {
-	downloads, _, err := paths.openDownloads(true)
-	return downloads, err
-}
-
-// OpenDownloadsOptional returns the managed directory without creating it, and
-// reports whether it exists. This keeps observational commands free of
-// persistent filesystem side effects.
-func (paths Paths) OpenDownloadsOptional() (*Downloads, bool, error) {
-	return paths.openDownloads(false)
-}
-
-func (paths Paths) openDownloads(create bool) (*Downloads, bool, error) {
 	root, err := os.OpenRoot(paths.Root)
 	if err != nil {
-		return nil, false, fault.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
 	defer func() { _ = root.Close() }()
-	if create {
-		if err := root.MkdirAll(downloadsDir, 0o755); err != nil {
-			return nil, false, fault.NewFilesystemError(err)
-		}
+	if err := root.MkdirAll(downloadsDir, 0o755); err != nil {
+		return nil, fault.NewFilesystemError(err)
 	}
 	managed, err := root.OpenRoot(downloadsDir)
-	if errors.Is(err, fs.ErrNotExist) && !create {
-		return nil, false, nil
-	}
 	if err != nil {
-		return nil, false, fault.NewFilesystemError(err)
+		return nil, fault.NewFilesystemError(err)
 	}
-	return &Downloads{root: managed}, true, nil
+	return &Downloads{root: managed}, nil
 }
 
 // Prune removes files the previous accepted state referenced that the next one
 // does not. It reports what it could not remove rather than failing, because a
 // stale file is untidy but never makes the new state wrong. Entries dac never
-// tracked are left alone; status reports those separately.
+// tracked are left alone.
 func (downloads *Downloads) Prune(previous, retained []string) []string {
 	keep := make(map[string]bool, len(retained))
 	for _, name := range retained {
@@ -102,26 +85,6 @@ func (downloads *Downloads) Prune(previous, retained []string) []string {
 		}
 	}
 	return warnings
-}
-
-// Unreferenced lists directory entries that no accepted file claims, so a
-// caller can report them without deciding they are safe to delete.
-func (downloads *Downloads) Unreferenced(referenced []string) ([]string, error) {
-	claimed := make(map[string]bool, len(referenced))
-	for _, name := range referenced {
-		claimed[name] = true
-	}
-	entries, err := fs.ReadDir(downloads.root.FS(), ".")
-	if err != nil {
-		return nil, fault.NewFilesystemError(err)
-	}
-	var result []string
-	for _, entry := range entries {
-		if !claimed[entry.Name()] {
-			result = append(result, entry.Name())
-		}
-	}
-	return result, nil
 }
 
 // sync durably records directory changes so a crash cannot resurrect a file

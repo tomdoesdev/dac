@@ -9,7 +9,7 @@ installation lifecycle.
 ```sh
 dac init
 dac add artifact https://example.com/releases/artifact.ear
-dac lock
+dac pull --update-lockfile
 dac pull
 ```
 
@@ -26,9 +26,9 @@ Names never become paths. The separate `file` value must resolve to one safe
 filename directly inside `.dac/downloads/`.
 
 `dac.toml` is the human-edited desired state and `dac.lock` records the source
-resolution, SHA-256 digest, and size that `dac lock` explicitly accepted.
-`pull` never changes either trust decision; it only verifies or restores files
-under `.dac/downloads/`.
+resolution, SHA-256 digest, and size that `pull --update-lockfile` explicitly
+accepted. An ordinary `pull` never changes either trust decision; it only
+verifies or restores files under `.dac/downloads/`.
 
 ## Workflow
 
@@ -37,7 +37,7 @@ Use variables for versioned URLs and filenames:
 ```sh
 dac add --set VERSION=3.9.0 --file artifact.ear artifact \
   'https://example.com/artifact-{{.VERSION}}.ear'
-dac lock
+dac pull --update-lockfile
 ```
 
 A variable declared with `--set` belongs to one asset. A value several assets
@@ -61,12 +61,18 @@ existing global is an error on both `add` and `update`, since a silent rebind
 would move every asset that references it. Change one by editing `dac.toml`,
 which makes the affected assets' locks stale like any other source change.
 
-Changing a URL, filename, variable, header, pin, or transfer policy makes the
-lock stale. Follow with `dac lock <asset>` before `dac pull` can run again. A
-bare `dac lock` creates the initial lock from every manifest asset and fails if
-`dac.lock` already exists. Use one or more asset names for a targeted update,
-or `dac lock --all` to replace the entire lock file. A targeted lock requires an
-existing current lock for every asset it retains.
+Changing a URL, filename, variable, header, pin, or transfer policy makes that
+asset's lock entry stale. Run `dac pull <asset> --update-lockfile` to accept and
+install new upstream bytes for only that asset, or use a bare `dac pull
+--update-lockfile` to refresh every stale asset and remove lock-only entries.
+The same command creates `dac.lock` when it is absent. A scoped initial update
+creates a partial lock, so unrelated assets remain stale until they are updated.
+
+Both ordinary and updating pulls accept one or more asset names. A scoped pull
+validates, downloads, and reports only those assets; stale unselected entries
+and lock-only entries do not block it. Only a bare pull requires the complete
+lock to match the manifest exactly, and only a bare updating pull cleans up
+lock-only entries and their formerly managed downloads.
 
 An optional manifest pin limits the bytes lock is allowed to accept:
 
@@ -75,19 +81,14 @@ An optional manifest pin limits the bytes lock is allowed to accept:
 dac add --pin=sha256:... artifact https://example.com/artifact.ear
 
 # Or calculate a trust-on-first-use pin. This discards the downloaded bytes;
-# `dac lock` downloads independently before it records accepted bytes.
+# The updating pull downloads independently before it records accepted bytes.
 dac add --pin artifact https://example.com/artifact.ear
 ```
 
-`dac pull --offline` verifies local files without using the network. `dac pull
---force` downloads every locked artifact and still requires each digest to
-match. The flags cannot be combined.
-
-Use `dac status` to inspect desired, locked, and downloaded state without using
-the network. It reports assets as `stale`, `missing`, `invalid`, or `verified`,
-and reports lock-only assets and unreferenced download entries as `orphaned`.
-Status is observational and exits successfully for a valid report; use `dac
-pull --offline` when automation needs a failing verification gate.
+`dac pull --offline` verifies selected local files without using the network.
+`dac pull --force` downloads every selected locked artifact and still requires
+each current digest to match. The flags cannot be combined, and `--offline`
+also cannot be combined with `--update-lockfile`.
 
 `update` can change the complete desired source policy without editing TOML:
 
@@ -146,14 +147,15 @@ host that ignores or rejects the range serves the asset in one response, exactly
 as before, and nothing about the result differs — the digest and size recorded
 in `dac.lock` are of the assembled bytes either way.
 
-`lock` and `pull` transfer several assets at the same time, four by default.
-Use `--jobs` (`-j`) to choose another number between 1 and 16; `--jobs 1` gives
-a host exactly one request at a time. Concurrency is between assets only: one
-asset is still one ordered sequence of chunks on one connection, and the
-transfers never share a destination file. Whatever order they finish in, `dac`
-reports results, writes `dac.lock`, and reports a failure in the order the
-manifest declares. The first failure stops the transfers still running, and
-`lock` accepts either every selected asset or none of them.
+`pull` transfers several assets at the same time, four by default. Use `--jobs`
+(`-j`) to choose another number between 1 and 16; `--jobs 1` gives a host
+exactly one request at a time. Concurrency is between assets only: one asset is
+still one ordered sequence of chunks on one connection, and the transfers
+never share a destination file. Whatever order they finish in, `dac` reports
+results, writes `dac.lock` when requested, and reports a failure in manifest
+order. The first failure stops the transfers still running. When accepted state
+is changing, every selected download and `dac.lock` commit or roll back as one
+transaction.
 
 Response compression is not negotiated. Byte ranges, digests, and size limits
 are all expressed in the asset's own bytes, and a content encoding applied in
@@ -172,14 +174,14 @@ elsewhere inside the project, but cannot redirect a download outside it.
 ## Automation and support
 
 Use `--json` for versioned structured success on stdout and structured errors
-on stderr. Status JSON contains ordered `assets` and `orphans` arrays. `--quiet`
-suppresses human success messages and is intentionally incompatible with
-`--json`. Exit status `2` denotes invalid invocation or project configuration;
-other operational failures exit `1`.
+on stderr. `--quiet` suppresses human success messages and is intentionally
+incompatible with `--json`. Exit status `2` denotes invalid invocation or
+project configuration; other operational failures exit `1`.
 
 Lock format version 2 fingerprints the complete non-secret source policy. Lock
-version 1 is intentionally rejected by pull, status, and targeted lock; replace
-it explicitly with `dac lock --all`.
+version 1 and malformed or invalid lockfiles are intentionally rejected by
+pull, including `--update-lockfile`; repair or remove an invalid lockfile before
+rebuilding it with `dac pull --update-lockfile`.
 
 The MVP supports macOS, Linux, DragonFlyBSD, FreeBSD, NetBSD, OpenBSD, and
 Illumos, where the included project lock uses `flock(2)`. Other platforms build

@@ -12,7 +12,7 @@ func TestErrorConstruction(t *testing.T) {
 	err := NewIntegrityError(
 		cause,
 		WithAsset("tool"),
-		WithRecovery(Recovery{Command: "lock", Assets: []string{"tool"}}),
+		WithRecovery(Recovery{Command: "pull", Flags: []string{"--update-lockfile"}, Assets: []string{"tool"}}),
 		WithIntegrity("expected", "received"),
 	)
 
@@ -33,8 +33,8 @@ func TestErrorConstruction(t *testing.T) {
 		t.Errorf("asset = %q, want %q", operation.Asset(), "tool")
 	}
 	recovery := operation.Recovery()
-	if recovery.Command != "lock" || len(recovery.Assets) != 1 || recovery.Assets[0] != "tool" {
-		t.Errorf("recovery = %+v, want a lock of asset \"tool\"", recovery)
+	if recovery.Command != "pull" || len(recovery.Assets) != 1 || recovery.Assets[0] != "tool" {
+		t.Errorf("recovery = %+v, want a lockfile-updating pull of asset \"tool\"", recovery)
 	}
 	if operation.Expected() != "expected" || operation.Received() != "received" {
 		t.Errorf("integrity values = (%q, %q), want (%q, %q)", operation.Expected(), operation.Received(), "expected", "received")

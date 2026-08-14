@@ -30,11 +30,11 @@ func TestSanitizeErrorRemovesURLSecrets(t *testing.T) {
 // with a dash or contain shell metacharacters, so the renderer must quote them
 // rather than let a shell reinterpret them as options or syntax.
 func TestFormatRecoveryQuotesOpaqueNames(t *testing.T) {
-	targeted := fault.Recovery{Command: "lock", Assets: []string{"-scope/pkg'$`"}}
-	if got, want := formatRecovery(targeted), `run: dac lock -- '-scope/pkg'"'"'$`+"`'"; got != want {
+	targeted := fault.Recovery{Command: "pull", Flags: []string{"--update-lockfile"}, Assets: []string{"-scope/pkg'$`"}}
+	if got, want := formatRecovery(targeted), `run: dac pull --update-lockfile -- '-scope/pkg'"'"'$`+"`'"; got != want {
 		t.Fatalf("formatRecovery = %q, want %q", got, want)
 	}
-	if got, want := formatRecovery(fault.Recovery{Command: "lock", Flags: []string{"--all"}}), "run: dac lock --all"; got != want {
+	if got, want := formatRecovery(fault.Recovery{Command: "pull", Flags: []string{"--update-lockfile"}}), "run: dac pull --update-lockfile"; got != want {
 		t.Fatalf("formatRecovery = %q, want %q", got, want)
 	}
 	if got := formatRecovery(fault.Recovery{}); got != "" {
@@ -83,7 +83,7 @@ func TestSuccessWarningsReachHumanAndJSONOutputSafely(t *testing.T) {
 }
 
 // TestHumanOutputUsesSemanticColors verifies DAC consumes cli's public styling
-// API while keeping message content and non-status details unchanged.
+// API while keeping message content unchanged.
 func TestHumanOutputUsesSemanticColors(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("CLICOLOR_FORCE", "1")
@@ -93,17 +93,11 @@ func TestHumanOutputUsesSemanticColors(t *testing.T) {
 	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, []string{"check cache"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Status("", []Result{
-		{Name: "healthy", Status: "verified"},
-		{Name: "broken", Status: "invalid", Reason: "digest mismatch"},
-		{Name: "absent", Status: "missing"},
-	}, []Orphan{{Kind: "lock", Name: "old", Reason: "unused"}}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stdout.String(), "\x1b[32m") || !strings.Contains(stdout.String(), "\x1b[31m") || !strings.Contains(stdout.String(), "\x1b[33m") {
+	writer.Error(fault.NewIntegrityError(errors.New("digest mismatch")))
+	if !strings.Contains(stdout.String(), "\x1b[32m") {
 		t.Fatalf("semantic stdout = %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "\x1b[33mWarning:") || !strings.Contains(stderr.String(), "check cache") {
+	if !strings.Contains(stderr.String(), "\x1b[31mError:") || !strings.Contains(stderr.String(), "\x1b[33mWarning:") || !strings.Contains(stderr.String(), "check cache") {
 		t.Fatalf("semantic stderr = %q", stderr.String())
 	}
 }

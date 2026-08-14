@@ -10,13 +10,9 @@ import (
 var (
 	// ErrAssetAlreadyExists marks an add that would replace a manifest asset.
 	ErrAssetAlreadyExists = errors.New("asset already exists")
-	// ErrTargetedLockNeedsExisting marks an incomplete initial targeted lock.
-	ErrTargetedLockNeedsExisting = errors.New("targeted lock requires a complete existing dac.lock")
-	// ErrAllLockConflict marks --all combined with explicit asset names.
-	ErrAllLockConflict = errors.New("--all cannot be combined with asset names")
 	// ErrAssetNotFound marks a command selection absent from the manifest.
 	ErrAssetNotFound = errors.New("asset does not exist")
-	// ErrAssetSelectedMultipleTimes marks a duplicated targeted lock selection.
+	// ErrAssetSelectedMultipleTimes marks a duplicated pull selection.
 	ErrAssetSelectedMultipleTimes = errors.New("asset selected more than once")
 	// ErrPinRepeated marks more than one value supplied for --pin.
 	ErrPinRepeated = errors.New("--pin may be supplied only once")
@@ -26,6 +22,8 @@ var (
 	ErrInvalidJobs = fmt.Errorf("--jobs must be between 1 and %d", asset.MaxDownloadJobs)
 	// ErrOfflineForceConflict marks mutually exclusive pull modes.
 	ErrOfflineForceConflict = errors.New("--offline and --force cannot be combined")
+	// ErrOfflineUpdateConflict prevents a network-free pull from accepting new bytes.
+	ErrOfflineUpdateConflict = errors.New("--offline and --update-lockfile cannot be combined")
 	// ErrOfflineVerification marks local files that failed offline verification.
 	ErrOfflineVerification = errors.New("offline verification failed")
 	// ErrInvalidSet marks a --set value without the required key/value form.

@@ -30,14 +30,3 @@ func TestOpenDownloadsRejectsAnEscapingSymlink(t *testing.T) {
 		t.Fatalf("outside directory was modified: %v", entries)
 	}
 }
-
-func TestOpenDownloadsOptionalDoesNotCreateManagedDirectories(t *testing.T) {
-	directory := t.TempDir()
-	downloads, exists, err := (Paths{Root: directory}).OpenDownloadsOptional()
-	if err != nil || exists || downloads != nil {
-		t.Fatalf("OpenDownloadsOptional = %v, %v, %v; want absent", downloads, exists, err)
-	}
-	if _, err := os.Stat(filepath.Join(directory, ".dac")); !os.IsNotExist(err) {
-		t.Fatalf("observational open created .dac: %v", err)
-	}
-}

@@ -30,9 +30,7 @@ func Register(app *cli.App, dependencies Dependencies) {
 	app.MustAddCommand("init", &initCommand{runtime: runtime})
 	app.MustAddCommand("add <name> <url>", newAddCommand(runtime))
 	app.MustAddCommand("update <name>", newUpdateCommand(runtime))
-	app.MustAddCommand("lock [names...]", &lockCommand{runtime: runtime})
-	app.MustAddCommand("pull", &pullCommand{runtime: runtime})
-	app.MustAddCommand("status", &statusCommand{runtime: runtime})
+	app.MustAddCommand("pull [names...]", &pullCommand{runtime: runtime})
 }
 
 func (runtime *runtime) project() (project.Paths, error) {

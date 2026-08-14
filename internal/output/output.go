@@ -37,7 +37,6 @@ type Result struct {
 	File   string `json:"file,omitempty"`
 	Digest string `json:"digest,omitempty"`
 	Size   int64  `json:"size,omitempty"`
-	Reason string `json:"reason,omitempty"`
 	// Reported records that progress output already announced this asset, so
 	// the summary does not repeat it. WithDownloadProgress reports whether it
 	// printed; carrying the answer here keeps Success a function of its
@@ -45,20 +44,11 @@ type Result struct {
 	Reported bool `json:"-"`
 }
 
-// Orphan describes lock metadata or a download entry outside desired state.
-type Orphan struct {
-	Kind   string `json:"kind"`
-	Name   string `json:"name,omitempty"`
-	File   string `json:"file"`
-	Reason string `json:"reason"`
-}
-
 type successOutput struct {
 	Version  int      `json:"version"`
 	Command  string   `json:"command"`
 	Project  string   `json:"project"`
 	Assets   []Result `json:"assets,omitempty"`
-	Orphans  []Orphan `json:"orphans,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -147,40 +137,6 @@ func (writer *Writer) Success(command, root string, assets []Result, warnings []
 	return nil
 }
 
-// Status writes a complete observational report without turning unhealthy
-// states into command failures.
-func (writer *Writer) Status(root string, assets []Result, orphans []Orphan) error {
-	if writer.options.JSON {
-		return json.NewEncoder(writer.stdout).Encode(successOutput{Version: Version, Command: "status", Project: root, Assets: assets, Orphans: orphans})
-	}
-	if writer.options.Quiet {
-		return nil
-	}
-	for _, item := range assets {
-		if _, err := fmt.Fprintf(writer.stdout, "%s %s", writer.status(item.Status), item.Name); err != nil {
-			return err
-		}
-		if item.Reason != "" {
-			if _, err := fmt.Fprintf(writer.stdout, ": %s", item.Reason); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(writer.stdout); err != nil {
-			return err
-		}
-	}
-	for _, orphan := range orphans {
-		label := orphan.Name
-		if orphan.Kind == "file" {
-			label = fmt.Sprintf("file %q", orphan.File)
-		}
-		if _, err := fmt.Fprintf(writer.stdout, "%s %s: %s\n", writer.stdoutStyler.Warning("orphaned"), label, orphan.Reason); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Error writes an invocation error in the selected output mode. Choosing the
 // process exit status from it is the caller's decision, not the writer's.
 func (writer *Writer) Error(err error) {
@@ -234,19 +190,4 @@ func formatRecovery(recovery fault.Recovery) string {
 // shellQuote returns one POSIX shell word that reproduces value exactly.
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-// status maps DAC's observational states onto cli's semantic roles without
-// changing the stable status strings used by JSON and command logic.
-func (writer *Writer) status(status string) string {
-	switch status {
-	case "verified":
-		return writer.stdoutStyler.Success(status)
-	case "invalid":
-		return writer.stdoutStyler.Error(status)
-	case "missing", "stale":
-		return writer.stdoutStyler.Warning(status)
-	default:
-		return status
-	}
 }

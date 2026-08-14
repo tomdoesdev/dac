@@ -8,21 +8,21 @@ import (
 	"github.com/tomdoesdev/dac/internal/manifest"
 )
 
-// TestRelockRecoveryCarriesNameStructurally keeps an opaque asset name out of
+// TestUpdateRecoveryCarriesNameStructurally keeps an opaque asset name out of
 // any command text this package builds. It names the asset as data so the
 // renderer can quote it; rendering it here would put shell syntax in the
 // package that owns accepted state.
-func TestRelockRecoveryCarriesNameStructurally(t *testing.T) {
+func TestUpdateRecoveryCarriesNameStructurally(t *testing.T) {
 	const name = "-scope/pkg'$`"
-	recovery := relockRecovery(name)
-	if recovery.Command != "lock" || len(recovery.Flags) != 0 {
-		t.Fatalf("targeted recovery = %+v, want a bare lock", recovery)
+	recovery := UpdateRecovery(name)
+	if recovery.Command != "pull" || len(recovery.Flags) != 1 || recovery.Flags[0] != "--update-lockfile" {
+		t.Fatalf("targeted recovery = %+v, want pull --update-lockfile", recovery)
 	}
 	if len(recovery.Assets) != 1 || recovery.Assets[0] != name {
 		t.Fatalf("recovery assets = %q, want the name verbatim", recovery.Assets)
 	}
-	if whole := relockRecovery(""); whole.Command != "lock" || len(whole.Assets) != 0 || len(whole.Flags) != 1 {
-		t.Fatalf("whole-lock recovery = %+v, want lock --all", whole)
+	if whole := UpdateRecovery(); whole.Command != "pull" || len(whole.Assets) != 0 || len(whole.Flags) != 1 {
+		t.Fatalf("whole-lock recovery = %+v, want pull --update-lockfile", whole)
 	}
 }
 

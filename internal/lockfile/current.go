@@ -8,7 +8,7 @@ import (
 	"github.com/tomdoesdev/dac/internal/manifest"
 )
 
-// CurrentState is the manifest-to-lock state used by pull, lock, and status.
+// CurrentState is the manifest-to-lock state used by pull.
 type CurrentState string
 
 const (
@@ -21,7 +21,6 @@ type EntryState struct {
 	Resolved manifest.ResolvedAsset
 	Locked   Asset
 	State    CurrentState
-	Reason   string
 }
 
 // Evaluation describes every manifest asset plus lock-only orphan entries.
@@ -41,9 +40,9 @@ func Evaluate(resolved manifest.Resolution, lock Lockfile) (Evaluation, error) {
 		locked, exists := lock.Files[file.Name]
 		entry := EntryState{Resolved: file, Locked: locked, State: StateCurrent}
 		if !exists {
-			entry.State, entry.Reason = StateStale, "asset is not locked"
+			entry.State = StateStale
 		} else if err := validateEntry(file, locked); err != nil {
-			entry.State, entry.Reason = StateStale, "source configuration changed"
+			entry.State = StateStale
 		}
 		result.Entries = append(result.Entries, entry)
 	}
@@ -68,21 +67,29 @@ func ValidateCurrent(resolved manifest.Resolution, lock Lockfile) error {
 	}
 	for _, entry := range evaluation.Entries {
 		if entry.State != StateCurrent {
-			return staleError(entry.Resolved.Name)
+			return staleError("")
 		}
 	}
 	return nil
 }
 
-// ValidateRetained ensures entries outside a targeted lock remain current.
-// Entries selected for replacement are intentionally excluded from this check.
-func ValidateRetained(resolved manifest.Resolution, lock Lockfile, replacing map[string]bool) error {
-	evaluation, err := Evaluate(resolved, lock)
-	if err != nil {
-		return err
+// ValidateSelected confirms that selected entries are current. A complete
+// selection additionally owns orphan cleanup; a named scope deliberately
+// ignores lock state outside the assets the caller requested.
+func ValidateSelected(evaluation Evaluation, selected map[string]bool, complete bool) error {
+	if complete {
+		if len(evaluation.Orphans) > 0 {
+			return staleError("")
+		}
+		for _, entry := range evaluation.Entries {
+			if entry.State != StateCurrent {
+				return staleError("")
+			}
+		}
+		return nil
 	}
 	for _, entry := range evaluation.Entries {
-		if replacing[entry.Resolved.Name] {
+		if !selected[entry.Resolved.Name] {
 			continue
 		}
 		if entry.State != StateCurrent {
@@ -111,20 +118,15 @@ func validateEntry(file manifest.ResolvedAsset, locked Asset) error {
 }
 
 func staleError(name string) error {
-	return fault.NewConfigurationError(ErrStale, fault.WithAsset(name), fault.WithRecovery(relockRecovery(name)))
-}
-
-// relockRecovery selects the narrowest lock that restores currentness. The
-// asset name stays structured data; quoting it into a shell word is the
-// renderer's problem, not this package's.
-func relockRecovery(name string) fault.Recovery {
-	if name == "" {
-		return lockAllRecovery()
+	recovery := UpdateRecovery()
+	if name != "" {
+		recovery = UpdateRecovery(name)
 	}
-	return fault.Recovery{Command: "lock", Assets: []string{name}}
+	return fault.NewConfigurationError(ErrStale, fault.WithAsset(name), fault.WithRecovery(recovery))
 }
 
-// lockAllRecovery rebuilds accepted state from every manifest asset.
-func lockAllRecovery() fault.Recovery {
-	return fault.Recovery{Command: "lock", Flags: []string{"--all"}}
+// UpdateRecovery selects the narrowest pull that can refresh accepted state.
+// Asset names stay structured data so the output boundary can quote them.
+func UpdateRecovery(names ...string) fault.Recovery {
+	return fault.Recovery{Command: "pull", Flags: []string{"--update-lockfile"}, Assets: names}
 }

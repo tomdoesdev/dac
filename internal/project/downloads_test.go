@@ -3,7 +3,6 @@ package project
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 )
 
@@ -33,7 +32,7 @@ func present(t *testing.T, downloads *Downloads, name string) bool {
 // TestPruneRemovesOnlyPreviouslyAcceptedFiles pins the rule that made this
 // worth owning here: prune is allowed to delete a file the previous accepted
 // state claimed and the next one does not, and nothing else. An entry dac
-// never tracked is reported by status, not silently removed.
+// never tracked remains untouched.
 func TestPruneRemovesOnlyPreviouslyAcceptedFiles(t *testing.T) {
 	downloads := openTestDownloads(t, "obsolete.bin", "retained.bin", "untracked.bin")
 
@@ -78,35 +77,5 @@ func TestPruneToleratesRepeatedNames(t *testing.T) {
 	}
 	if present(t, downloads, "shared.bin") {
 		t.Error("shared download survived prune")
-	}
-}
-
-// TestUnreferencedListsOnlyUnclaimedEntries backs status's orphan report.
-func TestUnreferencedListsOnlyUnclaimedEntries(t *testing.T) {
-	downloads := openTestDownloads(t, "claimed.bin", "stray.bin", "another.bin")
-
-	got, err := downloads.Unreferenced([]string{"claimed.bin"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	slices.Sort(got)
-	if want := []string{"another.bin", "stray.bin"}; !slices.Equal(got, want) {
-		t.Fatalf("Unreferenced = %q, want %q", got, want)
-	}
-}
-
-// TestOpenDownloadsOptionalDoesNotCreate keeps status free of side effects on a
-// project that has never downloaded anything.
-func TestOpenDownloadsOptionalDoesNotCreate(t *testing.T) {
-	paths := Paths{Root: t.TempDir()}
-	downloads, exists, err := paths.OpenDownloadsOptional()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exists || downloads != nil {
-		t.Fatalf("OpenDownloadsOptional reported exists=%v on an empty project", exists)
-	}
-	if _, err := os.Stat(filepath.Join(paths.Root, downloadsDir)); !os.IsNotExist(err) {
-		t.Fatalf("OpenDownloadsOptional created the managed directory: %v", err)
 	}
 }

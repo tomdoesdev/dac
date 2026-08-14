@@ -49,7 +49,7 @@ func (value Lockfile) ResolvedFiles() []string {
 func Load(path string) (Lockfile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithRecovery(lockAllRecovery()))
+		return Lockfile{}, fault.NewConfigurationError(ErrNotFound, fault.WithRecovery(UpdateRecovery()))
 	}
 	if err != nil {
 		return Lockfile{}, fault.NewFilesystemError(err)
@@ -115,7 +115,7 @@ func Normalize(value Lockfile) (Lockfile, error) {
 // verification ambiguous. It does not modify value.
 func Validate(value Lockfile) error {
 	if value.Version != Version {
-		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version), fault.WithRecovery(lockAllRecovery()))
+		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	if value.Files == nil {
 		return fault.NewConfigurationError(ErrMissingFiles)
