@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -71,11 +72,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		resolved, err := manifest.Resolve(value)
-		if err != nil {
-			return err
-		}
-		selection, err := selectPullAssets(command.Names, resolved)
+		resolved, selection, err := selectPullAssets(command.Names, value)
 		if err != nil {
 			return err
 		}
@@ -116,7 +113,7 @@ func (command *pullCommand) Run(ctx context.Context) error {
 func (command *pullCommand) pullCurrent(ctx context.Context, paths project.Paths, downloads *project.Downloads, assets []manifest.ResolvedAsset, locked lockfile.Lockfile) error {
 	// Deciding what to download is a question about local state alone, so it
 	// is answered for every asset before the first request. That keeps the
-	// batch, and the progress line describing it, honest about how much work
+	// batch, and the progress bars describing it, honest about how much work
 	// is left, and leaves the transfers as the only concurrent step.
 	results := make([]output.Result, 0, len(assets))
 	var pending []pendingPull
@@ -153,8 +150,8 @@ func (command *pullCommand) pullCurrent(ctx context.Context, paths project.Paths
 	}
 	err := command.runtime.Output.WithDownloads(ctx, items, func(ctx context.Context, group *output.DownloadGroup) error {
 		return downloadEach(ctx, command.Jobs.limit(), pending, func(ctx context.Context, item *pendingPull) error {
-			reported, err := group.Run(ctx, item.source, func(ctx context.Context) error {
-				return command.install(ctx, downloads.Root(), item)
+			reported, err := group.Run(ctx, item.source, func(ctx context.Context, progress output.DownloadProgress) error {
+				return command.install(ctx, downloads.Root(), item, progress)
 			})
 			item.reported = reported
 			return err
@@ -226,9 +223,11 @@ func (command *pullCommand) pullUpdating(ctx context.Context, paths project.Path
 	defer transaction.Discard()
 	downloadErr := command.runtime.Output.WithDownloads(ctx, items, func(ctx context.Context, group *output.DownloadGroup) error {
 		return downloadEach(ctx, command.Jobs.limit(), pending, func(ctx context.Context, item *pendingPull) error {
-			reported, err := group.Run(ctx, item.source, func(ctx context.Context) error {
+			reported, err := group.Run(ctx, item.source, func(ctx context.Context, progress output.DownloadProgress) error {
 				var transferErr error
-				item.download, transferErr = command.runtime.Downloader.Download(ctx, downloads.Root(), item.request, item.expected)
+				request := item.request
+				request.Progress = progress
+				item.download, transferErr = command.runtime.Downloader.Download(ctx, downloads.Root(), request, item.expected)
 				return transferErr
 			})
 			item.reported = reported
@@ -284,33 +283,40 @@ func loadPullLock(paths project.Paths) (lockfile.Lockfile, bool, error) {
 	return value, true, err
 }
 
-// selectPullAssets validates opaque asset IDs and returns them in manifest
-// order so concurrency never makes result or commit ordering nondeterministic.
-func selectPullAssets(names []string, resolved manifest.Resolution) (pullSelection, error) {
-	selected := make(map[string]bool, resolved.Len())
+// selectPullAssets validates opaque asset IDs before resolution so a scoped
+// pull is not blocked by an unrelated asset that still awaits a variable.
+func selectPullAssets(names []string, value manifest.Manifest) (manifest.Resolution, pullSelection, error) {
+	selected := make(map[string]bool, len(value.Files))
 	complete := len(names) == 0
 	if complete {
-		for _, item := range resolved.All() {
-			selected[item.Name] = true
+		for name := range value.Files {
+			selected[name] = true
 		}
 	} else {
 		for _, name := range names {
-			if !resolved.Has(name) {
-				return pullSelection{}, fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(name))
+			if _, exists := value.Files[name]; !exists {
+				return manifest.Resolution{}, pullSelection{}, fault.NewConfigurationError(ErrAssetNotFound, fault.WithAsset(name))
 			}
 			if selected[name] {
-				return pullSelection{}, fault.NewConfigurationError(ErrAssetSelectedMultipleTimes, fault.WithAsset(name))
+				return manifest.Resolution{}, pullSelection{}, fault.NewConfigurationError(ErrAssetSelectedMultipleTimes, fault.WithAsset(name))
 			}
 			selected[name] = true
 		}
 	}
+	selectedNames := make([]string, 0, len(selected))
+	for name := range selected {
+		selectedNames = append(selectedNames, name)
+	}
+	slices.Sort(selectedNames)
+	resolved, err := manifest.ResolveSelected(value, selectedNames)
+	if err != nil {
+		return manifest.Resolution{}, pullSelection{}, err
+	}
 	assets := make([]manifest.ResolvedAsset, 0, len(selected))
 	for _, item := range resolved.All() {
-		if selected[item.Name] {
-			assets = append(assets, item)
-		}
+		assets = append(assets, item)
 	}
-	return pullSelection{assets: assets, names: selected, complete: complete}, nil
+	return resolved, pullSelection{assets: assets, names: selected, complete: complete}, nil
 }
 
 // recoveryNames keeps a bare pull's repair bare while carrying an explicit
@@ -343,8 +349,10 @@ func pullNeedsLockUpdate(evaluation lockfile.Evaluation, selection pullSelection
 // install replaces one managed file with bytes that match the accepted digest.
 // Every asset stages beside its own destination, so installing one download
 // never observes another in progress.
-func (command *pullCommand) install(ctx context.Context, downloads *os.Root, item *pendingPull) error {
-	download, err := command.runtime.Downloader.Download(ctx, downloads, item.request, item.expected)
+func (command *pullCommand) install(ctx context.Context, downloads *os.Root, item *pendingPull, progress output.DownloadProgress) error {
+	request := item.request
+	request.Progress = progress
+	download, err := command.runtime.Downloader.Download(ctx, downloads, request, item.expected)
 	if err != nil {
 		return err
 	}

@@ -29,10 +29,14 @@ var (
 	ErrUnsafeResolvedFile = errors.New("rendered file must be one safe filename")
 	// ErrResolvedFileConflict marks two assets that resolve to the same destination.
 	ErrResolvedFileConflict = errors.New("resolved file conflicts with another asset")
+	// ErrInvalidTemplate marks syntax outside dac's direct variable placeholders.
+	ErrInvalidTemplate = errors.New("invalid template; use {{.LOCAL}} or {{$.GLOBAL}}")
 	// ErrRenderTemplate marks a failure while executing a manifest template.
 	ErrRenderTemplate = errors.New("failed to render template")
+	// ErrVariableUnset marks a referenced value that has not been assigned yet.
+	ErrVariableUnset = errors.New("template variable is not set")
 	// ErrInvalidResolvedURL marks a rendered URL unsafe for requests or persistence.
 	ErrInvalidResolvedURL = errors.New("rendered URL must be an absolute HTTP(S) URL without userinfo or fragment")
 	// ErrCannotInferFile marks a URL without a safe final path segment.
-	ErrCannotInferFile = errors.New("cannot infer a safe filename from URL; pass --file")
+	ErrCannotInferFile = errors.New("URL final path segment must be a static safe filename")
 )

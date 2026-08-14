@@ -65,6 +65,26 @@ func TestDownloadEachReportsTheFailureThatStoppedIt(t *testing.T) {
 	}
 }
 
+// TestDownloadEachReportsParentCancellationBeforeDispatch covers the narrow
+// signal race before the first HTTP request starts. The command must still fail
+// as cancelled, rather than returning success because no worker produced an
+// error of its own.
+func TestDownloadEachReportsParentCancellationBeforeDispatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := downloadEach(ctx, 2, []int{1, 2}, func(context.Context, *int) error {
+		called = true
+		return nil
+	})
+	if called {
+		t.Fatal("a transfer started after parent cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+}
+
 // TestDownloadEachHandsEachTransferItsOwnItem pins the contract the commands
 // depend on to assemble ordered results without locks: a transfer records its
 // outcome on the element it was given, in the caller's slice.

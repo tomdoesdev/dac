@@ -1,10 +1,7 @@
 package command
 
 import (
-	"context"
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
@@ -28,8 +25,8 @@ type runtime struct{ Dependencies }
 func Register(app *cli.App, dependencies Dependencies) {
 	runtime := &runtime{Dependencies: dependencies}
 	app.MustAddCommand("init", &initCommand{runtime: runtime})
-	app.MustAddCommand("add <name> <url>", newAddCommand(runtime))
-	app.MustAddCommand("update <name>", newUpdateCommand(runtime))
+	app.MustAddCommand("add <urls...>", newAddCommand(runtime))
+	app.MustAddCommand("update [name]", newUpdateCommand(runtime))
 	app.MustAddCommand("pull [names...]", &pullCommand{runtime: runtime})
 }
 
@@ -41,153 +38,61 @@ func (runtime *runtime) project() (project.Paths, error) {
 	return project.Discover(directory)
 }
 
-// calculatePin drives the trust-on-first-use download with dac's progress
-// presentation. The retrieve-and-discard protocol itself belongs to asset.
-func (runtime *runtime) calculatePin(ctx context.Context, paths project.Paths, resolved manifest.ResolvedAsset) (string, error) {
-	downloads, err := paths.OpenDownloads()
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = downloads.Close() }()
-	var digest string
-	_, err = runtime.Output.WithDownloadProgress(ctx, resolved.ResolvedFile, resolved.ResolvedURL, func(ctx context.Context) error {
-		var digestErr error
-		digest, digestErr = runtime.Downloader.CalculateDigest(ctx, downloads.Root(), assetRequest(resolved))
-		return digestErr
-	})
-	if err != nil {
-		return "", err
-	}
-	return digest, nil
-}
-
 func assetRequest(resolved manifest.ResolvedAsset) asset.Request {
 	return asset.Request{Name: resolved.Name, URL: resolved.ResolvedURL, File: resolved.ResolvedFile, Headers: resolved.Headers, Policy: resolved.Transfer}
 }
 
-// assignments parses repeated NAME=VALUE options into the spelling the user
-// supplied. identity maps a name onto the key that decides duplication, which
-// is exact for manifest variables and case-insensitive for HTTP headers.
-func assignments(values []string, identity func(string) string, malformed, duplicate error) (map[string]string, error) {
+// assignments parses repeated NAME=VALUE options without allowing a later
+// spelling to silently replace an earlier value in the same invocation.
+func assignments(values []string, malformed, duplicate error) (map[string]string, error) {
 	result := make(map[string]string, len(values))
-	seen := make(map[string]bool, len(values))
 	for _, value := range values {
 		name, item, found := strings.Cut(value, "=")
 		if !found || name == "" {
 			return nil, malformed
 		}
-		key := identity(name)
-		if seen[key] {
+		if _, exists := result[name]; exists {
 			return nil, fmt.Errorf("%w %q", duplicate, name)
 		}
-		seen[key] = true
 		result[name] = item
 	}
 	return result, nil
 }
 
-// names parses repeated bare-name options, mapping each duplication key to the
-// spelling the user supplied so errors can quote their input back to them.
-func names(values []string, identity func(string) string, duplicate error) (map[string]string, error) {
-	result := make(map[string]string, len(values))
-	for _, value := range values {
-		key := identity(value)
-		if _, exists := result[key]; exists {
-			return nil, fmt.Errorf("%w %q", duplicate, value)
-		}
-		result[key] = value
-	}
-	return result, nil
+// scopedVariableAssignments keeps one flag's asset and project destinations
+// separate after parsing so commands never reinterpret the $. prefix at runtime.
+type scopedVariableAssignments struct {
+	asset   map[string]string
+	globals map[string]string
 }
 
-// exactly is the duplication rule for names compared byte for byte.
-func exactly(name string) string { return name }
-
-// parseSets validates repeated KEY=VALUE flags without allowing a later flag
-// to silently override an earlier one.
-func parseSets(values []string) (map[string]string, error) {
-	return parseVariableAssignments(values, ErrInvalidSet, ErrDuplicateSet, manifest.ErrInvalidVariableName)
+// parseSets validates assignments and uses the explicit $. prefix to route
+// project globals without giving --set a second, parallel flag grammar.
+func parseSets(values []string) (scopedVariableAssignments, error) {
+	return parseScopedVariableAssignments(values, ErrInvalidSet, ErrDuplicateSet)
 }
 
-// parseGlobalSets validates --gset with the same grammar as --set; only the
-// scope the assignments land in differs.
-func parseGlobalSets(values []string) (map[string]string, error) {
-	return parseVariableAssignments(values, ErrInvalidGset, ErrDuplicateGset, manifest.ErrInvalidGlobalName)
-}
-
-func parseVariableAssignments(values []string, malformed, duplicate, invalidName error) (map[string]string, error) {
-	result, err := assignments(values, exactly, malformed, duplicate)
+// parseScopedVariableAssignments validates names after removing only the
+// documented $. prefix; every other spelling remains an asset-local name.
+func parseScopedVariableAssignments(values []string, malformed, duplicate error) (scopedVariableAssignments, error) {
+	result, err := assignments(values, malformed, duplicate)
 	if err != nil {
-		return nil, err
+		return scopedVariableAssignments{}, err
 	}
-	for key := range result {
-		if !manifest.ValidVariableName(key) {
-			return nil, fmt.Errorf("%w %q", invalidName, key)
+	parsed := scopedVariableAssignments{asset: make(map[string]string), globals: make(map[string]string)}
+	for name, value := range result {
+		if strings.HasPrefix(name, "$.") {
+			key := strings.TrimPrefix(name, "$.")
+			if !manifest.ValidVariableName(key) {
+				return scopedVariableAssignments{}, fmt.Errorf("%w %q", manifest.ErrInvalidGlobalName, key)
+			}
+			parsed.globals[key] = value
+			continue
 		}
-	}
-	return result, nil
-}
-
-// applyGlobals adds project-wide variables to the manifest. Globals are
-// define-once from the command line: silently rebinding one would change what
-// every asset referencing it resolves to, so a redefinition is rejected and the
-// operator edits dac.toml deliberately instead.
-func applyGlobals(value *manifest.Manifest, globals map[string]string) error {
-	if len(globals) == 0 {
-		return nil
-	}
-	if value.Globals == nil {
-		value.Globals = make(map[string]string, len(globals))
-	}
-	// Sorted so one command defining several conflicting globals always names
-	// the same key back to the operator.
-	for _, key := range slices.Sorted(maps.Keys(globals)) {
-		if _, exists := value.Globals[key]; exists {
-			return fault.NewConfigurationError(fmt.Errorf("%w %q", ErrGlobalAlreadyExists, key))
+		if !manifest.ValidVariableName(name) {
+			return scopedVariableAssignments{}, fmt.Errorf("%w %q", manifest.ErrInvalidVariableName, name)
 		}
-		value.Globals[key] = globals[key]
+		parsed.asset[name] = value
 	}
-	return nil
-}
-
-// parseHeaders preserves user-facing spelling while enforcing HTTP's
-// case-insensitive header identity.
-func parseHeaders(values []string) (map[string]string, error) {
-	result, err := assignments(values, asset.HeaderIdentity, ErrHeaderFormat, ErrDuplicateHeader)
-	if err != nil {
-		return nil, err
-	}
-	if err := asset.ValidateHeaders(result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// parseVariableNames validates the removal half of update's set algebra.
-func parseVariableNames(values []string) (map[string]string, error) {
-	result, err := names(values, exactly, ErrDuplicateSet)
-	if err != nil {
-		return nil, err
-	}
-	for key := range result {
-		if !manifest.ValidVariableName(key) {
-			return nil, fmt.Errorf("%w %q", manifest.ErrInvalidVariableName, key)
-		}
-	}
-	return result, nil
-}
-
-// parseHeaderNames returns normalized lookup keys and original spellings for
-// useful errors when update removes configured headers.
-func parseHeaderNames(values []string) (map[string]string, error) {
-	result, err := names(values, asset.HeaderIdentity, ErrDuplicateHeader)
-	if err != nil {
-		return nil, err
-	}
-	for _, spelling := range result {
-		if err := asset.ValidateHeaderName(spelling); err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
+	return parsed, nil
 }

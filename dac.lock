@@ -18,7 +18,7 @@
     "test": {
       "resolved_url": "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore",
       "resolved_file": "Go.gitignore",
-      "configuration_digest": "sha256:19d1360d36e39a1ed32a8b2094d0d9a36a46085176d65756cf4d702329016b10",
+      "configuration_digest": "sha256:9f1ed39cb7b411b5198bda8ff8084aa3d5765347a1db4f68f71fb9ce0276fb31",
       "digest": "sha256:63a6bdc727e45c5811e6a6d664205d2a07948f03881839831c2fa92434509da2",
       "size": 559
     }

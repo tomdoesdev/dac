@@ -8,17 +8,14 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/tomdoesdev/kit/cli"
 )
 
 // TestDownloadGroupAnnouncesEveryConcurrentDownloadOnItsOwnLine covers the
-// contract that makes concurrent transfers presentable: one progress line
-// describes the batch, each finished download leaves a complete record of its
-// own, and no record is interleaved with the animation sharing that line.
+// contract that makes concurrent transfers presentable: mpb gives every active
+// transfer its own bar and leaves each completion on a distinct line.
 func TestDownloadGroupAnnouncesEveryConcurrentDownloadOnItsOwnLine(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	writer := New(&Options{}, stdout, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
+	writer := New(&Options{}, stdout, stderr, withProgress(progressAlways, time.Millisecond))
 	pending := []Download{
 		{File: "first.bin", URL: "https://first.example.com/private/first.bin?token=secret"},
 		{File: "second.bin", URL: "https://second.example.com/second.bin"},
@@ -33,7 +30,12 @@ func TestDownloadGroupAnnouncesEveryConcurrentDownloadOnItsOwnLine(t *testing.T)
 			transfers.Add(1)
 			go func() {
 				defer transfers.Done()
-				announced, runErr := group.Run(ctx, item, func(context.Context) error { return nil })
+				announced, runErr := group.Run(ctx, item, func(_ context.Context, progress DownloadProgress) error {
+					progress(1024, 2048)
+					time.Sleep(10 * time.Millisecond)
+					progress(2048, 2048)
+					return nil
+				})
 				mutex.Lock()
 				defer mutex.Unlock()
 				reported[item.File] = announced && runErr == nil
@@ -47,20 +49,47 @@ func TestDownloadGroupAnnouncesEveryConcurrentDownloadOnItsOwnLine(t *testing.T)
 	}
 
 	progress := stderr.String()
-	if !strings.Contains(progress, "Downloading 3 files…") {
-		t.Fatalf("batch progress line missing: %q", progress)
-	}
 	for _, item := range pending {
 		if !reported[item.File] {
 			t.Fatalf("%s did not report that it announced itself", item.File)
 		}
-		record := "\r\x1b[2K✔ " + item.File + " downloaded from "
+		record := "✔  " + item.File
 		if !strings.Contains(progress, record) {
-			t.Fatalf("record for %s missing or not on a cleared line: %q", item.File, progress)
+			t.Fatalf("record for %s missing: %q", item.File, progress)
 		}
 	}
 	if strings.Contains(progress, "private") || strings.Contains(progress, "secret") {
 		t.Fatalf("progress leaked source details: %q", progress)
+	}
+	type columns struct {
+		file, host, bar, sizeSeparator, percentage int
+	}
+	var aligned *columns
+	for _, item := range pending {
+		var completedLine string
+		for _, line := range strings.Split(progress, "\n") {
+			if strings.Contains(line, "✔  "+item.File) {
+				completedLine = line
+				break
+			}
+		}
+		if completedLine == "" {
+			t.Fatalf("completed row for %s missing: %q", item.File, progress)
+		}
+		positions := columns{
+			file:          strings.Index(completedLine, item.File),
+			host:          strings.Index(completedLine, downloadHostname(item.URL)),
+			bar:           strings.Index(completedLine, "["),
+			sizeSeparator: strings.Index(completedLine, "/"),
+			percentage:    strings.Index(completedLine, "%"),
+		}
+		if aligned == nil {
+			aligned = &positions
+			continue
+		}
+		if positions != *aligned {
+			t.Fatalf("columns for %s = %+v, want %+v in %q", item.File, positions, *aligned, completedLine)
+		}
 	}
 	// A record always ends its own line, so a frame drawn beside it can never
 	// be mistaken for part of a permanent one.
@@ -71,22 +100,25 @@ func TestDownloadGroupAnnouncesEveryConcurrentDownloadOnItsOwnLine(t *testing.T)
 	}
 }
 
-// TestFailedConcurrentDownloadAnnouncesNothing keeps a batch honest about what
-// arrived: a transfer that failed leaves no record, while the ones beside it
-// keep theirs.
-func TestFailedConcurrentDownloadAnnouncesNothing(t *testing.T) {
+// TestFailedConcurrentDownloadDoesNotAnnounceSuccess keeps a batch honest about each
+// transfer: a completed peer may retain its record, but the failed bar must not
+// be converted into a success by mpb's terminal abort state.
+func TestFailedConcurrentDownloadDoesNotAnnounceSuccess(t *testing.T) {
 	stderr := &bytes.Buffer{}
-	writer := New(&Options{}, &bytes.Buffer{}, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
+	writer := New(&Options{}, &bytes.Buffer{}, stderr, withProgress(progressAlways, time.Millisecond))
 	pending := []Download{
 		{File: "good.bin", URL: "https://example.com/good.bin"},
 		{File: "bad.bin", URL: "https://example.com/bad.bin"},
 	}
 	want := errors.New("download failed")
 	err := writer.WithDownloads(context.Background(), pending, func(ctx context.Context, group *DownloadGroup) error {
-		if _, err := group.Run(ctx, pending[0], func(context.Context) error { return nil }); err != nil {
+		if _, err := group.Run(ctx, pending[0], func(_ context.Context, progress DownloadProgress) error {
+			progress(4, 4)
+			return nil
+		}); err != nil {
 			return err
 		}
-		reported, err := group.Run(ctx, pending[1], func(context.Context) error { return want })
+		reported, err := group.Run(ctx, pending[1], func(context.Context, DownloadProgress) error { return want })
 		if reported {
 			t.Error("a failed download claimed to have announced itself")
 		}
@@ -96,11 +128,49 @@ func TestFailedConcurrentDownloadAnnouncesNothing(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, want)
 	}
 	progress := stderr.String()
-	if !strings.Contains(progress, "✔ good.bin") || strings.Contains(progress, "bad.bin downloaded") {
+	// The completed peer may or may not have reached a refresh before the
+	// batch shuts down; only the failed transfer's absence is deterministic.
+	if strings.Contains(progress, "✔  bad.bin") {
 		t.Fatalf("stderr = %q", progress)
 	}
-	if !strings.HasSuffix(progress, "\r\x1b[2K") {
-		t.Fatalf("progress line survived a failed batch: %q", progress)
+}
+
+// TestDownloadGroupCancellationStopsOperationAndRenderer verifies that the
+// same context controls both sides of an interactive transfer. Returning from
+// WithDownloads means mpb has joined its renderer goroutines, so a signal-
+// derived cancellation cannot leave terminal activity running in the process.
+func TestDownloadGroupCancellationStopsOperationAndRenderer(t *testing.T) {
+	stderr := &bytes.Buffer{}
+	writer := New(&Options{}, &bytes.Buffer{}, stderr, withProgress(progressAlways, time.Millisecond))
+	item := Download{File: "slow.bin", URL: "https://example.com/slow.bin"}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	returned := make(chan error, 1)
+
+	go func() {
+		returned <- writer.WithDownloads(ctx, []Download{item}, func(ctx context.Context, group *DownloadGroup) error {
+			_, err := group.Run(ctx, item, func(ctx context.Context, progress DownloadProgress) error {
+				progress(0, 100)
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			})
+			return err
+		})
+	}()
+
+	<-started
+	cancel()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("download or progress renderer survived cancellation")
+	}
+	if strings.Contains(stderr.String(), "✔") {
+		t.Fatalf("cancelled download reported success: %q", stderr.String())
 	}
 }
 
@@ -108,7 +178,7 @@ func TestFailedConcurrentDownloadAnnouncesNothing(t *testing.T) {
 // from announcing work it is not doing.
 func TestEmptyBatchPresentsNothing(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	writer := New(&Options{}, stdout, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
+	writer := New(&Options{}, stdout, stderr, withProgress(progressAlways, time.Millisecond))
 	ran := false
 	if err := writer.WithDownloads(context.Background(), nil, func(context.Context, *DownloadGroup) error {
 		ran = true

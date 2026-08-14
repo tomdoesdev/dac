@@ -2,13 +2,16 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net/url"
-	"sync"
-	"time"
 
-	"github.com/tomdoesdev/kit/cli"
+	"github.com/mattn/go-isatty"
+	"github.com/mattn/go-runewidth"
+	"github.com/tomdoesdev/dac/internal/fault"
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 // Download identifies one artifact for progress presentation. It carries only
@@ -19,85 +22,205 @@ type Download struct {
 	URL  string
 }
 
-// DownloadGroup presents a batch of downloads that may run at the same time.
-// One progress line describes the batch while it runs, and each transfer
-// leaves its own permanent record as it finishes.
-//
-// A frame of the animation and a finished download's record are written by
-// different goroutines onto the same terminal line, so the group owns the
-// writer both use and serializes every write onto it.
+// DownloadProgress reports bytes staged for one active transfer. A negative
+// total means the server did not declare the complete response size.
+type DownloadProgress func(completed, total int64)
+
+// DownloadGroup presents downloads that may run at the same time. mpb owns the
+// synchronization needed to render one bar per active transfer safely.
 type DownloadGroup struct {
 	writer   *Writer
-	output   io.Writer
-	animated bool
+	progress *mpb.Progress
+	layout   downloadLayout
 }
 
-// WithDownloads runs operation while presenting pending as one batch. An empty
-// batch presents nothing: a command whose files are all already local still
-// calls this rather than deciding for itself what no progress looks like.
+// downloadLayout fixes the batch-derived columns that precede each bar. mpb
+// assigns the remaining terminal width to every filler, so equal decorator
+// widths also keep the bars and trailing metrics aligned.
+type downloadLayout struct {
+	fileWidth int
+	hostWidth int
+}
+
+const (
+	columnGap              = 2
+	downloadGlyphWidth     = 1 + columnGap
+	downloadSizeWidth      = 10
+	downloadSeparatorWidth = 1 + columnGap
+	downloadTotalWidth     = downloadSizeWidth + columnGap
+	downloadPercentWidth   = 4 + columnGap
+	downloadRateWidth      = 10 + columnGap
+)
+
+// WithDownloads runs operation while presenting each active download. The
+// progress container shares the operation context so cancellation stops both
+// network work and rendering; Wait and Shutdown also join every renderer before
+// the command returns.
 func (writer *Writer) WithDownloads(ctx context.Context, pending []Download, operation func(context.Context, *DownloadGroup) error) error {
-	mode := writer.throbberMode
-	if writer.options.JSON || writer.options.Quiet {
-		mode = cli.ThrobberNever
-	}
-	group := &DownloadGroup{
-		writer: writer,
-		output: newExclusiveWriter(writer.stderr),
-		// The throbber decides this for itself, but a record written while a
-		// frame is on screen has to erase that frame first, which is only safe
-		// when the animation is running at all.
-		animated: cli.Animates(writer.stderr, mode),
-	}
-	if len(pending) == 0 {
+	group := &DownloadGroup{writer: writer, layout: measureDownloadLayout(pending)}
+	if len(pending) == 0 || !writer.rendersProgress() {
 		return operation(ctx, group)
 	}
-	throbber := cli.NewThrobber(
-		group.output,
-		batchMessage(pending),
-		cli.WithThrobberMode(mode),
-		cli.WithThrobberInterval(writer.throbberInterval),
-		cli.WithThrobberStyle(writer.stderrStyler.Progress),
-	)
-	return throbber.Run(ctx, func(ctx context.Context) error { return operation(ctx, group) })
+
+	options := []mpb.ContainerOption{
+		mpb.WithOutput(writer.stderr),
+		mpb.WithRefreshRate(writer.progressRefresh),
+		mpb.WithQueueLen(len(pending)),
+		// Completed downloads become permanent records above active bars rather
+		// than continuing to participate in every subsequent refresh.
+		mpb.PopCompletedMode(),
+	}
+	if writer.progressMode == progressAlways {
+		options = append(options, mpb.WithAutoRefresh())
+	}
+	group.progress = mpb.NewWithContext(ctx, options...)
+
+	finished := false
+	defer func() {
+		// A panic must not strand mpb's renderer goroutines. Shutdown joins
+		// them, then the original panic continues normally.
+		if !finished {
+			group.progress.Shutdown()
+		}
+	}()
+
+	operationErr := operation(ctx, group)
+	if operationErr != nil {
+		group.progress.Shutdown()
+		finished = true
+		return errors.Join(operationErr, group.progress.Error)
+	}
+	group.progress.Wait()
+	finished = true
+	return group.progress.Error
 }
 
-// Run performs one of the batch's downloads and announces it once it succeeds.
-// It reports whether it announced the download, which the caller records on the
-// Result so the summary does not repeat it. Run is safe to call concurrently,
-// which is the whole reason the group owns the shared line.
-func (group *DownloadGroup) Run(ctx context.Context, item Download, operation func(context.Context) error) (bool, error) {
-	started := time.Now()
-	if err := operation(ctx); err != nil {
-		return false, err
+// measureDownloadLayout accounts for display cells rather than bytes because
+// opaque filenames may contain wide Unicode characters. The extra cells are
+// the inter-column gap, included in the fixed width so every row starts its
+// next column at exactly the same position.
+func measureDownloadLayout(pending []Download) downloadLayout {
+	var layout downloadLayout
+	for _, item := range pending {
+		layout.fileWidth = max(layout.fileWidth, runewidth.StringWidth(item.File))
+		layout.hostWidth = max(layout.hostWidth, runewidth.StringWidth(downloadHostname(item.URL)))
 	}
-	if !group.animated {
-		return false, nil
-	}
-	if err := group.announce(item, time.Since(started)); err != nil {
-		return false, err
-	}
-	return true, nil
+	layout.fileWidth += columnGap
+	layout.hostWidth += columnGap
+	return layout
 }
 
-// announce leaves a permanent record of one finished download above the shared
-// progress line. It erases the frame currently occupying that line so the
-// record starts on a clean one, and the next frame redraws below it.
-func (group *DownloadGroup) announce(item Download, elapsed time.Duration) error {
+// rendersProgress applies output-mode and terminal policy before creating mpb.
+// Avoiding the container entirely for redirected output also avoids changing
+// the existing stdout summary contract for scripts and pipelines.
+func (writer *Writer) rendersProgress() bool {
+	if writer.options.JSON || writer.options.Quiet || writer.progressMode == progressNever {
+		return false
+	}
+	if writer.progressMode == progressAlways {
+		return true
+	}
+	file, ok := writer.stderr.(interface{ Fd() uintptr })
+	if !ok {
+		return false
+	}
+	fd := file.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// addDownload creates a byte-progress bar when a worker starts. It begins with
+// an unknown total because the response has not arrived yet; the downloader's
+// first progress event makes it determinate when the host declares a size.
+func (group *DownloadGroup) addDownload(item Download) (*mpb.Bar, error) {
 	styler := group.writer.stderrStyler
-	record := fmt.Sprintf("\r\x1b[2K%s %s %s from %s (%s)\n",
-		styler.Success("✔"),
-		item.File,
-		styler.Success("downloaded"),
-		downloadHostname(item.URL),
-		formatElapsed(elapsed))
-	_, err := io.WriteString(group.output, record)
-	return err
+	hostname := downloadHostname(item.URL)
+	barStyle := mpb.BarStyle().
+		Lbound("[").
+		Filler("=").
+		Tip(">").
+		Padding("-").
+		Rbound("]").
+		FillerMeta(styler.Progress).
+		TipMeta(styler.Progress).
+		Build()
+	glyph := decor.OnAbort(
+		decor.OnCompleteMeta(
+			decor.OnComplete(
+				decor.Meta(decor.Name("↓", decor.WC{W: downloadGlyphWidth, C: decor.DindentRight}), styler.Progress),
+				"✔",
+			),
+			styler.Success,
+		),
+		"",
+	)
+	file := decor.OnAbort(decor.Name(item.File, decor.WC{W: group.layout.fileWidth, C: decor.DindentRight}), "")
+	host := decor.OnAbort(decor.Name(hostname, decor.WC{W: group.layout.hostWidth, C: decor.DindentRight}), "")
+
+	return group.progress.Add(
+		0,
+		barStyle,
+		// mpb marks aborted bars as terminal too, so both filler and status
+		// explicitly disappear rather than looking like a completed download.
+		mpb.BarFillerClearOnAbort(),
+		mpb.PrependDecorators(glyph, file, host),
+		mpb.AppendDecorators(
+			decor.OnAbort(decor.Any(func(statistics decor.Statistics) string {
+				return fmt.Sprintf("%s", decor.SizeB1024(statistics.Current))
+			}, decor.WC{W: downloadSizeWidth}), ""),
+			decor.OnAbort(decor.Name("/", decor.WC{W: downloadSeparatorWidth, C: decor.DindentRight}), ""),
+			decor.OnAbort(decor.Any(func(statistics decor.Statistics) string {
+				if statistics.Total <= 0 {
+					return "—"
+				}
+				return fmt.Sprintf("%s", decor.SizeB1024(statistics.Total))
+			}, decor.WC{W: downloadTotalWidth, C: decor.DindentRight}), ""),
+			decor.OnAbort(decor.Any(func(statistics decor.Statistics) string {
+				if statistics.Total <= 0 {
+					return "--%"
+				}
+				percentage := int64(math.Round(float64(statistics.Current) * 100 / float64(statistics.Total)))
+				return fmt.Sprintf("%d%%", min(percentage, 100))
+			}, decor.WC{W: downloadPercentWidth}), ""),
+			decor.OnAbort(decor.AverageSpeed(decor.SizeB1024(0), "%.1f", decor.WC{W: downloadRateWidth}), ""),
+		),
+	)
+}
+
+// Run performs one download and completes its bar only on success. Failed bars
+// are dropped so the command's classified error remains the durable record.
+// mpb permits concurrent Add and bar updates, so Run is safe for worker pools.
+func (group *DownloadGroup) Run(ctx context.Context, item Download, operation func(context.Context, DownloadProgress) error) (bool, error) {
+	if group.progress == nil {
+		return false, operation(ctx, nil)
+	}
+	bar, err := group.addDownload(item)
+	if err != nil {
+		// The renderer can observe a signal before the worker reaches the
+		// downloader. Keep that race classified as cancellation instead of
+		// exposing mpb.ErrDone as an unrelated rendering failure.
+		if cause := context.Cause(ctx); cause != nil {
+			return false, fault.NewCancelledError(cause)
+		}
+		return false, err
+	}
+	progress := func(completed, total int64) {
+		if total >= 0 {
+			bar.SetTotal(total, false)
+		}
+		bar.SetCurrent(completed)
+	}
+	if err := operation(ctx, progress); err != nil {
+		bar.Abort(true)
+		return false, err
+	}
+	bar.SetTotal(-1, true)
+	return true, nil
 }
 
 // WithDownloadProgress presents one download on its own. A single asset is the
 // batch of one, so an invocation that downloads nothing concurrently still
 // shares the presentation with the one that does.
-func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, sourceURL string, operation func(context.Context) error) (bool, error) {
+func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, sourceURL string, operation func(context.Context, DownloadProgress) error) (bool, error) {
 	item := Download{File: filename, URL: sourceURL}
 	var reported bool
 	err := writer.WithDownloads(ctx, []Download{item}, func(ctx context.Context, group *DownloadGroup) error {
@@ -108,16 +231,6 @@ func (writer *Writer) WithDownloadProgress(ctx context.Context, filename, source
 	return reported, err
 }
 
-// batchMessage describes what the batch is waiting for. One download names
-// itself and its host, which several cannot do on a single line, and which the
-// record each of them leaves behind reports anyway.
-func batchMessage(pending []Download) string {
-	if len(pending) == 1 {
-		return fmt.Sprintf("Downloading %s from %s…", pending[0].File, downloadHostname(pending[0].URL))
-	}
-	return fmt.Sprintf("Downloading %d files…", len(pending))
-}
-
 // downloadHostname deliberately retains only the least sensitive useful part
 // of a validated asset URL for transient terminal output.
 func downloadHostname(sourceURL string) string {
@@ -126,48 +239,4 @@ func downloadHostname(sourceURL string) string {
 		return "remote host"
 	}
 	return parsed.Hostname()
-}
-
-// formatElapsed keeps permanent download records consistent with the transient
-// throbber without exposing the cli package's private rendering helper.
-func formatElapsed(elapsed time.Duration) string {
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	return elapsed.Truncate(time.Second).String()
-}
-
-// exclusiveWriter lets several goroutines share one terminal line. Every write
-// reaching it is a complete frame or a complete record, so serializing whole
-// writes is all the coordination the shared line needs.
-type exclusiveWriter struct {
-	mutex  sync.Mutex
-	writer io.Writer
-}
-
-func (writer *exclusiveWriter) Write(data []byte) (int, error) {
-	writer.mutex.Lock()
-	defer writer.mutex.Unlock()
-	return writer.writer.Write(data)
-}
-
-// exclusiveFile keeps a terminal recognizable through the lock in front of it.
-// Whether animation is possible is a question about the underlying stream, and
-// a wrapper that hid its file descriptor would answer it as "not a terminal".
-type exclusiveFile struct {
-	*exclusiveWriter
-	fd uintptr
-}
-
-func (writer *exclusiveFile) Fd() uintptr { return writer.fd }
-
-// newExclusiveWriter guards output, exposing a file descriptor only when the
-// wrapped writer actually has one.
-func newExclusiveWriter(output io.Writer) io.Writer {
-	guarded := &exclusiveWriter{writer: output}
-	file, ok := output.(interface{ Fd() uintptr })
-	if !ok {
-		return guarded
-	}
-	return &exclusiveFile{exclusiveWriter: guarded, fd: file.Fd()}
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/tomdoesdev/dac/internal/asset"
+	"github.com/tomdoesdev/dac/internal/fault"
 )
 
 // jobsValue is the concurrency option shared by the commands that download.
@@ -59,6 +60,9 @@ func downloadEach[T any](ctx context.Context, limit int, items []T, download fun
 	if len(items) == 0 {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return fault.NewCancelledError(context.Cause(ctx))
+	}
 	limit = min(max(limit, 1), len(items))
 
 	// The first failure cancels the transfers still running: their bytes can no
@@ -87,13 +91,24 @@ func downloadEach[T any](ctx context.Context, limit int, items []T, download fun
 			}
 		}()
 	}
+	dispatching := true
 	for index := range items {
-		if batch.Err() != nil {
+		select {
+		case work <- &items[index]:
+		case <-batch.Done():
+			dispatching = false
+		}
+		if !dispatching {
 			break
 		}
-		work <- &items[index]
 	}
 	close(work)
 	transfers.Wait()
-	return failure
+	if failure != nil {
+		return failure
+	}
+	// Cancellation can arrive before a worker receives any item. Preserve it
+	// as a classified failure rather than allowing an interrupted pull to look
+	// successful simply because no HTTP request had started yet.
+	return fault.NewCancelledError(context.Cause(ctx))
 }

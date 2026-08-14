@@ -1,4 +1,7 @@
-version = 1
+version = 2
+
+[globals]
+"MAIN" = "main"
 
 [files."slow"]
 url = "http://127.0.0.1:8080/drifting.bin"
@@ -9,5 +12,8 @@ url = "http://127.0.0.1:8080/slow.bin"
 file = "slow.bin"
 
 [files."test"]
-url = "https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore"
+url = "https://raw.githubusercontent.com/github/gitignore/{{$.MAIN}}/Go.gitignore"
 file = "Go.gitignore"
+
+[files."test".variables]
+"VERSION" = "1.0.0"

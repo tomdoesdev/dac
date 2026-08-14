@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestSetErrorsAreClassifiable verifies both constant and contextual option
-// failures retain stable identities for CLI and API callers.
+// TestSetErrorsAreClassifiable keeps malformed and duplicate automation input
+// distinguishable from configuration failures discovered after parsing.
 func TestSetErrorsAreClassifiable(t *testing.T) {
 	if _, err := parseSets([]string{"missing-separator"}); !errors.Is(err, ErrInvalidSet) {
 		t.Fatalf("invalid set error = %v, want ErrInvalidSet", err)
@@ -14,20 +14,28 @@ func TestSetErrorsAreClassifiable(t *testing.T) {
 	if _, err := parseSets([]string{"KEY=first", "KEY=second"}); !errors.Is(err, ErrDuplicateSet) {
 		t.Fatalf("duplicate set error = %v, want ErrDuplicateSet", err)
 	}
-}
-
-func TestHeaderAndSingletonErrorsAreClassifiable(t *testing.T) {
-	if _, err := parseHeaders([]string{"missing-separator"}); !errors.Is(err, ErrHeaderFormat) {
-		t.Fatalf("invalid header error = %v, want ErrHeaderFormat", err)
-	}
-	if _, err := parseHeaders([]string{"X-Test=one", "x-test=two"}); !errors.Is(err, ErrDuplicateHeader) {
-		t.Fatalf("duplicate header error = %v, want ErrDuplicateHeader", err)
-	}
-	value := newSingleValue("--url")
-	if err := value.Set("one"); err != nil {
+	sets, err := parseSets([]string{"LOCAL=one", "$.GLOBAL=two"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := value.Set("two"); !errors.Is(err, ErrOptionRepeated) {
-		t.Fatalf("repeated singleton error = %v, want ErrOptionRepeated", err)
+	if sets.asset["LOCAL"] != "one" || sets.globals["GLOBAL"] != "two" {
+		t.Fatalf("scoped sets = %#v", sets)
+	}
+}
+
+// TestSetVariablesChecksEveryPreconditionFirst protects update's transactional
+// behavior when one requested key is valid and a later key is a typo.
+func TestSetVariablesChecksEveryPreconditionFirst(t *testing.T) {
+	current := map[string]string{"EXISTING": "one"}
+	requested := map[string]string{"EXISTING": "changed", "MISSING": "value"}
+	if _, _, err := setVariables(current, requested, nil, "variable"); !errors.Is(err, ErrVariableNotFound) {
+		t.Fatalf("set missing error = %v, want ErrVariableNotFound", err)
+	}
+	if current["EXISTING"] != "one" {
+		t.Fatalf("failed edit changed variables: %#v", current)
+	}
+	updated, changed, err := setVariables(current, requested, map[string]struct{}{"MISSING": {}}, "variable")
+	if err != nil || !changed || updated["EXISTING"] != "changed" || updated["MISSING"] != "value" {
+		t.Fatalf("set referenced variable = %#v, %v, %v", updated, changed, err)
 	}
 }

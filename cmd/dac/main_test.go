@@ -17,7 +17,6 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/lockfile"
 	"github.com/tomdoesdev/dac/internal/manifest"
-	"github.com/tomdoesdev/dac/internal/project"
 )
 
 // TestWorkflow exercises the public trust boundary: only the explicit update
@@ -35,7 +34,7 @@ func TestWorkflowUpdatesLockAndReproducesBytes(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		runOK(t, "add", server.URL+"/artifact.bin")
 		runOK(t, "pull", "--update-lockfile")
 
 		// Updating the lockfile is the explicit acceptance step: it installs the
@@ -68,44 +67,6 @@ func TestWorkflowUpdatesLockAndReproducesBytes(t *testing.T) {
 	})
 }
 
-// TestCalculatedPinDoesNotInstallOrPreacceptBytes keeps pin calculation from
-// becoming an implicit lock operation or a hidden local cache.
-func TestCalculatedPinDoesNotInstallOrPreacceptBytes(t *testing.T) {
-	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requests++
-		_, _ = writer.Write([]byte("pinned bytes"))
-	}))
-	defer server.Close()
-
-	withinTempDir(t, func(directory string) {
-		runOK(t, "init")
-		// --pin performs one read to calculate a digest for desired state, but it
-		// deliberately creates neither accepted lock metadata nor installed bytes.
-		runOK(t, "add", "--pin", "artifact", server.URL+"/artifact.bin")
-		if requests != 1 {
-			t.Fatalf("pin requests=%d, want 1", requests)
-		}
-		if _, err := os.Stat("dac.lock"); !os.IsNotExist(err) {
-			t.Fatalf("pin created lock: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(directory, ".dac", "downloads", "artifact.bin")); !os.IsNotExist(err) {
-			t.Fatalf("pin installed file: %v", err)
-		}
-		paths := project.Paths{Root: directory}
-		value, err := manifest.Load(paths.Manifest())
-		if err != nil || value.Files["artifact"].Pin == "" {
-			t.Fatalf("calculated pin = %#v, %v", value.Files["artifact"], err)
-		}
-		// Lockfile update must fetch independently rather than reuse preaccepted
-		// hidden state from pin calculation.
-		runOK(t, "pull", "--update-lockfile")
-		if requests != 2 {
-			t.Fatalf("lockfile update did not download independently; requests=%d", requests)
-		}
-	})
-}
-
 // TestUpdateMakesLockStaleAndJSONDoesNotLeakQuery covers both sides of a safe
 // stale-lock error. Changing a template variable must require relocking because
 // it changes the resolved URL, and structured diagnostics must remain valid JSON
@@ -118,9 +79,10 @@ func TestUpdateMakesLockStaleAndJSONDoesNotLeakQuery(t *testing.T) {
 
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
-		runOK(t, "add", "--set", "VERSION=one", "artifact", server.URL+"/artifact-{{.VERSION}}.bin?token=do-not-print")
+		runOK(t, "add", server.URL+"/{{.VERSION}}/artifact.bin?token=do-not-print")
+		runOK(t, "update", "artifact.bin", "--set", "VERSION=one")
 		runOK(t, "pull", "--update-lockfile")
-		runOK(t, "update", "artifact", "--set", "VERSION=two")
+		runOK(t, "update", "artifact.bin", "--set", "VERSION=two")
 		_, stderr, code := run("pull", "--json")
 		if code != 2 || strings.Contains(stderr, "do-not-print") {
 			t.Fatalf("stale JSON error: code=%d stderr=%q", code, stderr)
@@ -135,56 +97,52 @@ func TestUpdateMakesLockStaleAndJSONDoesNotLeakQuery(t *testing.T) {
 	})
 }
 
-// TestGlobalVariablesAreSharedAndDefinedOnce covers the whole global-variable
-// contract from the command line. One --gset defines a value every asset can
-// render through the .global namespace; redefining it is refused because a
-// rebind would silently move every asset that references it, and changing it in
-// dac.toml deliberately makes those assets' locks stale.
-func TestGlobalVariablesAreSharedAndDefinedOnce(t *testing.T) {
+// TestGroupedReleaseVariablesDriveBatchAssets covers the primary application
+// workflow: add unresolved URLs together, assign their release coordinates,
+// and explicitly accept all resulting bytes in one pull.
+func TestGroupedReleaseVariablesDriveBatchAssets(t *testing.T) {
+	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
 		_, _ = writer.Write([]byte(request.URL.Path))
 	}))
 	defer server.Close()
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		// The same command may introduce a global and the artifact using it.
-		runOK(t, "add", "--gset", "VERSION=one", "--file", "first-{{.global.VERSION}}.bin",
-			"first", server.URL+"/first-{{.global.VERSION}}.bin")
-		runOK(t, "add", "--set", "FLAVOUR=beta", "--file", "second-{{.global.VERSION}}-{{.FLAVOUR}}.bin",
-			"second", server.URL+"/second-{{.global.VERSION}}.bin")
+		runOK(t, "add",
+			server.URL+"/curam/{{$.VERSION}}/Curam.ear",
+			server.URL+"/rest/{{$.VERSION}}/rest.ear",
+			server.URL+"/services/{{$.SERVICE_VERSION}}/CuramServices.ear",
+		)
+		if requests.Load() != 0 {
+			t.Fatalf("add made %d requests", requests.Load())
+		}
+		// The first assignment persists even while another referenced release
+		// remains unset, but a bare pull still performs no network activity.
+		runOK(t, "update", "--set", "$.VERSION=1.2.3")
+		if _, _, code := run("pull", "--update-lockfile"); code != 2 || requests.Load() != 0 {
+			t.Fatalf("unresolved pull code=%d requests=%d", code, requests.Load())
+		}
+		runOK(t, "pull", "Curam.ear", "--update-lockfile")
+		if requests.Load() != 1 {
+			t.Fatalf("scoped ready pull requests=%d, want 1", requests.Load())
+		}
+		runOK(t, "update", "--set", "$.SERVICE_VERSION=1.2.2")
 		runOK(t, "pull", "--update-lockfile")
-		assertFile(t, filepath.Join(directory, ".dac", "downloads", "first-one.bin"), []byte("/first-one.bin"))
-		assertFile(t, filepath.Join(directory, ".dac", "downloads", "second-one-beta.bin"), []byte("/second-one.bin"))
+		assertFile(t, filepath.Join(directory, ".dac", "downloads", "Curam.ear"), []byte("/curam/1.2.3/Curam.ear"))
+		assertFile(t, filepath.Join(directory, ".dac", "downloads", "rest.ear"), []byte("/rest/1.2.3/rest.ear"))
+		assertFile(t, filepath.Join(directory, ".dac", "downloads", "CuramServices.ear"), []byte("/services/1.2.2/CuramServices.ear"))
 
-		// A global is define-once from the CLI, on either command that writes
-		// desired state, and the refused edit must leave the manifest alone.
-		for _, args := range [][]string{
-			{"update", "first", "--gset", "VERSION=two"},
-			{"add", "--gset", "VERSION=two", "third", server.URL + "/third.bin"},
-		} {
-			_, stderr, code := run(args...)
-			if code != 2 || !strings.Contains(stderr, "global variable already exists") {
-				t.Fatalf("dac %s: code=%d stderr=%q", strings.Join(args, " "), code, stderr)
-			}
-		}
 		value, err := manifest.Load(filepath.Join(directory, "dac.toml"))
-		if err != nil {
-			t.Fatal(err)
+		if err != nil || value.Globals["VERSION"] != "1.2.3" || value.Globals["SERVICE_VERSION"] != "1.2.2" || len(value.Files) != 3 {
+			t.Fatalf("group manifest = %#v, %v", value, err)
 		}
-		if value.Globals["VERSION"] != "one" || len(value.Globals) != 1 || len(value.Files) != 2 {
-			t.Fatalf("refused global edits changed the manifest: %#v", value)
+		if _, stderr, code := run("update", "--set", "$.MISSING=two"); code != 2 || !strings.Contains(stderr, "does not exist") {
+			t.Fatalf("unreferenced global: code=%d stderr=%q", code, stderr)
 		}
-		runOK(t, "pull")
-
-		// Editing the global is the deliberate path, and it moves both assets,
-		// so the lock recorded for each of them no longer describes desired state.
-		value.Globals["VERSION"] = "two"
-		if err := manifest.Write(filepath.Join(directory, "dac.toml"), value); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, code := run("pull"); code != 2 {
-			t.Fatalf("pull after global change code=%d, want stale configuration", code)
+		if _, stderr, code := run("update", "--set", "$.VERSION=1.2.3"); code != 2 || !strings.Contains(stderr, "no changes") {
+			t.Fatalf("no-op global update: code=%d stderr=%q", code, stderr)
 		}
 	})
 }
@@ -207,7 +165,7 @@ func TestCrossOriginRedirectStripsConfiguredHeaders(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		manifest := "version = 1\n\n[files.artifact]\nurl = \"" + origin.URL + "/artifact.bin\"\nfile = \"artifact.bin\"\n\n[files.artifact.headers]\nAuthorization = \"env:TEST_DAC_TOKEN\"\n"
+		manifest := "version = 2\n\n[files.artifact]\nurl = \"" + origin.URL + "/artifact.bin\"\nfile = \"artifact.bin\"\n\n[files.artifact.headers]\nAuthorization = \"env:TEST_DAC_TOKEN\"\n"
 		if err := os.WriteFile("dac.toml", []byte(manifest), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -224,25 +182,6 @@ func TestCrossOriginRedirectStripsConfiguredHeaders(t *testing.T) {
 // representation boundary. Names containing namespace punctuation, shell
 // metacharacters, or a leading dash must remain opaque, while non-printing
 // variable values must survive TOML serialization without corruption.
-func TestOpaqueAssetNamesAndControlValuesRoundTrip(t *testing.T) {
-	withinTempDir(t, func(directory string) {
-		runOK(t, "init")
-		runOK(t, "add", "--set", "UNUSED=\v", "--file", "artifact.bin", "namespace/asset@version", "https://example.com/artifact.bin")
-		runOK(t, "add", "--file", "leading.bin", "--", "-leading'$`", "https://example.com/leading.bin")
-		paths := project.Paths{Root: directory}
-		value, err := manifest.Load(paths.Manifest())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if value.Files["namespace/asset@version"].Variables["UNUSED"] != "\v" {
-			t.Fatalf("control-valued variable did not round trip: %#v", value.Files)
-		}
-		if _, exists := value.Files["-leading'$`"]; !exists {
-			t.Fatalf("leading-dash asset was not persisted: %#v", value.Files)
-		}
-	})
-}
-
 // TestAddRejectsUnicodeEquivalentDestination exposes filename collision checks
 // through the CLI. Visually identical composed and decomposed Unicode names can
 // alias on disk, so adding the second asset must fail before the manifest can
@@ -250,10 +189,13 @@ func TestOpaqueAssetNamesAndControlValuesRoundTrip(t *testing.T) {
 func TestAddRejectsUnicodeEquivalentDestination(t *testing.T) {
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
-		runOK(t, "add", "--file", "é.bin", "first", "https://example.com/first")
-		_, stderr, code := run("add", "--file", "e\u0301.bin", "second", "https://example.com/second")
+		_, stderr, code := run("add", "https://example.com/é.bin", "https://example.com/e\u0301.bin")
 		if code != 2 || !strings.Contains(stderr, "conflicts") {
 			t.Fatalf("Unicode collision: code=%d stderr=%q", code, stderr)
+		}
+		value, err := manifest.Load("dac.toml")
+		if err != nil || len(value.Files) != 0 {
+			t.Fatalf("failed batch changed manifest: %#v, %v", value.Files, err)
 		}
 	})
 }
@@ -271,7 +213,7 @@ func TestLockfileUpdateRejectsDownloadsSymlinkBeforeNetworkAccess(t *testing.T) 
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		runOK(t, "add", server.URL+"/artifact.bin")
 		downloads := filepath.Join(directory, ".dac", "downloads")
 		if err := os.Remove(downloads); err != nil {
 			t.Fatal(err)
@@ -307,7 +249,7 @@ func TestPullUpdateRollsBackDownloadsWhenLockfileCommitFails(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		runOK(t, "add", server.URL+"/artifact.bin")
 		_, _, code := run("pull", "--update-lockfile")
 		if code == 0 {
 			t.Fatal("pull update succeeded after dac.lock was replaced concurrently")
@@ -340,8 +282,8 @@ func TestScopedUpdateBootstrapsAndRejectsLegacyLock(t *testing.T) {
 
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
-		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
-		runOK(t, "pull", "artifact", "--update-lockfile")
+		runOK(t, "add", server.URL+"/artifact.bin")
+		runOK(t, "pull", "artifact.bin", "--update-lockfile")
 		if requests != 1 {
 			t.Fatalf("scoped bootstrap requests=%d, want 1", requests)
 		}
@@ -349,7 +291,7 @@ func TestScopedUpdateBootstrapsAndRejectsLegacyLock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		runOK(t, "pull", "artifact", "--update-lockfile")
+		runOK(t, "pull", "artifact.bin", "--update-lockfile")
 		if requests != 1 {
 			t.Fatalf("current update made an HTTP request; requests=%d", requests)
 		}
@@ -367,7 +309,7 @@ func TestScopedUpdateBootstrapsAndRejectsLegacyLock(t *testing.T) {
 			if _, _, code := run("pull"); code != 2 {
 				t.Fatalf("pull with %s lock code=%d, want 2", name, code)
 			}
-			if _, _, code := run("pull", "artifact", "--update-lockfile"); code != 2 {
+			if _, _, code := run("pull", "artifact.bin", "--update-lockfile"); code != 2 {
 				t.Fatalf("scoped update with %s lock code=%d, want 2", name, code)
 			}
 			if requests != 1 {
@@ -389,6 +331,90 @@ func TestHelpExposesScopedPullWithoutRemovedCommands(t *testing.T) {
 	if code != 0 || stderr != "" || !strings.Contains(stdout, "pull [flags] [names...]") || !strings.Contains(stdout, "--update-lockfile") {
 		t.Fatalf("pull help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	stdout, stderr, code = run("add", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "add <urls...>") || strings.Contains(stdout, "--option") || strings.Contains(stdout, "--def") || strings.Contains(stdout, "--header") {
+		t.Fatalf("add help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	stdout, stderr, code = run("update", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "update [flags] [name]") || !strings.Contains(stdout, "--set") ||
+		strings.Contains(stdout, "--option") || strings.Contains(stdout, "--def") || strings.Contains(stdout, "--unset") || strings.Contains(stdout, "--header") {
+		t.Fatalf("update help: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestRemovedFlagsAreRejected(t *testing.T) {
+	tests := [][]string{
+		{"add", "--set", "VERSION=one", "https://example.com/artifact"},
+		{"add", "--def", "VERSION=one", "https://example.com/artifact"},
+		{"add", "--option", "pin=calculate", "https://example.com/artifact"},
+		{"add", "--header", "X-Test=value", "https://example.com/artifact"},
+		{"update", "--gset", "VERSION=one"},
+		{"update", "--def", "VERSION=one"},
+		{"update", "--unset", "VERSION"},
+		{"update", "--option", "url=value"},
+		{"update", "--unset-option", "pin"},
+		{"update", "--header", "X-Test=value"},
+		{"update", "--remove-header", "X-Test"},
+		{"update", "artifact", "--url", "https://example.com/artifact"},
+		{"update", "artifact", "--unpin"},
+		{"update", "artifact", "--max-size", "1MiB"},
+		{"update", "artifact", "--idle-timeout", "1m"},
+	}
+	for _, args := range tests {
+		if _, stderr, code := run(args...); code != 2 || !strings.Contains(stderr, "unknown flag") {
+			t.Fatalf("removed flag %q: code=%d stderr=%q", args, code, stderr)
+		}
+	}
+}
+
+func TestRemovedNamedAddAndTemplatedFilenameAreRejected(t *testing.T) {
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		for _, args := range [][]string{
+			{"add", "artifact", "https://example.com/artifact.bin"},
+			{"add", "https://example.com/artifact-{{$.VERSION}}.bin"},
+		} {
+			if _, _, code := run(args...); code != 2 {
+				t.Fatalf("removed add form %q code=%d, want 2", args, code)
+			}
+		}
+		value, err := manifest.Load("dac.toml")
+		if err != nil || len(value.Files) != 0 {
+			t.Fatalf("rejected add changed manifest: %#v, %v", value.Files, err)
+		}
+	})
+}
+
+func TestUpdateScopesCannotBeMixed(t *testing.T) {
+	if _, stderr, code := run("update", "--set", "VERSION=one"); code != 2 || !strings.Contains(stderr, "requires $.KEY") {
+		t.Fatalf("unscoped project update: code=%d stderr=%q", code, stderr)
+	}
+	if _, stderr, code := run("update", "artifact", "--set", "$.VERSION=one"); code != 2 || !strings.Contains(stderr, "requires unscoped KEY") {
+		t.Fatalf("scoped global update: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestInvalidVariableResolutionRollsBackManifest(t *testing.T) {
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{
+			"artifact.bin": {URL: "https://{{.HOST}}/artifact.bin", File: "artifact.bin"},
+		}}
+		if err := manifest.Write("dac.toml", value); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile("dac.toml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, code := run("update", "artifact.bin", "--set", "HOST=bad host"); code != 2 {
+			t.Fatalf("invalid resolution code=%d, want 2", code)
+		}
+		after, err := os.ReadFile("dac.toml")
+		if err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("failed update changed manifest: %q, %v", after, err)
+		}
+	})
 }
 
 // TestScopedPullIgnoresUnselectedStaleState proves that a name is a real
@@ -396,10 +422,10 @@ func TestHelpExposesScopedPullWithoutRemovedCommands(t *testing.T) {
 func TestScopedPullIgnoresUnselectedStaleState(t *testing.T) {
 	var firstRequests, secondRequests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/first.bin":
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/first.bin"):
 			firstRequests.Add(1)
-		case "/second.bin":
+		case strings.HasSuffix(request.URL.Path, "/second.bin"):
 			secondRequests.Add(1)
 		}
 		_, _ = writer.Write([]byte(request.URL.Path))
@@ -408,15 +434,15 @@ func TestScopedPullIgnoresUnselectedStaleState(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "first", server.URL+"/first.bin")
-		runOK(t, "add", "second", server.URL+"/second.bin")
+		runOK(t, "add", server.URL+"/first.bin", server.URL+"/{{.VERSION}}/second.bin")
+		runOK(t, "update", "second.bin", "--set", "VERSION=one")
 		runOK(t, "pull", "--update-lockfile")
-		runOK(t, "update", "second", "--set", "VERSION=two")
+		runOK(t, "update", "second.bin", "--set", "VERSION=two")
 		if err := os.Remove(filepath.Join(directory, ".dac", "downloads", "first.bin")); err != nil {
 			t.Fatal(err)
 		}
 
-		runOK(t, "pull", "first")
+		runOK(t, "pull", "first.bin")
 		if firstRequests.Load() != 2 || secondRequests.Load() != 1 {
 			t.Fatalf("scoped requests = (%d, %d), want (2, 1)", firstRequests.Load(), secondRequests.Load())
 		}
@@ -424,7 +450,7 @@ func TestScopedPullIgnoresUnselectedStaleState(t *testing.T) {
 			t.Fatalf("bare pull with unselected stale asset code=%d, want 2", code)
 		}
 		beforeFirst, beforeSecond := firstRequests.Load(), secondRequests.Load()
-		for _, args := range [][]string{{"pull", "missing"}, {"pull", "first", "first"}} {
+		for _, args := range [][]string{{"pull", "missing"}, {"pull", "first.bin", "first.bin"}} {
 			if _, _, code := run(args...); code != 2 {
 				t.Fatalf("dac %s code=%d, want 2", strings.Join(args, " "), code)
 			}
@@ -446,22 +472,21 @@ func TestScopedBootstrapCreatesPartialLock(t *testing.T) {
 
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
-		runOK(t, "add", "first", server.URL+"/first.bin")
-		runOK(t, "add", "second", server.URL+"/second.bin")
-		runOK(t, "pull", "first", "--update-lockfile")
+		runOK(t, "add", server.URL+"/first.bin", server.URL+"/second.bin")
+		runOK(t, "pull", "first.bin", "--update-lockfile")
 		locked, err := lockfile.Load("dac.lock")
-		if err != nil || len(locked.Files) != 1 || locked.Files["first"].Digest == "" {
+		if err != nil || len(locked.Files) != 1 || locked.Files["first.bin"].Digest == "" {
 			t.Fatalf("partial lock = %#v, %v", locked, err)
 		}
-		runOK(t, "pull", "first")
+		runOK(t, "pull", "first.bin")
 		if _, _, code := run("pull"); code != 2 {
 			t.Fatalf("bare partial pull code=%d, want 2", code)
 		}
-		_, stderr, code := run("pull", "second", "--json")
-		if code != 2 || !strings.Contains(stderr, "dac pull --update-lockfile -- 'second'") {
+		_, stderr, code := run("pull", "second.bin", "--json")
+		if code != 2 || !strings.Contains(stderr, "dac pull --update-lockfile -- 'second.bin'") {
 			t.Fatalf("missing scoped entry: code=%d stderr=%q", code, stderr)
 		}
-		runOK(t, "pull", "second", "--update-lockfile")
+		runOK(t, "pull", "second.bin", "--update-lockfile")
 		runOK(t, "pull")
 	})
 }
@@ -471,7 +496,7 @@ func TestScopedBootstrapCreatesPartialLock(t *testing.T) {
 func TestScopedUpdatePreservesUnselectedStateAndBareUpdateCleansIt(t *testing.T) {
 	var firstRequests, secondRequests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/first.bin" {
+		if strings.HasSuffix(request.URL.Path, "/first.bin") {
 			firstRequests.Add(1)
 		} else {
 			secondRequests.Add(1)
@@ -482,14 +507,15 @@ func TestScopedUpdatePreservesUnselectedStateAndBareUpdateCleansIt(t *testing.T)
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "first", server.URL+"/first.bin")
-		runOK(t, "add", "second", server.URL+"/second.bin")
+		runOK(t, "add", server.URL+"/{{.VERSION}}/first.bin", server.URL+"/{{.VERSION}}/second.bin")
+		runOK(t, "update", "first.bin", "--set", "VERSION=one")
+		runOK(t, "update", "second.bin", "--set", "VERSION=one")
 		runOK(t, "pull", "--update-lockfile")
 		locked, err := lockfile.Load("dac.lock")
 		if err != nil {
 			t.Fatal(err)
 		}
-		secondBefore := locked.Files["second"]
+		secondBefore := locked.Files["second.bin"]
 		locked.Files["orphan"] = lockfile.Asset{
 			ResolvedURL: "https://example.com/orphan", ResolvedFile: "orphan.bin",
 			ConfigurationDigest: "sha256:" + strings.Repeat("1", 64), Digest: digestFor([]byte("orphan")), Size: 6,
@@ -499,13 +525,13 @@ func TestScopedUpdatePreservesUnselectedStateAndBareUpdateCleansIt(t *testing.T)
 		if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		runOK(t, "update", "first", "--set", "VERSION=two")
-		runOK(t, "update", "second", "--set", "VERSION=two")
+		runOK(t, "update", "first.bin", "--set", "VERSION=two")
+		runOK(t, "update", "second.bin", "--set", "VERSION=two")
 
-		runOK(t, "pull", "first", "--update-lockfile")
+		runOK(t, "pull", "first.bin", "--update-lockfile")
 		afterScoped, err := lockfile.Load("dac.lock")
-		if err != nil || afterScoped.Files["second"] != secondBefore {
-			t.Fatalf("scoped update changed second: %#v, %v", afterScoped.Files["second"], err)
+		if err != nil || afterScoped.Files["second.bin"] != secondBefore {
+			t.Fatalf("scoped update changed second: %#v, %v", afterScoped.Files["second.bin"], err)
 		}
 		if _, exists := afterScoped.Files["orphan"]; !exists {
 			t.Fatal("scoped update removed lock-only entry")
@@ -517,7 +543,7 @@ func TestScopedUpdatePreservesUnselectedStateAndBareUpdateCleansIt(t *testing.T)
 
 		// Explicitly naming every manifest asset is still scoped and therefore
 		// does not claim ownership of lock-only entries.
-		runOK(t, "pull", "first", "second", "--update-lockfile")
+		runOK(t, "pull", "first.bin", "second.bin", "--update-lockfile")
 		afterNamedAll, err := lockfile.Load("dac.lock")
 		if err != nil {
 			t.Fatal(err)
@@ -551,78 +577,6 @@ func TestPullRejectsOfflineLockfileUpdate(t *testing.T) {
 	if code != 2 || !strings.Contains(stderr, "--offline and --update-lockfile") {
 		t.Fatalf("offline update: code=%d stderr=%q", code, stderr)
 	}
-}
-
-func TestUpdateEditsCompleteAssetPolicyAndRejectsNoOps(t *testing.T) {
-	body := []byte("policy bytes")
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write(body)
-	}))
-	defer server.Close()
-
-	withinTempDir(t, func(directory string) {
-		runOK(t, "init")
-		runOK(t, "add",
-			"--set", "VERSION=one", "--set", "UNUSED=value",
-			"--file", "old-{{.VERSION}}.bin", "--header", "X-Old=value",
-			"--pin="+digestFor(body), "--max-size", "1MiB", "--idle-timeout", "2s",
-			"artifact", server.URL+"/old-{{.VERSION}}",
-		)
-		runOK(t, "pull", "--update-lockfile")
-		runOK(t, "update", "artifact",
-			"--url", server.URL+"/new-{{.VERSION}}", "--file", "new-{{.VERSION}}.bin",
-			"--set", "VERSION=two", "--unset", "UNUSED",
-			"--header", "X-New=new", "--remove-header", "x-old", "--unpin",
-			"--max-size", "2MiB", "--idle-timeout", "4s",
-		)
-		value, err := manifest.Load(filepath.Join(directory, "dac.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		file := value.Files["artifact"]
-		if file.URL != server.URL+"/new-{{.VERSION}}" || file.File != "new-{{.VERSION}}.bin" ||
-			file.Variables["VERSION"] != "two" || file.Variables["UNUSED"] != "" || file.Pin != "" ||
-			file.Headers["X-New"] != "new" || len(file.Headers) != 1 || file.MaxSize != "2MiB" || file.IdleTimeout != "4s" {
-			t.Fatalf("updated asset = %#v", file)
-		}
-		if _, _, code := run("pull"); code != 2 {
-			t.Fatalf("pull after policy update code=%d, want stale configuration", code)
-		}
-		if _, stderr, code := run("update", "artifact", "--set", "VERSION=two"); code != 2 || !strings.Contains(stderr, "no changes") {
-			t.Fatalf("no-op update: code=%d stderr=%q", code, stderr)
-		}
-		if _, _, code := run("update", "artifact", "--unset", "MISSING"); code != 2 {
-			t.Fatalf("unknown variable removal code=%d, want 2", code)
-		}
-		if _, _, code := run("update", "artifact", "--remove-header", "Missing"); code != 2 {
-			t.Fatalf("unknown header removal code=%d, want 2", code)
-		}
-	})
-}
-
-func TestScopedUpdateRemovesOnlyPreviouslyManagedObsoleteFile(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write([]byte("content"))
-	}))
-	defer server.Close()
-
-	withinTempDir(t, func(directory string) {
-		runOK(t, "init")
-		runOK(t, "add", "--file", "old.bin", "artifact", server.URL+"/artifact")
-		runOK(t, "pull", "--update-lockfile")
-		downloads := filepath.Join(directory, ".dac", "downloads")
-		extra := filepath.Join(downloads, "extra.bin")
-		if err := os.WriteFile(extra, []byte("unmanaged"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		runOK(t, "update", "artifact", "--file", "new.bin")
-		runOK(t, "pull", "artifact", "--update-lockfile")
-		if _, err := os.Stat(filepath.Join(downloads, "old.bin")); !os.IsNotExist(err) {
-			t.Fatalf("obsolete managed file remains: %v", err)
-		}
-		assertFile(t, filepath.Join(downloads, "new.bin"), []byte("content"))
-		assertFile(t, extra, []byte("unmanaged"))
-	})
 }
 
 // TestConcurrentDownloadsOverlapAndJobsOneDoesNot pins both halves of dac's
@@ -664,10 +618,13 @@ func TestConcurrentDownloadsOverlapAndJobsOneDoesNot(t *testing.T) {
 
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
+		urls := make([]string, 0, assets+1)
+		urls = append(urls, "add")
 		for index := range assets {
 			name := fmt.Sprintf("artifact-%d", index)
-			runOK(t, "add", name, fmt.Sprintf("%s/%s.bin", server.URL, name))
+			urls = append(urls, fmt.Sprintf("%s/%s.bin", server.URL, name))
 		}
+		runOK(t, urls...)
 		runOK(t, "pull", "--update-lockfile")
 		if peak.Load() != assets {
 			t.Fatalf("lockfile update ran %d transfers at once, want %d", peak.Load(), assets)
@@ -698,8 +655,7 @@ func TestFailedConcurrentUpdateStagesNothing(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "healthy", server.URL+"/healthy.bin")
-		runOK(t, "add", "broken", server.URL+"/broken.bin")
+		runOK(t, "add", server.URL+"/healthy.bin", server.URL+"/broken.bin")
 		if _, _, code := run("pull", "--update-lockfile"); code != 1 {
 			t.Fatalf("pull update code=%d, want a network failure", code)
 		}
@@ -804,11 +760,12 @@ func TestExitCodeSeparatesCallerFromOperatorFailures(t *testing.T) {
 
 	withinTempDir(t, func(directory string) {
 		runOK(t, "init")
-		runOK(t, "add", "artifact", server.URL+"/artifact.bin")
+		runOK(t, "add", server.URL+"/{{.VERSION}}/artifact.bin")
+		runOK(t, "update", "artifact.bin", "--set", "VERSION=one")
 		runOK(t, "pull", "--update-lockfile")
 
 		// A stale lock is a configuration failure: the caller edits dac.toml.
-		runOK(t, "update", "artifact", "--set", "VERSION=two")
+		runOK(t, "update", "artifact.bin", "--set", "VERSION=two")
 		if _, _, code := run("pull"); code != 2 {
 			t.Fatalf("stale pull code=%d, want 2", code)
 		}
@@ -839,7 +796,13 @@ func TestRecoveryHintRendersAsAPasteableCommand(t *testing.T) {
 
 	withinTempDir(t, func(string) {
 		runOK(t, "init")
-		runOK(t, "add", "--", name, server.URL+"/artifact.bin")
+		value := manifest.Manifest{Version: manifest.Version, Files: map[string]manifest.Asset{
+			name: {URL: server.URL + "/{{.VERSION}}/artifact.bin", File: "artifact.bin"},
+		}}
+		if err := manifest.Write("dac.toml", value); err != nil {
+			t.Fatal(err)
+		}
+		runOK(t, "update", "--set", "VERSION=one", "--", name)
 		runOK(t, "pull", "--update-lockfile")
 		runOK(t, "update", "--set", "VERSION=two", "--", name)
 

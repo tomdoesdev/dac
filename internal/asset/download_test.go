@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -85,6 +86,49 @@ func TestDownloaderClassifiesIdleBodyRead(t *testing.T) {
 	var operation *fault.Error
 	if !errors.As(err, &operation) || operation.Kind() != fault.ErrorKindNetwork {
 		t.Fatalf("Download error kind = %v, want network", err)
+	}
+}
+
+// TestDownloaderReportsStagedByteProgress verifies the presentation seam at
+// the transfer boundary: totals come from the validated initial response and
+// completed bytes advance only after the staging destination accepts them.
+func TestDownloaderReportsStagedByteProgress(t *testing.T) {
+	for _, total := range []int64{4, -1} {
+		t.Run(strconv.FormatInt(total, 10), func(t *testing.T) {
+			downloads, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = downloads.Close() }()
+
+			downloader := newTestDownloader(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: total,
+					Body: io.NopCloser(strings.NewReader("data")),
+				}, nil
+			})
+			type snapshot struct{ completed, total int64 }
+			var snapshots []snapshot
+			download, err := downloader.Download(context.Background(), downloads, Request{
+				Name: "asset", URL: "https://example.com/asset", File: "asset",
+				Progress: func(completed, reportedTotal int64) {
+					snapshots = append(snapshots, snapshot{completed: completed, total: reportedTotal})
+				},
+			}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = download.Discard() }()
+
+			if len(snapshots) < 2 || snapshots[0] != (snapshot{completed: 0, total: total}) || snapshots[len(snapshots)-1] != (snapshot{completed: 4, total: total}) {
+				t.Fatalf("progress = %#v, want start 0/%d and finish 4/%d", snapshots, total, total)
+			}
+			for index := 1; index < len(snapshots); index++ {
+				if snapshots[index].completed < snapshots[index-1].completed {
+					t.Fatalf("progress moved backwards: %#v", snapshots)
+				}
+			}
+		})
 	}
 }
 

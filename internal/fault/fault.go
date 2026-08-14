@@ -32,9 +32,9 @@ type Error struct {
 // pasteable command line requires shell quoting that only the process
 // boundary should decide.
 type Recovery struct {
-	// Command is the dac subcommand to run, such as "init" or "lock".
+	// Command is the dac subcommand to run, such as "init" or "pull".
 	Command string
-	// Flags are literal option words, such as "--all".
+	// Flags are literal option words, such as "--update-lockfile".
 	Flags []string
 	// Assets are opaque asset names. They may contain shell metacharacters or
 	// begin with a dash, so a renderer must quote them and place them after

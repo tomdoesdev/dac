@@ -14,12 +14,13 @@ import (
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/kit/fs/atomic"
+	"github.com/tomdoesdev/kit/fs/util/filename"
 )
 
 var variableNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 // Version is the current human-authored manifest format.
-const Version = 1
+const Version = 2
 
 // Manifest is the human-owned desired state. Maps are used only in memory;
 // writes sort their keys so committed files remain deterministic.
@@ -108,6 +109,9 @@ func Create(path string, value Manifest) error {
 // afterwards because template output may introduce a collision.
 func Validate(value Manifest) error {
 	if value.Version != Version {
+		if value.Version == 1 {
+			return fault.NewConfigurationError(fmt.Errorf("%w %d; migrate to version 2 and replace {{.global.KEY}} with {{$.KEY}}", ErrUnsupportedVersion, value.Version))
+		}
 		return fault.NewConfigurationError(fmt.Errorf("%w %d", ErrUnsupportedVersion, value.Version))
 	}
 	// Globals are project-wide, so a bad one is not attributable to any single
@@ -131,11 +135,19 @@ func Validate(value Manifest) error {
 		if strings.TrimSpace(file.URL) == "" || strings.TrimSpace(file.File) == "" {
 			return fault.NewConfigurationError(ErrMissingAssetLocation, fault.WithAsset(name))
 		}
-		if _, err := parseTemplate("url", file.URL); err != nil {
+		urlTemplate, err := compileTemplate("url", file.URL)
+		if err != nil {
 			return fault.NewConfigurationError(err, fault.WithAsset(name))
 		}
-		if _, err := parseTemplate("file", file.File); err != nil {
+		fileTemplate, err := compileTemplate("file", file.File)
+		if err != nil {
 			return fault.NewConfigurationError(err, fault.WithAsset(name))
+		}
+		if err := ValidateResolvedURL(urlTemplate.renderProvisional()); err != nil {
+			return fault.NewConfigurationError(err, fault.WithAsset(name))
+		}
+		if provisional := fileTemplate.renderProvisional(); filename.Clean(provisional) != provisional {
+			return fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
 		}
 		if file.Pin != "" {
 			if _, err := asset.NormalizeDigest(file.Pin); err != nil {

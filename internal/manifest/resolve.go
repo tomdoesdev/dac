@@ -1,10 +1,9 @@
 package manifest
 
 import (
-	"bytes"
 	"fmt"
 	"net/url"
-	"text/template"
+	"strings"
 
 	"github.com/tomdoesdev/dac/internal/asset"
 	"github.com/tomdoesdev/dac/internal/fault"
@@ -56,34 +55,75 @@ func (resolution Resolution) Has(name string) bool {
 // Resolve renders and validates every entry together, including destination
 // uniqueness. Callers use the sorted result before network or state changes.
 func Resolve(value Manifest) (Resolution, error) {
+	return resolveNames(value, sortedKeys(value.Files), false)
+}
+
+// ResolveSelected renders only the named assets. Scoped pulls use it so an
+// unrelated asset that is still awaiting a variable cannot block ready work.
+func ResolveSelected(value Manifest, names []string) (Resolution, error) {
+	return resolveNames(value, names, false)
+}
+
+// ValidateAvailable validates every asset whose referenced variables have
+// values, while deliberately allowing the remaining desired state to be
+// completed by later update commands.
+func ValidateAvailable(value Manifest) error {
+	_, err := resolveNames(value, sortedKeys(value.Files), true)
+	return err
+}
+
+// resolveNames is the shared resolver for complete, scoped, and incrementally
+// configured manifests, keeping safety and collision checks identical.
+func resolveNames(value Manifest, names []string, allowIncomplete bool) (Resolution, error) {
 	if err := Validate(value); err != nil {
 		return Resolution{}, err
 	}
-	names := sortedKeys(value.Files)
 	result := make([]ResolvedAsset, 0, len(names))
 	seen := make(map[string]string, len(names))
 	for _, name := range names {
-		file := value.Files[name]
-		data := templateData(value.Globals, file.Variables)
-		resolvedURL, err := renderTemplate("url", file.URL, data)
-		if err != nil {
-			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
+		file, exists := value.Files[name]
+		if !exists {
+			return Resolution{}, fault.NewConfigurationError(fmt.Errorf("asset does not exist"), fault.WithAsset(name))
 		}
-		if err := ValidateResolvedURL(resolvedURL); err != nil {
-			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
+		urlTemplate, _ := compileTemplate("url", file.URL)
+		fileTemplate, _ := compileTemplate("file", file.File)
+		urlReady := urlTemplate.canRender(value.Globals, file.Variables)
+		fileReady := fileTemplate.canRender(value.Globals, file.Variables)
+		resolvedURL, resolvedFile := "", ""
+		if urlReady {
+			var err error
+			resolvedURL, err = urlTemplate.render(value.Globals, file.Variables)
+			if err != nil {
+				return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrRenderTemplate, err), fault.WithAsset(name))
+			}
+			if err := ValidateResolvedURL(resolvedURL); err != nil {
+				return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
+			}
+		} else if !allowIncomplete {
+			_, err := urlTemplate.render(value.Globals, file.Variables)
+			return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrRenderTemplate, err), fault.WithAsset(name))
 		}
-		resolvedFile, err := renderTemplate("file", file.File, data)
-		if err != nil {
-			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
+		if fileReady {
+			var err error
+			resolvedFile, err = fileTemplate.render(value.Globals, file.Variables)
+			if err != nil {
+				return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrRenderTemplate, err), fault.WithAsset(name))
+			}
+			if filename.Clean(resolvedFile) != resolvedFile {
+				return Resolution{}, fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
+			}
+			key := filenameCollisionKey(resolvedFile)
+			if existing, exists := seen[key]; exists {
+				return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), fault.WithAsset(name))
+			}
+			seen[key] = name
+		} else if !allowIncomplete {
+			_, err := fileTemplate.render(value.Globals, file.Variables)
+			return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: %w", ErrRenderTemplate, err), fault.WithAsset(name))
 		}
-		if filename.Clean(resolvedFile) != resolvedFile {
-			return Resolution{}, fault.NewConfigurationError(ErrUnsafeResolvedFile, fault.WithAsset(name))
+		if !urlReady || !fileReady {
+			continue
 		}
-		key := filenameCollisionKey(resolvedFile)
-		if existing, exists := seen[key]; exists {
-			return Resolution{}, fault.NewConfigurationError(fmt.Errorf("%w: file %q conflicts with asset %q", ErrResolvedFileConflict, resolvedFile, existing), fault.WithAsset(name))
-		}
-		seen[key] = name
 		transfer, err := parseTransfer(file)
 		if err != nil {
 			return Resolution{}, fault.NewConfigurationError(err, fault.WithAsset(name))
@@ -95,45 +135,6 @@ func Resolve(value Manifest) (Resolution, error) {
 		index[item.Name] = position
 	}
 	return Resolution{assets: result, index: index}, nil
-}
-
-func parseTemplate(kind, value string) (*template.Template, error) {
-	return template.New(kind).Option("missingkey=error").Parse(value)
-}
-
-// GlobalNamespace is the template field that addresses project-wide variables,
-// as in {{ .global.VERSION }}. It is deliberately lower case: the variable
-// grammar requires an upper-case initial character, so no asset variable can
-// ever occupy the namespace or be mistaken for one when reading a template.
-const GlobalNamespace = "global"
-
-// templateData exposes an asset's own variables at the top level, for the
-// {{ .VERSION }} form assets already use, and the manifest's globals only
-// under their namespace. Globals are never merged into the top level: a
-// template must name where a value came from, so adding a global cannot
-// silently change what an existing asset resolves to.
-func templateData(globals, variables map[string]string) map[string]any {
-	data := make(map[string]any, len(variables)+1)
-	for key, value := range variables {
-		data[key] = value
-	}
-	// The namespace is always present, even when the manifest declares no
-	// globals, so an undefined reference reports the key the template asked
-	// for rather than a missing namespace.
-	data[GlobalNamespace] = globals
-	return data
-}
-
-func renderTemplate(kind, value string, data map[string]any) (string, error) {
-	templateValue, err := parseTemplate(kind, value)
-	if err != nil {
-		return "", err
-	}
-	var result bytes.Buffer
-	if err := templateValue.Execute(&result, data); err != nil {
-		return "", fmt.Errorf("%w %q: %w", ErrRenderTemplate, kind, err)
-	}
-	return result.String(), nil
 }
 
 // ValidateResolvedURL rejects URLs that cannot be safely requested or compared
@@ -148,7 +149,23 @@ func ValidateResolvedURL(value string) error {
 
 // InferFile returns the final URL path segment only when it is safe to manage.
 func InferFile(rawURL string) (string, error) {
-	result := filename.FromURL(rawURL)
+	path := rawURL
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	segment := path[strings.LastIndex(path, "/")+1:]
+	if strings.Contains(segment, "{{") || strings.Contains(segment, "}}") {
+		return "", ErrCannotInferFile
+	}
+	templateValue, err := compileTemplate("url", rawURL)
+	if err != nil {
+		return "", err
+	}
+	provisional := templateValue.renderProvisional()
+	if err := ValidateResolvedURL(provisional); err != nil {
+		return "", err
+	}
+	result := filename.FromURL(provisional)
 	if result == "" {
 		return "", ErrCannotInferFile
 	}

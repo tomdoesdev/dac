@@ -17,8 +17,8 @@ var durationType = reflect.TypeOf(time.Duration(0))
 var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 
 // boolFlagValue is the convention pflag uses for values whose option can be
-// supplied without an explicit argument. Keeping the check here lets domain
-// values such as dac's --pin retain that useful command-line form.
+// supplied without an explicit argument. Keeping the check here lets custom
+// domain values opt into that useful command-line form.
 type boolFlagValue interface {
 	IsBoolFlag() bool
 }

@@ -11,7 +11,6 @@ import (
 
 	"github.com/tomdoesdev/dac/internal/fault"
 	"github.com/tomdoesdev/dac/internal/redact"
-	"github.com/tomdoesdev/kit/cli"
 )
 
 // TestSanitizeErrorRemovesURLSecrets keeps diagnostics from becoming a secret
@@ -106,9 +105,18 @@ func TestHumanOutputUsesSemanticColors(t *testing.T) {
 // interactive contract while ensuring URL paths and query secrets stay hidden.
 func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	writer := New(&Options{}, stdout, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
+	writer := New(&Options{}, stdout, stderr, withProgress(progressAlways, time.Millisecond))
 
-	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/private/asset.zip?token=secret", func(context.Context) error { return nil })
+	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/private/asset.zip?token=secret", func(_ context.Context, progress DownloadProgress) error {
+		// Keep the transfer active through several refreshes so the test covers
+		// both mpb's running and completed presentations.
+		progress(0, 1024)
+		time.Sleep(5 * time.Millisecond)
+		progress(512, 1024)
+		time.Sleep(5 * time.Millisecond)
+		progress(1024, 1024)
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +133,7 @@ func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T)
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	progress := stderr.String()
-	if !strings.Contains(progress, "Downloading asset.zip from example.com… (0s)") || !strings.Contains(progress, "✔ asset.zip downloaded from example.com (0s)") {
+	if !strings.Contains(progress, "asset.zip") || !strings.Contains(progress, "example.com") || !strings.Contains(progress, "[") || !strings.Contains(progress, "]") || !strings.Contains(progress, "100%") || !strings.Contains(progress, "✔  asset.zip") {
 		t.Fatalf("stderr = %q", progress)
 	}
 	if strings.Contains(progress, "private") || strings.Contains(progress, "secret") {
@@ -138,7 +146,7 @@ func TestDownloadProgressCompletesOnStderrWithoutDuplicatingStdout(t *testing.T)
 func TestRedirectedDownloadProgressFallsBackToSuccess(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	writer := New(&Options{}, stdout, stderr)
-	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil })
+	reported, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context, DownloadProgress) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +161,14 @@ func TestRedirectedDownloadProgressFallsBackToSuccess(t *testing.T) {
 	}
 }
 
-// TestFailedDownloadProgressClearsWithoutSuccess prevents a failed transfer
-// from leaving a misleading completion record before the normal error output.
-func TestFailedDownloadProgressClearsWithoutSuccess(t *testing.T) {
+// TestFailedDownloadProgressLeavesNoSuccess prevents a failed transfer from
+// leaving a misleading completion record before the normal error output.
+func TestFailedDownloadProgressLeavesNoSuccess(t *testing.T) {
 	stderr := &bytes.Buffer{}
-	writer := New(&Options{}, &bytes.Buffer{}, stderr, WithThrobber(cli.ThrobberAlways, time.Hour))
+	writer := New(&Options{}, &bytes.Buffer{}, stderr, withProgress(progressAlways, time.Millisecond))
 	want := errors.New("download failed")
-	_, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return want })
-	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✔") || !strings.HasSuffix(stderr.String(), "\r\x1b[2K") {
+	_, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context, DownloadProgress) error { return want })
+	if !errors.Is(err, want) || strings.Contains(stderr.String(), "✔") || strings.Contains(stderr.String(), "downloaded") {
 		t.Fatalf("error=%v stderr=%q", err, stderr.String())
 	}
 }
@@ -173,8 +181,8 @@ func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
 
 	jsonOutput := &bytes.Buffer{}
 	jsonError := &bytes.Buffer{}
-	writer := New(&Options{JSON: true}, jsonOutput, jsonError, WithThrobber(cli.ThrobberAlways, defaultThrobberInterval))
-	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+	writer := New(&Options{JSON: true}, jsonOutput, jsonError, withProgress(progressAlways, defaultProgressRefresh))
+	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context, DownloadProgress) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {
@@ -186,8 +194,8 @@ func TestStructuredAndQuietOutputNeverUseColor(t *testing.T) {
 
 	quietOutput := &bytes.Buffer{}
 	quietError := &bytes.Buffer{}
-	writer = New(&Options{Quiet: true}, quietOutput, quietError, WithThrobber(cli.ThrobberAlways, defaultThrobberInterval))
-	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context) error { return nil }); err != nil {
+	writer = New(&Options{Quiet: true}, quietOutput, quietError, withProgress(progressAlways, defaultProgressRefresh))
+	if _, err := writer.WithDownloadProgress(context.Background(), "asset.zip", "https://example.com/asset.zip", func(context.Context, DownloadProgress) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Success("pull", "", []Result{{Name: "asset", Status: "downloaded"}}, nil); err != nil {

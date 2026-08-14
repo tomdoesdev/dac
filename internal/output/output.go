@@ -64,41 +64,52 @@ type errorOutput struct {
 
 // Writer applies one invocation's output mode to command results.
 type Writer struct {
-	options          *Options
-	stdout           io.Writer
-	stderr           io.Writer
-	stdoutStyler     *cli.Styler
-	stderrStyler     *cli.Styler
-	throbberMode     cli.ThrobberMode
-	throbberInterval time.Duration
+	options         *Options
+	stdout          io.Writer
+	stderr          io.Writer
+	stdoutStyler    *cli.Styler
+	stderrStyler    *cli.Styler
+	progressMode    progressMode
+	progressRefresh time.Duration
 }
 
-// defaultThrobberInterval paces the progress animation fast enough to look
+// defaultProgressRefresh paces progress rendering fast enough to look
 // live without redrawing more often than a terminal can usefully show.
-const defaultThrobberInterval = 100 * time.Millisecond
+const defaultProgressRefresh = 100 * time.Millisecond
+
+// progressMode controls terminal detection without leaking presentation test
+// hooks into commands. Production uses automatic detection; tests can force a
+// renderer on or off for deterministic coverage.
+type progressMode uint8
+
+const (
+	progressAuto progressMode = iota
+	progressAlways
+	progressNever
+)
 
 // Option adjusts a Writer at construction.
 type Option func(*Writer)
 
-// WithThrobber overrides the progress animation, which tests pin so their
-// output does not depend on wall-clock timing or on an attached terminal.
-func WithThrobber(mode cli.ThrobberMode, interval time.Duration) Option {
+// withProgress overrides progress detection and refresh timing for tests whose
+// output must not depend on an attached terminal.
+func withProgress(mode progressMode, interval time.Duration) Option {
 	return func(writer *Writer) {
-		writer.throbberMode = mode
-		writer.throbberInterval = interval
+		writer.progressMode = mode
+		writer.progressRefresh = interval
 	}
 }
 
 // New creates an output writer bound to the invocation's global options.
 func New(options *Options, stdout, stderr io.Writer, opts ...Option) *Writer {
 	writer := &Writer{
-		options:          options,
-		stdout:           stdout,
-		stderr:           stderr,
-		stdoutStyler:     cli.NewStyler(stdout, cli.ColorAuto),
-		stderrStyler:     cli.NewStyler(stderr, cli.ColorAuto),
-		throbberMode:     cli.ThrobberAuto,
-		throbberInterval: defaultThrobberInterval,
+		options:         options,
+		stdout:          stdout,
+		stderr:          stderr,
+		stdoutStyler:    cli.NewStyler(stdout, cli.ColorAuto),
+		stderrStyler:    cli.NewStyler(stderr, cli.ColorAuto),
+		progressMode:    progressAuto,
+		progressRefresh: defaultProgressRefresh,
 	}
 	for _, option := range opts {
 		option(writer)

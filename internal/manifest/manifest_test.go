@@ -164,7 +164,7 @@ func TestValidateRejectsMalformedTransferLimits(t *testing.T) {
 
 // TestGlobalsResolveThroughTheirOwnNamespace covers dac's two variable scopes
 // at once. A global is shared by every asset and is addressed only as
-// {{ .global.KEY }}, while an asset's own variables keep the flat spelling, so
+// {{ $.KEY }}, while an asset's own variables keep the flat spelling, so
 // a template always states which scope a value came from even when the two
 // scopes use the same key.
 func TestGlobalsResolveThroughTheirOwnNamespace(t *testing.T) {
@@ -172,9 +172,9 @@ func TestGlobalsResolveThroughTheirOwnNamespace(t *testing.T) {
 		Version: Version,
 		Globals: map[string]string{"VERSION": "3.9.0"},
 		Files: map[string]Asset{
-			"shared": {URL: "https://example.com/shared-{{.global.VERSION}}.bin", File: "shared-{{.global.VERSION}}.bin"},
+			"shared": {URL: "https://example.com/shared-{{$.VERSION}}.bin", File: "shared-{{ $.VERSION }}.bin"},
 			"both": {
-				URL:       "https://example.com/both-{{.global.VERSION}}-{{.VERSION}}.bin",
+				URL:       "https://example.com/both-{{$.VERSION}}-{{.VERSION}}.bin",
 				File:      "both.bin",
 				Variables: map[string]string{"VERSION": "local"},
 			},
@@ -215,13 +215,13 @@ func TestGlobalsAreNotAddressableAsAssetVariables(t *testing.T) {
 		{
 			name: "asset variable referenced as a global",
 			value: Manifest{Version: Version, Files: map[string]Asset{
-				"only": {URL: "https://example.com/a-{{.global.VERSION}}.bin", File: "a.bin", Variables: map[string]string{"VERSION": "3.9.0"}},
+				"only": {URL: "https://example.com/a-{{$.VERSION}}.bin", File: "a.bin", Variables: map[string]string{"VERSION": "3.9.0"}},
 			}},
 		},
 		{
 			name: "undefined global with no globals declared",
 			value: Manifest{Version: Version, Files: map[string]Asset{
-				"only": {URL: "https://example.com/a-{{.global.VERSION}}.bin", File: "a.bin"},
+				"only": {URL: "https://example.com/a-{{$.VERSION}}.bin", File: "a.bin"},
 			}},
 		},
 	}
@@ -244,7 +244,7 @@ func TestGlobalsRoundTripAndAreValidated(t *testing.T) {
 		Version: Version,
 		Globals: map[string]string{"VERSION": "3.9.0", "CHANNEL": "stable"},
 		Files: map[string]Asset{
-			"artifact": {URL: "https://example.com/artifact-{{.global.VERSION}}.bin", File: "artifact.bin"},
+			"artifact": {URL: "https://example.com/artifact-{{$.VERSION}}.bin", File: "artifact.bin"},
 		},
 	}
 	if err := Write(path, want); err != nil {
@@ -260,5 +260,59 @@ func TestGlobalsRoundTripAndAreValidated(t *testing.T) {
 	invalid := Manifest{Version: Version, Globals: map[string]string{"lower": "value"}, Files: map[string]Asset{}}
 	if err := Validate(invalid); !errors.Is(err, ErrInvalidGlobalName) {
 		t.Fatalf("Validate error = %v, want ErrInvalidGlobalName", err)
+	}
+}
+
+// TestTemplateGrammarIsDirectAndDiscoverable keeps rendering and update's
+// declaration checks on the same deliberately small placeholder language.
+func TestTemplateGrammarIsDirectAndDiscoverable(t *testing.T) {
+	file := Asset{URL: "https://example.com/{{$.RELEASE}}/{{.FLAVOUR}}/artifact.bin", File: "artifact.bin"}
+	references, err := ReferencedVariables(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := references.Global["RELEASE"]; !ok {
+		t.Fatalf("global references = %#v", references.Global)
+	}
+	if _, ok := references.Local["FLAVOUR"]; !ok {
+		t.Fatalf("local references = %#v", references.Local)
+	}
+	invalid := []string{
+		"https://example.com/{{.global.VERSION}}/artifact.bin",
+		"https://example.com/{{if .VERSION}}a{{end}}/artifact.bin",
+		"https://example.com/{{.VERSION | printf}}/artifact.bin",
+		"https://example.com/{{.VERSION/artifact.bin",
+	}
+	for _, rawURL := range invalid {
+		value := Manifest{Version: Version, Files: map[string]Asset{"artifact": {URL: rawURL, File: "artifact.bin"}}}
+		if err := Validate(value); !errors.Is(err, ErrInvalidTemplate) {
+			t.Errorf("Validate(%q) error = %v, want ErrInvalidTemplate", rawURL, err)
+		}
+	}
+}
+
+// TestValidateAvailableDefersOnlyMissingValues permits incremental project
+// setup without weakening checks for assets that can already resolve.
+func TestValidateAvailableDefersOnlyMissingValues(t *testing.T) {
+	value := Manifest{Version: Version, Files: map[string]Asset{
+		"pending": {URL: "https://example.com/{{$.VERSION}}/pending.bin", File: "pending.bin"},
+		"ready":   {URL: "not-an-http-url", File: "ready.bin"},
+	}}
+	if err := ValidateAvailable(value); !errors.Is(err, ErrInvalidResolvedURL) {
+		t.Fatalf("ValidateAvailable error = %v, want ErrInvalidResolvedURL", err)
+	}
+	value.Files["ready"] = Asset{URL: "https://example.com/ready.bin", File: "PENDING.bin"}
+	if err := ValidateAvailable(value); !errors.Is(err, ErrResolvedFileConflict) {
+		t.Fatalf("static collision error = %v, want ErrResolvedFileConflict", err)
+	}
+}
+
+// TestManifestV1RequiresManualMigration prevents two template grammars from
+// sharing one version number and being interpreted differently by old clients.
+func TestManifestV1RequiresManualMigration(t *testing.T) {
+	value := Manifest{Version: 1, Files: map[string]Asset{}}
+	err := Validate(value)
+	if !errors.Is(err, ErrUnsupportedVersion) || !strings.Contains(err.Error(), "replace {{.global.KEY}} with {{$.KEY}}") {
+		t.Fatalf("v1 migration error = %v", err)
 	}
 }

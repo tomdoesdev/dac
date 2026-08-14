@@ -27,6 +27,10 @@ type Request struct {
 	File    string
 	Headers map[string]string
 	Policy  TransferPolicy
+	// Progress observes bytes successfully written to the staging file. Total is
+	// negative when the server did not declare a complete response size. The
+	// callback is optional and runs synchronously on the transfer goroutine.
+	Progress func(completed, total int64)
 }
 
 var (
@@ -103,23 +107,6 @@ func (downloader *Downloader) Download(ctx context.Context, downloads *os.Root, 
 	}
 	defer func() { _ = transfer.body.Close() }()
 	return stageResponseWithPolicy(downloads, request, transfer.body, expected, transfer.size, requestContext)
-}
-
-// CalculateDigest retrieves an asset and returns the digest of the bytes the
-// remote host served, without installing them or accepting them as trusted.
-// This is dac's trust-on-first-use step: the caller records the digest as a
-// limit that a later download must satisfy, so the bytes measured here are
-// deliberately discarded rather than reused.
-func (downloader *Downloader) CalculateDigest(ctx context.Context, downloads *os.Root, request Request) (string, error) {
-	download, err := downloader.Download(ctx, downloads, request, "")
-	if err != nil {
-		return "", err
-	}
-	digest := download.Digest
-	if err := download.Discard(); err != nil {
-		return "", fault.NewFilesystemError(err)
-	}
-	return digest, nil
 }
 
 // newRequest builds the request for the URL the manifest named.
@@ -210,7 +197,12 @@ func stageResponseWithPolicy(downloads *os.Root, request Request, body io.Reader
 		}
 	}()
 
-	size, digest, writeErr, err := copyResponseWithDigest(temporary, body, request.Policy.MaxSize)
+	destination := io.Writer(temporary)
+	if request.Progress != nil {
+		destination = &progressWriter{writer: destination, total: declaredSize, report: request.Progress}
+		request.Progress(0, declaredSize)
+	}
+	size, digest, writeErr, err := copyResponseWithDigest(destination, body, request.Policy.MaxSize)
 	if err != nil {
 		if writeErr != nil {
 			return nil, fault.NewFilesystemError(writeErr, fault.WithAsset(request.Name))
@@ -286,6 +278,23 @@ func verifyMaximumSize(assetName string, maximum, received int64, streamed bool)
 type recordingWriter struct {
 	writer io.Writer
 	err    error
+}
+
+// progressWriter reports only bytes accepted by the staging file. Placing it
+// around the destination rather than the response body prevents failed or
+// partial disk writes from being presented as downloaded progress.
+type progressWriter struct {
+	writer    io.Writer
+	total     int64
+	completed int64
+	report    func(completed, total int64)
+}
+
+func (writer *progressWriter) Write(buffer []byte) (int, error) {
+	count, err := writer.writer.Write(buffer)
+	writer.completed += int64(count)
+	writer.report(writer.completed, writer.total)
+	return count, err
 }
 
 // Write remembers destination-side failures so io.MultiWriter's single error

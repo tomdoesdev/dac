@@ -8,22 +8,16 @@ installation lifecycle.
 
 ```sh
 dac init
-dac add artifact https://example.com/releases/artifact.ear
+dac add https://example.com/releases/artifact.ear
 dac pull --update-lockfile
 dac pull
 ```
 
-Asset names are opaque identifiers and may use printable non-whitespace
-Unicode and punctuation, so teams can adopt conventions such as
-`namespace/asset@version` or `@scope/package:version`. A name beginning with a
-dash must follow the standard `--` option terminator:
-
-```sh
-dac add --file artifact.bin -- '-namespace/asset@version' https://example.com/artifact.bin
-```
-
-Names never become paths. The separate `file` value must resolve to one safe
-filename directly inside `.dac/downloads/`.
+`add` accepts one or more URLs and uses each static final path segment as both
+the asset name and its filename. For example, a URL ending in `/Curam.ear`
+creates an asset named `Curam.ear` in `.dac/downloads/`. The complete batch is
+rejected if a filename is unsafe, templated, duplicated, or equivalent on a
+case-insensitive or Unicode-normalizing filesystem.
 
 `dac.toml` is the human-edited desired state and `dac.lock` records the source
 resolution, SHA-256 digest, and size that `pull --update-lockfile` explicitly
@@ -32,34 +26,46 @@ verifies or restores files under `.dac/downloads/`.
 
 ## Workflow
 
-Use variables for versioned URLs and filenames:
+Add a release train before its values are known:
 
 ```sh
-dac add --set VERSION=3.9.0 --file artifact.ear artifact \
-  'https://example.com/artifact-{{.VERSION}}.ear'
+dac add \
+  'https://repo.internal/curam/{{$.VERSION}}/Curam.ear' \
+  'https://repo.internal/rest/{{$.VERSION}}/rest.ear' \
+  'https://repo.internal/services/{{$.SERVICE_VERSION}}/CuramServices.ear'
+
+dac update --set '$.VERSION=2.0.0' \
+  --set '$.SERVICE_VERSION=1.2.2'
 dac pull --update-lockfile
 ```
 
-A variable declared with `--set` belongs to one asset. A value several assets
-share — a release train, a mirror host — is a global variable instead, declared
-once with `--gset` and referenced through its own namespace:
+A template reference declares a variable even before it has a value. `add`
+therefore writes unresolved desired state without downloading anything. A bare
+`pull` remains a configuration error until every asset resolves and fails
+before making a network request.
+
+`{{$.VERSION}}` reads a project variable shared by any number of assets.
+`{{.VERSION}}` reads a variable local to one asset. Templates intentionally
+support only these direct substitutions; conditionals, pipelines, functions,
+and the manifest-v1 `.global.VERSION` spelling are rejected.
+
+`update` has one operation, `--set`. A nameless update accepts only project
+variables with the `$.` prefix:
 
 ```sh
-dac add --gset VERSION=3.9.0 --file 'artifact-{{.global.VERSION}}.ear' artifact \
-  'https://example.com/artifact-{{.global.VERSION}}.ear'
-dac add --file 'plugin-{{.global.VERSION}}.jar' plugin \
-  'https://example.com/plugin-{{.global.VERSION}}.jar'
+dac update --set '$.VERSION=4.0.0'
 ```
 
-The two scopes never merge. `{{.VERSION}}` reads the asset's own variables and
-`{{.global.VERSION}}` reads the project's globals, so a template always states
-where its value came from and one asset may use both keys at once. Referencing
-an undefined global fails to resolve rather than rendering an empty string.
+A named update accepts only variables local to that asset:
 
-Because a global is shared, `--gset` defines it and nothing more: redefining an
-existing global is an error on both `add` and `update`, since a silent rebind
-would move every asset that references it. Change one by editing `dac.toml`,
-which makes the affected assets' locks stale like any other source change.
+```sh
+dac update CuramServices.ear --set VERSION=4.0.0
+```
+
+An assignment may change a stored value or provide the first value for an exact
+template reference. An unknown, unreferenced key is rejected, as are duplicate
+assignments and updates that make no effective change. Project and local
+assignments cannot be mixed in one invocation.
 
 Changing a URL, filename, variable, header, pin, or transfer policy makes that
 asset's lock entry stale. Run `dac pull <asset> --update-lockfile` to accept and
@@ -74,44 +80,28 @@ and lock-only entries do not block it. Only a bare pull requires the complete
 lock to match the manifest exactly, and only a bare updating pull cleans up
 lock-only entries and their formerly managed downloads.
 
-An optional manifest pin limits the bytes lock is allowed to accept:
-
-```sh
-# Supply a publisher or independently verified checksum.
-dac add --pin=sha256:... artifact https://example.com/artifact.ear
-
-# Or calculate a trust-on-first-use pin. This discards the downloaded bytes;
-# The updating pull downloads independently before it records accepted bytes.
-dac add --pin artifact https://example.com/artifact.ear
-```
+An optional `pin` in `dac.toml` limits the bytes lock is allowed to accept to a
+publisher-provided or independently verified SHA-256 digest.
 
 `dac pull --offline` verifies selected local files without using the network.
 `dac pull --force` downloads every selected locked artifact and still requires
 each current digest to match. The flags cannot be combined, and `--offline`
 also cannot be combined with `--update-lockfile`.
 
-`update` can change the complete desired source policy without editing TOML:
-
-```sh
-dac update artifact --url 'https://example.com/artifact-{{.VERSION}}.ear' \
-  --file 'artifact-{{.VERSION}}.ear' --set VERSION=4.0.0 \
-  --unset OLD_VERSION --header Authorization=env:ARTIFACT_TOKEN \
-  --remove-header X-Old-Repository --max-size 2GiB --idle-timeout 1m
-```
-
-Unknown removals, conflicting edits, and updates that make no effective change
-are rejected so automation cannot silently hide a typo.
+Edit `dac.toml` directly for exceptional URLs, filenames, headers, pins, and
+transfer limits. `add` and `update` deliberately do not expose a parallel
+general-purpose manifest editing language.
 
 ## Manifest and authentication
 
 ```toml
-version = 1
+version = 2
 
 [globals]
 CHANNEL = "stable"
 
 [files.artifact]
-url = "https://internal.example/{{.global.CHANNEL}}/artifact-{{.VERSION}}.ear"
+url = "https://internal.example/{{$.CHANNEL}}/artifact-{{.VERSION}}.ear"
 file = "artifact.ear"
 pin = "sha256:..."
 max_size = "4GiB"
@@ -125,14 +115,20 @@ Authorization = "env:ARTIFACT_TOKEN"
 X-Repository = "releases"
 ```
 
+Manifest version 2 replaces the version-1 `{{.global.KEY}}` spelling with
+`{{$.KEY}}` and restricts templates to direct placeholders. Migration is
+manual: update the version and template spellings in the human-owned manifest;
+`dac` never silently rewrites version 1.
+
 Header values beginning with `env:` are resolved only for a request and are
 never written to the lock file or emitted in errors/JSON. Configured headers
 are removed if a redirect crosses origin. Do not put secrets in literal header
 values or URL query strings: those are persisted user configuration.
 
-CLI edits canonically rewrite `dac.toml`, so comments and custom formatting are
-not retained. Commit `dac.toml` and `dac.lock`; normally add `.dac/` to
-`.gitignore` because downloads are derived and independently verified.
+CLI additions and variable updates canonically rewrite `dac.toml`, so comments
+and custom formatting are not retained. Commit `dac.toml` and `dac.lock`;
+normally add `.dac/` to `.gitignore` because downloads are derived and
+independently verified.
 
 ## Transfer
 
@@ -156,6 +152,12 @@ results, writes `dac.lock` when requested, and reports a failure in manifest
 order. The first failure stops the transfers still running. When accepted state
 is changing, every selected download and `dac.lock` commit or roll back as one
 transaction.
+
+Interactive pulls show one byte-progress bar per active asset, including the
+declared total, percentage, and transfer rate when the server provides a size.
+`SIGINT` and `SIGTERM` cancel the HTTP transfers and stop and join all progress
+renderers before `dac` exits, so no download or terminal animation is left
+running.
 
 Response compression is not negotiated. Byte ranges, digests, and size limits
 are all expressed in the asset's own bytes, and a content encoding applied in
