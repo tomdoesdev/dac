@@ -9,6 +9,35 @@ import (
 	"github.com/tomdoesdev/dac/internal/asset"
 )
 
+const initialExamples = `
+# Project-wide variables are referenced as {{$.KEY}} by any file.
+# [globals]
+# VERSION = "1.2.3"
+
+# Each download is declared under a unique name in [files].
+# [files.example]
+# url = "https://example.com/releases/{{$.VERSION}}/{{.PLATFORM}}/artifact.tar.gz"
+# file = "artifact-{{.PLATFORM}}.tar.gz"
+# pin = "sha256:<64 hexadecimal characters>" # Optional expected SHA-256 digest.
+# max_size = "4GiB"                          # Use "0" to disable the size limit.
+# idle_timeout = "30s"                       # Use "0" to disable the idle timeout.
+
+# File-specific variables are referenced as {{.KEY}} by that file only.
+# [files.example.variables]
+# PLATFORM = "linux-amd64"
+
+# Header values can read secrets from the environment at request time.
+# [files.example.headers]
+# Authorization = "env:ARTIFACT_TOKEN"
+`
+
+// encodeInitial adds a disposable reference block to a newly initialized
+// manifest. Canonical rewrites intentionally omit it because comments are not
+// part of the manifest's structured state.
+func encodeInitial(value Manifest) []byte {
+	return append(encode(value), initialExamples...)
+}
+
 func encode(value Manifest) []byte {
 	var result strings.Builder
 	fmt.Fprintf(&result, "version = %d\n", value.Version)

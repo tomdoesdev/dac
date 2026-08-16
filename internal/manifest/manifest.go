@@ -75,8 +75,8 @@ func Write(path string, value Manifest) error {
 	return nil
 }
 
-// Create atomically initializes a manifest without replacing an existing file,
-// even if two init processes race.
+// Create atomically initializes a manifest, including commented examples,
+// without replacing an existing file even if two init processes race.
 func Create(path string, value Manifest) error {
 	if err := Validate(value); err != nil {
 		return err
@@ -86,7 +86,7 @@ func Create(path string, value Manifest) error {
 		return fault.NewFilesystemError(err)
 	}
 	defer func() { _ = file.Discard() }()
-	if _, err := file.Write(encode(value)); err != nil {
+	if _, err := file.Write(encodeInitial(value)); err != nil {
 		return fault.NewFilesystemError(err)
 	}
 	commit, err := file.CommitNoReplace()

@@ -272,6 +272,44 @@ func TestInitRejectsConflictingOutputModesBeforeCreatingProject(t *testing.T) {
 	})
 }
 
+// TestInitCreatesCommentedManifestReference keeps every supported manifest
+// setting discoverable without turning the examples into active downloads.
+func TestInitCreatesCommentedManifestReference(t *testing.T) {
+	withinTempDir(t, func(string) {
+		runOK(t, "init")
+		contents, err := os.ReadFile("dac.toml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		for _, example := range []string{
+			`# [globals]`,
+			`# VERSION = "1.2.3"`,
+			`# [files.example]`,
+			`{{$.VERSION}}`,
+			`{{.PLATFORM}}`,
+			`# pin = "sha256:<64 hexadecimal characters>"`,
+			`# max_size = "4GiB"`,
+			`# idle_timeout = "30s"`,
+			`# [files.example.variables]`,
+			`# [files.example.headers]`,
+			`# Authorization = "env:ARTIFACT_TOKEN"`,
+		} {
+			if !strings.Contains(text, example) {
+				t.Errorf("initialized dac.toml does not contain %q", example)
+			}
+		}
+
+		value, err := manifest.Load("dac.toml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value.Version != manifest.Version || len(value.Globals) != 0 || len(value.Files) != 0 {
+			t.Fatalf("commented examples changed manifest state: %#v", value)
+		}
+	})
+}
+
 func TestScopedUpdateBootstrapsAndRejectsLegacyLock(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
